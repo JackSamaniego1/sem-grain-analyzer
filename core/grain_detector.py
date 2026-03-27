@@ -640,3 +640,4 @@ class GrainDetector:
                     overlay, text, (tx, ty),
                     cv2.FONT_HERSHEY_SIMPLEX, fs, (255, 255, 255), 1)
         return overlay
+ 
