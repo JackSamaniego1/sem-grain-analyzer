@@ -199,7 +199,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("SEM Grain Analyzer")
+        self.setWindowTitle("Grain Analyzer v2.3")
         self.setMinimumSize(1100, 700)
         self.resize(1440, 880)
 
@@ -663,15 +663,18 @@ class MainWindow(QMainWindow):
                 subprocess.run(["xdg-open", path])
 
     def _show_about(self):
-        QMessageBox.about(self, "About SEM Grain Analyzer",
-            "<h2>SEM Grain Analyzer v1.3</h2>"
+        QMessageBox.about(self, "About Grain Analyzer",
+            "<h2>Grain Analyzer v2.3</h2>"
+            "<p>Developed by <b>Jack Samaniego</b></p>"
             "<ul>"
             "<li>Open multiple images (hold Ctrl)</li>"
             "<li>Set scale bar: zoom in, click 2 points</li>"
             "<li>Set scan area: draw rectangle to exclude legend</li>"
             "<li>Analyze all with progress window</li>"
             "<li>Click grain → Delete to remove</li>"
-            "</ul>")
+            "<li>Adjustable histogram bins</li>"
+            "</ul>"
+            "<p>Boundary-first detection with texture orientation</p>")
 
     def _set_status(self, msg: str):
         self.status_msg.setText(msg)
