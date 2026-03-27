@@ -1,0 +1,13 @@
+SEM Grain Analyzer - License
+=============================
+
+This software is provided for scientific research and analysis purposes.
+
+Third-party libraries used:
+- PyQt6 (GPL v3)
+- OpenCV (Apache 2.0)
+- scikit-image (Modified BSD)
+- scipy (BSD)
+- numpy (BSD)
+- openpyxl (MIT)
+- Pillow (HPND)
