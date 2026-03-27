@@ -614,7 +614,7 @@ class GrainDetector:
         alpha = 0.4
         mask = labels > 0
         blended = cv2.addWeighted(overlay, 1 - alpha, color_map, alpha, 0)
-        overlay[mask] = blended[mask]
+        overlay[mask] = blended[mask] 
         grain_map = {g.grain_id: g for g in grains}
         for lbl in unique_labels:
             if lbl not in grain_map:
