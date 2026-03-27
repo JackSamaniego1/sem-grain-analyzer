@@ -678,4 +678,4 @@ class MainWindow(QMainWindow):
             "</ul>")
 
     def _set_status(self, msg: str):
-        self.status_msg.setText(msg) 
+        self.status_msg.setText(msg)
