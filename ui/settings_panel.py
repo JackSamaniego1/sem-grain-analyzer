@@ -436,7 +436,7 @@ class SettingsPanel(QScrollArea):
         )
 
     def set_image_name(self, name: str):
-        self.lbl_image.setText(name) 
+        self.lbl_image.setText(name)
 
     def set_calibration_label(self, px_per_um: float):
         if px_per_um > 0:
