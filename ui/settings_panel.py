@@ -1,5 +1,6 @@
 """
 Settings Panel - resizable left panel, clean layout
+Updated for Grain Detection Engine v2.0
 """
 
 from PyQt6.QtWidgets import (
@@ -44,7 +45,7 @@ class SettingsPanel(QScrollArea):
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(title)
 
-        ver = QLabel("v1.1  —  Multi-image")
+        ver = QLabel("v2.0  —  Multi-strategy detection")
         ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ver.setStyleSheet("color: #6666aa; font-size: 11px;")
         lay.addWidget(ver)
@@ -104,7 +105,48 @@ class SettingsPanel(QScrollArea):
 
         lay.addWidget(cal_group)
 
+        # ============================================================
+        # -- Enhancement (NEW v2.0) --
+        # ============================================================
+        enh_group = QGroupBox("Image Enhancement")
+        enh_lay = QFormLayout(enh_group)
+        enh_lay.setSpacing(8)
+        enh_lay.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        self.clahe_cb = QCheckBox("CLAHE contrast boost")
+        self.clahe_cb.setChecked(True)
+        self.clahe_cb.setToolTip(
+            "Contrast Limited Adaptive Histogram Equalization.\n"
+            "Boosts local contrast so low-contrast grains become\n"
+            "visible without blowing out bright areas."
+        )
+        enh_lay.addRow("", self.clahe_cb)
+
+        self.clahe_clip_spin = QDoubleSpinBox()
+        self.clahe_clip_spin.setRange(0.5, 8.0)
+        self.clahe_clip_spin.setValue(2.0)
+        self.clahe_clip_spin.setSingleStep(0.5)
+        self.clahe_clip_spin.setDecimals(1)
+        self.clahe_clip_spin.setToolTip(
+            "CLAHE clip limit. Higher = more aggressive contrast boost.\n"
+            "Default 2.0 works for most images. Try 3-4 for very flat images."
+        )
+        enh_lay.addRow("CLAHE strength:", self.clahe_clip_spin)
+
+        self.adaptive_cb = QCheckBox("Adaptive thresholding (finds more grains)")
+        self.adaptive_cb.setChecked(True)
+        self.adaptive_cb.setToolTip(
+            "Uses local neighborhood comparison instead of a single\n"
+            "global threshold. Catches grains that are only slightly\n"
+            "different from their local background."
+        )
+        enh_lay.addRow("", self.adaptive_cb)
+
+        lay.addWidget(enh_group)
+
+        # ============================================================
         # -- Detection Parameters --
+        # ============================================================
         det_group = QGroupBox("Detection Parameters")
         det_lay = QFormLayout(det_group)
         det_lay.setSpacing(8)
@@ -140,7 +182,20 @@ class SettingsPanel(QScrollArea):
         self.watershed_spin.setRange(1, 100)
         self.watershed_spin.setValue(5)
         self.watershed_spin.setSuffix(" px")
-        det_lay.addRow("Watershed:", self.watershed_spin)
+        det_lay.addRow("Watershed dist:", self.watershed_spin)
+
+        self.boundary_weight_spin = QDoubleSpinBox()
+        self.boundary_weight_spin.setRange(0.0, 1.0)
+        self.boundary_weight_spin.setValue(0.5)
+        self.boundary_weight_spin.setSingleStep(0.1)
+        self.boundary_weight_spin.setDecimals(1)
+        self.boundary_weight_spin.setToolTip(
+            "How much the gradient (real edges) influences watershed.\n"
+            "0.0 = pure distance-based splitting (old behavior)\n"
+            "1.0 = pure gradient-based splitting (follows real boundaries)\n"
+            "0.5 = balanced blend (recommended)"
+        )
+        det_lay.addRow("Boundary weight:", self.boundary_weight_spin)
 
         self.dark_grains_cb = QCheckBox("Grains are dark (inverted)")
         det_lay.addRow("", self.dark_grains_cb)
@@ -151,10 +206,13 @@ class SettingsPanel(QScrollArea):
 
         lay.addWidget(det_group)
 
+        # Connect all value-change signals
         for w in [self.blur_spin, self.thresh_spin, self.min_size_spin,
-                  self.max_size_spin, self.watershed_spin]:
+                  self.max_size_spin, self.watershed_spin,
+                  self.clahe_clip_spin, self.boundary_weight_spin]:
             w.valueChanged.connect(self._emit_params)
-        for cb in [self.dark_grains_cb, self.watershed_cb]:
+        for cb in [self.dark_grains_cb, self.watershed_cb,
+                   self.clahe_cb, self.adaptive_cb]:
             cb.stateChanged.connect(self._emit_params)
 
         btn_reset = QPushButton("↺  Reset to Defaults")
@@ -209,6 +267,11 @@ class SettingsPanel(QScrollArea):
         self.watershed_spin.setValue(d.watershed_min_dist)
         self.dark_grains_cb.setChecked(d.dark_grains)
         self.watershed_cb.setChecked(d.use_watershed)
+        # v2.0 defaults
+        self.clahe_cb.setChecked(d.use_clahe)
+        self.clahe_clip_spin.setValue(d.clahe_clip_limit)
+        self.adaptive_cb.setChecked(d.use_adaptive)
+        self.boundary_weight_spin.setValue(d.boundary_weight)
 
     def get_params(self) -> DetectionParams:
         return DetectionParams(
@@ -219,6 +282,11 @@ class SettingsPanel(QScrollArea):
             watershed_min_dist=self.watershed_spin.value(),
             dark_grains=self.dark_grains_cb.isChecked(),
             use_watershed=self.watershed_cb.isChecked(),
+            # v2.0
+            use_adaptive=self.adaptive_cb.isChecked(),
+            use_clahe=self.clahe_cb.isChecked(),
+            clahe_clip_limit=self.clahe_clip_spin.value(),
+            boundary_weight=self.boundary_weight_spin.value(),
         )
 
     def set_image_name(self, name: str):
