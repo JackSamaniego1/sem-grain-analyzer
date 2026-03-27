@@ -1,12 +1,12 @@
 """
 Settings Panel - resizable left panel, clean layout
-Updated for Grain Detection Engine v2.0
+Updated for Grain Detection Engine v2.1 (boundary-first)
 """
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox,
-    QCheckBox, QFrame, QScrollArea, QSizePolicy
+    QCheckBox, QFrame, QScrollArea, QSizePolicy, QComboBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from core.grain_detector import DetectionParams
@@ -25,7 +25,6 @@ class SettingsPanel(QScrollArea):
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        # Allow user to drag wider — set min but NO max
         self.setMinimumWidth(320)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         self.setFrameShape(QFrame.Shape.NoFrame)
@@ -45,7 +44,7 @@ class SettingsPanel(QScrollArea):
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(title)
 
-        ver = QLabel("v2.0  —  Multi-strategy detection")
+        ver = QLabel("v2.1  —  Boundary-first detection")
         ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ver.setStyleSheet("color: #6666aa; font-size: 11px;")
         lay.addWidget(ver)
@@ -92,7 +91,6 @@ class SettingsPanel(QScrollArea):
         note.setAlignment(Qt.AlignmentFlag.AlignCenter)
         cal_lay.addWidget(note)
 
-        # Scan area button
         self.btn_scan_area = QPushButton("📐  Set Scan Area (Draw Rectangle)")
         self.btn_scan_area.setMinimumHeight(34)
         self.btn_scan_area.clicked.connect(self.set_scan_area.emit)
@@ -106,7 +104,38 @@ class SettingsPanel(QScrollArea):
         lay.addWidget(cal_group)
 
         # ============================================================
-        # -- Enhancement (NEW v2.0) --
+        # -- Detection Mode (NEW v2.1) --
+        # ============================================================
+        mode_group = QGroupBox("Detection Mode")
+        mode_lay = QVBoxLayout(mode_group)
+        mode_lay.setSpacing(6)
+
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem("Auto-detect (recommended)", "auto")
+        self.mode_combo.addItem("Boundary-first (mosaic grains)", "boundary")
+        self.mode_combo.addItem("Threshold-based (grains on background)", "threshold")
+        self.mode_combo.setToolTip(
+            "Auto: automatically chooses the best method for your image.\n\n"
+            "Boundary-first: for images where grains fill the entire view\n"
+            "and are separated by thin dark grooves (most SEM grain images).\n\n"
+            "Threshold-based: for images with distinct bright grains on\n"
+            "a dark background (or vice versa)."
+        )
+        mode_lay.addWidget(self.mode_combo)
+
+        mode_hint = QLabel(
+            "Auto selects boundary mode for dense grain mosaics\n"
+            "and threshold mode for sparse grains on background."
+        )
+        mode_hint.setStyleSheet("color: #888899; font-size: 10px;")
+        mode_hint.setWordWrap(True)
+        mode_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        mode_lay.addWidget(mode_hint)
+
+        lay.addWidget(mode_group)
+
+        # ============================================================
+        # -- Enhancement --
         # ============================================================
         enh_group = QGroupBox("Image Enhancement")
         enh_lay = QFormLayout(enh_group)
@@ -117,8 +146,7 @@ class SettingsPanel(QScrollArea):
         self.clahe_cb.setChecked(True)
         self.clahe_cb.setToolTip(
             "Contrast Limited Adaptive Histogram Equalization.\n"
-            "Boosts local contrast so low-contrast grains become\n"
-            "visible without blowing out bright areas."
+            "Boosts local contrast so boundary grooves become more visible."
         )
         enh_lay.addRow("", self.clahe_cb)
 
@@ -132,15 +160,6 @@ class SettingsPanel(QScrollArea):
             "Default 2.0 works for most images. Try 3-4 for very flat images."
         )
         enh_lay.addRow("CLAHE strength:", self.clahe_clip_spin)
-
-        self.adaptive_cb = QCheckBox("Adaptive thresholding (finds more grains)")
-        self.adaptive_cb.setChecked(True)
-        self.adaptive_cb.setToolTip(
-            "Uses local neighborhood comparison instead of a single\n"
-            "global threshold. Catches grains that are only slightly\n"
-            "different from their local background."
-        )
-        enh_lay.addRow("", self.adaptive_cb)
 
         lay.addWidget(enh_group)
 
@@ -157,14 +176,33 @@ class SettingsPanel(QScrollArea):
         self.blur_spin.setValue(1.5)
         self.blur_spin.setSingleStep(0.5)
         self.blur_spin.setDecimals(1)
+        self.blur_spin.setToolTip("Gaussian blur to suppress noise before detection.")
         det_lay.addRow("Blur (σ):", self.blur_spin)
+
+        self.edge_sens_spin = QDoubleSpinBox()
+        self.edge_sens_spin.setRange(0.1, 3.0)
+        self.edge_sens_spin.setValue(1.0)
+        self.edge_sens_spin.setSingleStep(0.1)
+        self.edge_sens_spin.setDecimals(1)
+        self.edge_sens_spin.setToolTip(
+            "Edge/boundary sensitivity.\n"
+            "Higher = detects more boundaries (may over-segment).\n"
+            "Lower = detects fewer boundaries (may merge grains)."
+        )
+        det_lay.addRow("Edge sensitivity:", self.edge_sens_spin)
 
         self.thresh_spin = QDoubleSpinBox()
         self.thresh_spin.setRange(-0.5, 0.5)
         self.thresh_spin.setValue(0.0)
         self.thresh_spin.setSingleStep(0.02)
         self.thresh_spin.setDecimals(3)
-        det_lay.addRow("Threshold:", self.thresh_spin)
+        self.thresh_spin.setToolTip(
+            "In boundary mode: adjusts the boundary detection threshold.\n"
+            "Negative = more boundaries detected (splits more grains).\n"
+            "Positive = fewer boundaries detected (merges more grains).\n\n"
+            "In threshold mode: shifts the Otsu threshold up/down."
+        )
+        det_lay.addRow("Threshold offset:", self.thresh_spin)
 
         self.min_size_spin = QSpinBox()
         self.min_size_spin.setRange(1, 50000)
@@ -182,38 +220,47 @@ class SettingsPanel(QScrollArea):
         self.watershed_spin.setRange(1, 100)
         self.watershed_spin.setValue(5)
         self.watershed_spin.setSuffix(" px")
+        self.watershed_spin.setToolTip(
+            "Minimum distance between grain centers for watershed.\n"
+            "In boundary mode: used to split suspiciously large regions.\n"
+            "Higher = fewer splits; Lower = more aggressive splitting."
+        )
         det_lay.addRow("Watershed dist:", self.watershed_spin)
 
-        self.boundary_weight_spin = QDoubleSpinBox()
-        self.boundary_weight_spin.setRange(0.0, 1.0)
-        self.boundary_weight_spin.setValue(0.5)
-        self.boundary_weight_spin.setSingleStep(0.1)
-        self.boundary_weight_spin.setDecimals(1)
-        self.boundary_weight_spin.setToolTip(
-            "How much the gradient (real edges) influences watershed.\n"
-            "0.0 = pure distance-based splitting (old behavior)\n"
-            "1.0 = pure gradient-based splitting (follows real boundaries)\n"
-            "0.5 = balanced blend (recommended)"
-        )
-        det_lay.addRow("Boundary weight:", self.boundary_weight_spin)
-
         self.dark_grains_cb = QCheckBox("Grains are dark (inverted)")
+        self.dark_grains_cb.setToolTip(
+            "Check if your grains are darker than the background.\n"
+            "Only affects threshold mode; boundary mode detects regardless."
+        )
         det_lay.addRow("", self.dark_grains_cb)
 
-        self.watershed_cb = QCheckBox("Use watershed (separate touching grains)")
+        self.watershed_cb = QCheckBox("Use watershed (split merged grains)")
         self.watershed_cb.setChecked(True)
+        self.watershed_cb.setToolTip(
+            "In boundary mode: splits suspiciously large regions.\n"
+            "In threshold mode: separates touching grains."
+        )
         det_lay.addRow("", self.watershed_cb)
+
+        self.adaptive_cb = QCheckBox("Adaptive threshold (threshold mode only)")
+        self.adaptive_cb.setChecked(True)
+        self.adaptive_cb.setToolTip(
+            "Uses local neighborhood comparison instead of a single\n"
+            "global threshold. Only used in threshold detection mode."
+        )
+        det_lay.addRow("", self.adaptive_cb)
 
         lay.addWidget(det_group)
 
         # Connect all value-change signals
         for w in [self.blur_spin, self.thresh_spin, self.min_size_spin,
                   self.max_size_spin, self.watershed_spin,
-                  self.clahe_clip_spin, self.boundary_weight_spin]:
+                  self.clahe_clip_spin, self.edge_sens_spin]:
             w.valueChanged.connect(self._emit_params)
         for cb in [self.dark_grains_cb, self.watershed_cb,
                    self.clahe_cb, self.adaptive_cb]:
             cb.stateChanged.connect(self._emit_params)
+        self.mode_combo.currentIndexChanged.connect(self._emit_params)
 
         btn_reset = QPushButton("↺  Reset to Defaults")
         btn_reset.clicked.connect(self._reset_params)
@@ -243,7 +290,11 @@ class SettingsPanel(QScrollArea):
 
         lay.addStretch()
 
-        info = QLabel("Tip: Scroll wheel to zoom.\nAlt+drag to pan.\nClick grain → Delete to remove.")
+        info = QLabel(
+            "Tip: Scroll wheel to zoom.\n"
+            "Alt+drag to pan.\n"
+            "Click grain → Delete to remove."
+        )
         info.setWordWrap(True)
         info.setStyleSheet("color: #555577; font-size: 10px;")
         info.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -260,6 +311,7 @@ class SettingsPanel(QScrollArea):
 
     def _reset_params(self):
         d = DetectionParams()
+        self.mode_combo.setCurrentIndex(0)  # "auto"
         self.blur_spin.setValue(d.blur_sigma)
         self.thresh_spin.setValue(d.threshold_offset)
         self.min_size_spin.setValue(d.min_grain_size_px)
@@ -267,11 +319,10 @@ class SettingsPanel(QScrollArea):
         self.watershed_spin.setValue(d.watershed_min_dist)
         self.dark_grains_cb.setChecked(d.dark_grains)
         self.watershed_cb.setChecked(d.use_watershed)
-        # v2.0 defaults
         self.clahe_cb.setChecked(d.use_clahe)
         self.clahe_clip_spin.setValue(d.clahe_clip_limit)
         self.adaptive_cb.setChecked(d.use_adaptive)
-        self.boundary_weight_spin.setValue(d.boundary_weight)
+        self.edge_sens_spin.setValue(d.edge_sensitivity)
 
     def get_params(self) -> DetectionParams:
         return DetectionParams(
@@ -282,11 +333,11 @@ class SettingsPanel(QScrollArea):
             watershed_min_dist=self.watershed_spin.value(),
             dark_grains=self.dark_grains_cb.isChecked(),
             use_watershed=self.watershed_cb.isChecked(),
-            # v2.0
+            edge_sensitivity=self.edge_sens_spin.value(),
             use_adaptive=self.adaptive_cb.isChecked(),
             use_clahe=self.clahe_cb.isChecked(),
             clahe_clip_limit=self.clahe_clip_spin.value(),
-            boundary_weight=self.boundary_weight_spin.value(),
+            detection_mode=self.mode_combo.currentData(),
         )
 
     def set_image_name(self, name: str):
@@ -306,7 +357,6 @@ class SettingsPanel(QScrollArea):
 
     def set_analyze_enabled(self, enabled: bool):
         self.btn_analyze.setEnabled(enabled)
-
 
     def set_scan_area_label(self, rect):
         if rect is None:
