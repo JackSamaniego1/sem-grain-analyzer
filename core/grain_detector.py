@@ -284,9 +284,9 @@ class GrainDetector:
         grad /= max(grad.max(), 1e-6)
 
         progress(30, "Building contrast boundary map...")
-        # Increased step weight from 0.20 to 0.25, reduced grad from 0.15 to 0.10
-        contrast_combo = (0.25 * dog + 0.15 * nlap + 0.20 * dark +
-                          0.30 * step + 0.10 * grad)
+        # Contrast-dominant: step change is the strongest contrast signal
+        contrast_combo = (0.20 * dog + 0.10 * nlap + 0.15 * dark +
+                          0.40 * step + 0.15 * grad)
         contrast_combo /= max(contrast_combo.max(), 1e-6)
 
         # Sensitivity boost
@@ -393,11 +393,11 @@ class GrainDetector:
         median_area = np.median(areas)
         merge_thresh = median_area * 2.0
 
-        # Blend contrast + orientation for split landscape
+        # Blend: contrast dominates, texture is secondary refinement
         power = 1.0 / max(params.edge_sensitivity, 0.3)
         orient_boosted = np.power(orient_map, power)
         orient_boosted /= max(orient_boosted.max(), 1e-6)
-        split_landscape = 0.5 * contrast_map + 0.5 * orient_boosted
+        split_landscape = 0.70 * contrast_map + 0.30 * orient_boosted
         split_landscape /= max(split_landscape.max(), 1e-6)
 
         output = labels.copy()
