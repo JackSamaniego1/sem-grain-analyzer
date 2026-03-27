@@ -112,12 +112,12 @@ class SettingsPanel(QScrollArea):
     def _build_ui(self):
         lay = self._layout
 
-        title = QLabel("SEM Grain Analyzer")
+        title = QLabel("Grain Analyzer")
         title.setObjectName("header")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(title)
 
-        ver = QLabel("v2.1  —  Boundary-first detection")
+        ver = QLabel("v2.3  —  by Jack Samaniego")
         ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ver.setStyleSheet("color: #6666aa; font-size: 11px;")
         lay.addWidget(ver)
