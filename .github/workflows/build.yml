@@ -1,0 +1,120 @@
+# ============================================================
+# GitHub Actions — Automatically build Windows + macOS installers
+# Every time you push to main, this builds the exe and DMG.
+# Download the finished installers from the "Actions" tab on GitHub.
+# ============================================================
+
+name: Build Installers
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:   # also lets you trigger manually from GitHub
+
+jobs:
+
+  # ──────────────────────────────────────────────
+  # WINDOWS — builds SEMGrainAnalyzer_Setup.exe
+  # ──────────────────────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller PyQt6 opencv-python scikit-image scipy numpy openpyxl Pillow
+
+      - name: Generate icon
+        run: |
+          python -c "
+          from PIL import Image, ImageDraw
+          import os
+          os.makedirs('resources', exist_ok=True)
+          img = Image.new('RGBA', (256,256), (26,43,74,255))
+          draw = ImageDraw.Draw(img)
+          draw.ellipse([30,30,226,226], fill=(0,140,200,255))
+          draw.ellipse([80,80,176,176], fill=(26,43,74,255))
+          draw.rectangle([118,60,138,196], fill=(255,255,255,255))
+          draw.rectangle([60,118,196,138], fill=(255,255,255,255))
+          img.save('resources/icon.ico', format='ICO', sizes=[(256,256),(64,64),(32,32),(16,16)])
+          print('Icon created')
+          "
+
+      - name: Build with PyInstaller
+        run: pyinstaller sem_grain_analyzer.spec --clean --noconfirm
+
+      - name: Install NSIS
+        run: choco install nsis -y
+
+      - name: Generate NSIS script
+        run: python create_nsis_script.py
+
+      - name: Create installer
+        run: makensis installer.nsi
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SEMGrainAnalyzer-Windows-Setup
+          path: SEMGrainAnalyzer_Setup.exe
+          retention-days: 30
+
+  # ──────────────────────────────────────────────
+  # macOS — builds SEMGrainAnalyzer.dmg
+  # ──────────────────────────────────────────────
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller PyQt6 opencv-python scikit-image scipy numpy openpyxl Pillow
+
+      - name: Generate icon
+        run: |
+          python -c "
+          from PIL import Image, ImageDraw
+          import os
+          os.makedirs('resources', exist_ok=True)
+          img = Image.new('RGBA', (512,512), (26,43,74,255))
+          draw = ImageDraw.Draw(img)
+          draw.ellipse([60,60,452,452], fill=(0,140,200,255))
+          draw.ellipse([140,140,372,372], fill=(26,43,74,255))
+          draw.rectangle([236,80,276,432], fill=(255,255,255,255))
+          draw.rectangle([80,236,432,276], fill=(255,255,255,255))
+          img.save('resources/icon.icns')
+          img.save('resources/icon.ico')
+          print('Icons created')
+          "
+
+      - name: Build with PyInstaller
+        run: pyinstaller sem_grain_analyzer.spec --clean --noconfirm
+
+      - name: Create DMG
+        run: |
+          hdiutil create \
+            -volname "SEM Grain Analyzer" \
+            -srcfolder "dist/SEMGrainAnalyzer.app" \
+            -ov -format UDZO \
+            SEMGrainAnalyzer.dmg
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SEMGrainAnalyzer-macOS-DMG
+          path: SEMGrainAnalyzer.dmg
+          retention-days: 30
