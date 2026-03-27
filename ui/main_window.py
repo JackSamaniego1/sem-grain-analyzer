@@ -1,15 +1,14 @@
-
-
 """
-Main Application Window v1.1
-- Multiple images via tabs
-- Auto scale bar detection (no manual input)
-- Analyze ALL images simultaneously
-- Click grain + Delete to remove from dataset
+Main Application Window v1.2
+- Resizable left panel
+- 2-point click scale bar calibration
+- Safe sequential analysis with progress dialog
+- Click grain + Delete to remove
 """
 
 import os
 import sys
+import time
 import numpy as np
 import cv2
 
@@ -18,15 +17,15 @@ from PyQt6.QtWidgets import (
     QStatusBar, QProgressBar, QLabel, QFileDialog, QMessageBox,
     QTabWidget, QFrame, QPushButton
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QTimer
 from PyQt6.QtGui import QAction, QKeySequence
 
 from ui.image_canvas import ImageCanvas
 from ui.settings_panel import SettingsPanel
 from ui.results_panel import ResultsPanel
 from ui.calibration_dialog import CalibrationDialog
+from ui.analysis_progress_dialog import AnalysisProgressDialog
 from core.grain_detector import GrainDetector, DetectionParams, AnalysisResult
-from core.scale_bar import auto_detect_scale_bar, detect_scale_bar_length_px
 from utils.excel_export import export_to_excel
 
 
@@ -57,9 +56,7 @@ class AnalysisWorker(QObject):
 
 
 class ImageTab(QWidget):
-    """One tab = one SEM image."""
-
-    grain_deleted = pyqtSignal(int)   # grain_id deleted
+    grain_deleted = pyqtSignal(int)
 
     def __init__(self, image_bgr, image_path, parent=None):
         super().__init__(parent)
@@ -72,7 +69,6 @@ class ImageTab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # View toggle bar
         bar = QWidget()
         bar.setStyleSheet("background: #14141a; border-bottom: 1px solid #3c3c48;")
         bar.setFixedHeight(36)
@@ -98,40 +94,28 @@ class ImageTab(QWidget):
 
         self.canvas = ImageCanvas()
         self.canvas.set_image(image_bgr)
-        # Connect grain click → delete handler
         self.canvas.grain_clicked.connect(self._on_grain_clicked)
         layout.addWidget(self.canvas)
 
     def _on_grain_clicked(self, ix, grain_id_or_y):
-        """ix == -1 means Delete was pressed; grain_id_or_y is then the grain_id."""
         if ix == -1:
-            grain_id = grain_id_or_y
-            self._delete_grain(grain_id)
+            self._delete_grain(grain_id_or_y)
 
     def _delete_grain(self, grain_id: int):
         if self.result is None:
             return
-        # Remove from grains list
         before = len(self.result.grains)
         self.result.grains = [g for g in self.result.grains if g.grain_id != grain_id]
         self.result.grain_count = len(self.result.grains)
-
         if len(self.result.grains) == before:
-            return  # nothing removed
-
-        # Zero out that label in label_image so overlay redraws cleanly
+            return
         if self.result.label_image is not None:
             self.result.label_image[self.result.label_image == grain_id] = 0
-
-        # Recompute statistics
         self._recompute_stats()
-
-        # Redraw overlay
         detector = GrainDetector()
         self.result.overlay_image = detector._draw_overlay(
             self.image_bgr, self.result.label_image, self.result.grains
         )
-
         self.show_view("overlay")
         self.grain_deleted.emit(grain_id)
 
@@ -152,10 +136,8 @@ class ImageTab(QWidget):
             r.std_diameter_um  = float(_np.std(diams))
             if r.total_analyzed_area_um2 > 0:
                 r.grain_coverage_pct = float(_np.sum(areas)) / r.total_analyzed_area_um2 * 100
-        circs   = _np.array([g.circularity  for g in r.grains])
-        aspects = _np.array([g.aspect_ratio for g in r.grains])
-        r.mean_circularity  = float(_np.mean(circs))
-        r.mean_aspect_ratio = float(_np.mean(aspects))
+        r.mean_circularity  = float(_np.mean(_np.array([g.circularity  for g in r.grains])))
+        r.mean_aspect_ratio = float(_np.mean(_np.array([g.aspect_ratio for g in r.grains])))
 
     def show_view(self, mode: str):
         self._current_view = mode
@@ -186,14 +168,17 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("SEM Grain Analyzer")
-        self.setMinimumSize(1200, 720)
+        self.setMinimumSize(1100, 700)
         self.resize(1440, 880)
 
-        self._px_per_um   = 0.0
-        self._worker      = None
-        self._thread      = None
+        self._px_per_um    = 0.0
+        self._worker       = None
+        self._thread       = None
         self._image_tabs: list[ImageTab] = []
         self._pending_tabs: list[ImageTab] = []
+        self._pending_indices: list[int] = []
+        self._progress_dlg: AnalysisProgressDialog | None = None
+        self._cancelled    = False
 
         self._build_ui()
         self._build_menu()
@@ -210,17 +195,14 @@ class MainWindow(QMainWindow):
 
         self.settings = SettingsPanel()
         self.settings.open_image.connect(self.open_images)
-        self.settings.set_calibration.connect(self.auto_detect_scale_bar)
+        self.settings.set_calibration.connect(self.open_calibration)
         self.settings.run_analysis.connect(self.run_analysis_all)
         self.settings.export_excel.connect(self.export_all_excel)
-        root_lay.addWidget(self.settings)
 
         div = QFrame()
         div.setFrameShape(QFrame.Shape.VLine)
         div.setStyleSheet("color: #3c3c48;")
-        root_lay.addWidget(div)
 
-        # Centre: tabs
         self.tab_widget = QTabWidget()
         self.tab_widget.setTabsClosable(True)
         self.tab_widget.tabCloseRequested.connect(self._close_tab)
@@ -243,60 +225,71 @@ class MainWindow(QMainWindow):
 
         self.results = ResultsPanel()
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self.centre_stack)
-        splitter.addWidget(self.results)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([980, 420])
-        root_lay.addWidget(splitter, 1)
+        # Main splitter: image area | results
+        right_splitter = QSplitter(Qt.Orientation.Horizontal)
+        right_splitter.addWidget(self.centre_stack)
+        right_splitter.addWidget(self.results)
+        right_splitter.setStretchFactor(0, 3)
+        right_splitter.setStretchFactor(1, 1)
+        right_splitter.setSizes([980, 420])
+
+        # Left splitter: settings | rest  (user can drag this!)
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_splitter.addWidget(self.settings)
+        main_splitter.addWidget(div)
+        main_splitter.addWidget(right_splitter)
+        main_splitter.setStretchFactor(0, 0)
+        main_splitter.setStretchFactor(1, 0)
+        main_splitter.setStretchFactor(2, 1)
+        main_splitter.setSizes([340, 1, 1099])
+
+        root_lay.addWidget(main_splitter)
 
     def _build_menu(self):
         mb = self.menuBar()
 
         file_menu = mb.addMenu("&File")
-        act_open = QAction("&Open Images...", self)
-        act_open.setShortcut(QKeySequence.StandardKey.Open)
-        act_open.triggered.connect(self.open_images)
-        file_menu.addAction(act_open)
+        a = QAction("&Open Images...", self)
+        a.setShortcut(QKeySequence.StandardKey.Open)
+        a.triggered.connect(self.open_images)
+        file_menu.addAction(a)
 
-        act_export_all = QAction("Export &All to Excel...", self)
-        act_export_all.setShortcut(QKeySequence("Ctrl+E"))
-        act_export_all.triggered.connect(self.export_all_excel)
-        file_menu.addAction(act_export_all)
+        a = QAction("Export &All to Excel...", self)
+        a.setShortcut(QKeySequence("Ctrl+E"))
+        a.triggered.connect(self.export_all_excel)
+        file_menu.addAction(a)
 
-        act_export_cur = QAction("Export &Current to Excel...", self)
-        act_export_cur.setShortcut(QKeySequence("Ctrl+Shift+E"))
-        act_export_cur.triggered.connect(self.export_current_excel)
-        file_menu.addAction(act_export_cur)
+        a = QAction("Export &Current to Excel...", self)
+        a.setShortcut(QKeySequence("Ctrl+Shift+E"))
+        a.triggered.connect(self.export_current_excel)
+        file_menu.addAction(a)
 
         file_menu.addSeparator()
-        act_quit = QAction("&Quit", self)
-        act_quit.setShortcut(QKeySequence.StandardKey.Quit)
-        act_quit.triggered.connect(self.close)
-        file_menu.addAction(act_quit)
+        a = QAction("&Quit", self)
+        a.setShortcut(QKeySequence.StandardKey.Quit)
+        a.triggered.connect(self.close)
+        file_menu.addAction(a)
 
         analysis_menu = mb.addMenu("&Analysis")
+        a = QAction("Set &Scale Bar (2-point)...", self)
+        a.setShortcut(QKeySequence("Ctrl+K"))
+        a.triggered.connect(self.open_calibration)
+        analysis_menu.addAction(a)
 
-        act_scalebar = QAction("Auto-Detect &Scale Bar", self)
-        act_scalebar.setShortcut(QKeySequence("Ctrl+K"))
-        act_scalebar.triggered.connect(self.auto_detect_scale_bar)
-        analysis_menu.addAction(act_scalebar)
+        a = QAction("Analyze &All Images", self)
+        a.setShortcut(QKeySequence("F5"))
+        a.triggered.connect(self.run_analysis_all)
+        analysis_menu.addAction(a)
 
-        act_run_all = QAction("Analyze &All Images", self)
-        act_run_all.setShortcut(QKeySequence("F5"))
-        act_run_all.triggered.connect(self.run_analysis_all)
-        analysis_menu.addAction(act_run_all)
-
-        act_run_cur = QAction("Analyze &Current Image", self)
-        act_run_cur.setShortcut(QKeySequence("Ctrl+F5"))
-        act_run_cur.triggered.connect(self.run_analysis_current)
-        analysis_menu.addAction(act_run_cur)
+        a = QAction("Analyze &Current Image", self)
+        a.setShortcut(QKeySequence("Ctrl+F5"))
+        a.triggered.connect(self.run_analysis_current)
+        analysis_menu.addAction(a)
 
         help_menu = mb.addMenu("&Help")
-        act_about = QAction("&About", self)
-        act_about.triggered.connect(self._show_about)
-        help_menu.addAction(act_about)
+        a = QAction("&About", self)
+        a.triggered.connect(self._show_about)
+        help_menu.addAction(a)
 
     def _build_statusbar(self):
         self.status = QStatusBar()
@@ -327,20 +320,16 @@ class MainWindow(QMainWindow):
             img = cv2.imread(path, cv2.IMREAD_COLOR)
             if img is None:
                 raise ValueError(f"Could not read: {path}")
-
             tab = ImageTab(img, path)
             tab.grain_deleted.connect(self._on_grain_deleted)
             self._image_tabs.append(tab)
-
             name = os.path.basename(path)
             idx = self.tab_widget.addTab(tab, name)
             self.tab_widget.setCurrentIndex(idx)
-
             self.empty_label.setVisible(False)
             self.tab_widget.setVisible(True)
             self.settings.set_image_name(f"{len(self._image_tabs)} image(s) loaded")
             self.settings.set_analyze_enabled(True)
-
         except Exception as e:
             QMessageBox.critical(self, "Error Loading Image", str(e))
 
@@ -376,67 +365,23 @@ class MainWindow(QMainWindow):
             self.tab_widget.setTabText(idx, f"{name} ({tab.result.grain_count}g)")
             self._set_status(f"Grain {grain_id} removed. {tab.result.grain_count} grains remain.")
 
-    # ------------------------------------------------------------------ Scale bar
+    # ------------------------------------------------------------------ Calibration
 
-    def auto_detect_scale_bar(self):
-        if not self._image_tabs:
-            QMessageBox.information(self, "No Images", "Load images first.")
+    def open_calibration(self):
+        tab = self._current_tab()
+        if tab is None:
+            QMessageBox.information(self, "No Image", "Open an image first.")
             return
-
-        self._set_status("Auto-detecting scale bar on all images...")
-        found_any = False
-
-        for tab in self._image_tabs:
-            px_per_um, annotated = auto_detect_scale_bar(tab.image_bgr)
-            if px_per_um and px_per_um > 0:
-                # Store annotated version so we can show it
-                tab._annotated_image = annotated
-                found_any = True
-
-        if found_any:
-            # Use the value from the first successful detection
-            for tab in self._image_tabs:
-                px_per_um, _ = auto_detect_scale_bar(tab.image_bgr)
-                if px_per_um and px_per_um > 0:
-                    self._px_per_um = px_per_um
-                    break
-
-            self.settings.set_calibration_label(self._px_per_um)
-
-            # Show annotated images in each tab
-            for i, tab in enumerate(self._image_tabs):
-                ann = getattr(tab, '_annotated_image', None)
-                if ann is not None:
-                    tab.canvas.set_image(ann)
-                    tab.lbl_view.setText("Scale bar detected (highlighted in green)")
-
-            self._set_status(
-                f"Scale bar auto-detected: {self._px_per_um:.4f} px/µm  "
-                f"Applied to all {len(self._image_tabs)} images."
-            )
-        else:
-            # Fallback to manual dialog for first image
-            tab = self._current_tab()
-            if tab:
-                auto_bar, _ = detect_scale_bar_length_px(tab.image_bgr)
-                dlg = CalibrationDialog(
-                    image_bgr=tab.image_bgr,
-                    auto_bar_px=auto_bar,
-                    parent=self
-                )
-                dlg.calibration_set.connect(self._apply_calibration)
-                QMessageBox.information(
-                    self, "Auto-detect failed",
-                    "Could not automatically read the scale bar label.\n\n"
-                    "Please enter the values manually in the dialog.\n"
-                    "(Tip: install pytesseract for better OCR support)"
-                )
-                dlg.exec()
+        dlg = CalibrationDialog(image_bgr=tab.image_bgr, parent=self)
+        dlg.calibration_set.connect(self._apply_calibration)
+        dlg.exec()
 
     def _apply_calibration(self, px_per_um: float):
         self._px_per_um = px_per_um
         self.settings.set_calibration_label(px_per_um)
-        self._set_status(f"Calibration set: {px_per_um:.4f} px/µm — applied to all images.")
+        self._set_status(
+            f"Calibration set: {px_per_um:.4f} px/µm — applied to all {len(self._image_tabs)} images."
+        )
 
     # ------------------------------------------------------------------ Analysis
 
@@ -444,7 +389,22 @@ class MainWindow(QMainWindow):
         if not self._image_tabs:
             QMessageBox.information(self, "No Images", "Open images first.")
             return
+        if self._thread and self._thread.isRunning():
+            QMessageBox.information(self, "Busy", "Analysis already running.")
+            return
+
+        self._cancelled = False
+        names = [os.path.basename(t.image_path) for t in self._image_tabs]
         self._pending_tabs = list(self._image_tabs)
+        self._pending_indices = list(range(len(self._image_tabs)))
+
+        # Show progress dialog
+        self._progress_dlg = AnalysisProgressDialog(names, parent=self)
+        self._progress_dlg.cancelled.connect(self._cancel_analysis)
+        self._progress_dlg.setModal(False)
+        self._progress_dlg.show()
+
+        self.settings.btn_analyze.setEnabled(False)
         self._run_next_pending()
 
     def run_analysis_current(self):
@@ -452,45 +412,61 @@ class MainWindow(QMainWindow):
         if tab is None:
             QMessageBox.information(self, "No Image", "Open an image first.")
             return
+        if self._thread and self._thread.isRunning():
+            QMessageBox.information(self, "Busy", "Analysis already running.")
+            return
+        self._cancelled = False
+        idx = self._image_tabs.index(tab)
         self._pending_tabs = [tab]
+        self._pending_indices = [idx]
+        self._progress_dlg = None  # no dialog for single image
+        self.settings.btn_analyze.setEnabled(False)
         self._run_next_pending()
 
-    def _run_next_pending(self):
-        if not self._pending_tabs:
-            self._set_status(
-                f"All images analysed — "
-                f"{sum(t.result.grain_count for t in self._image_tabs if t.result)} total grains."
-            )
-            self.settings.set_export_enabled(True)
-            return
-        tab = self._pending_tabs.pop(0)
-        self._run_on_tab(tab)
-
-    def _run_on_tab(self, tab: ImageTab):
+    def _cancel_analysis(self):
+        self._cancelled = True
+        self._pending_tabs.clear()
+        self._pending_indices.clear()
         if self._thread and self._thread.isRunning():
-            # Queue and wait
-            self._pending_tabs.insert(0, tab)
+            self._thread.quit()
+        self.settings.btn_analyze.setEnabled(True)
+        self._set_status("Analysis cancelled.")
+
+    def _run_next_pending(self):
+        if self._cancelled:
+            return
+        if not self._pending_tabs:
+            # All done
+            self.settings.btn_analyze.setEnabled(True)
+            self.settings.set_export_enabled(True)
+            total = sum(t.result.grain_count for t in self._image_tabs if t.result)
+            self._set_status(f"All images analysed — {total} total grains.")
+            if self._progress_dlg:
+                self._progress_dlg.all_done()
             return
 
-        params = self.settings.get_params()
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
-        self.settings.btn_analyze.setEnabled(False)
+        tab = self._pending_tabs[0]
+        idx = self._pending_indices[0]
 
-        remaining = len(self._pending_tabs) + 1
+        if self._progress_dlg:
+            self._progress_dlg.mark_running(idx)
+
         total = len(self._image_tabs)
+        done_count = total - len(self._pending_tabs)
         self._set_status(
             f"Analysing {os.path.basename(tab.image_path)} "
-            f"({total - remaining + 1}/{total})..."
+            f"({done_count + 1}/{total})..."
         )
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
 
         self._thread = QThread()
-        self._worker = AnalysisWorker(tab.image_bgr, self._px_per_um, params)
+        self._worker = AnalysisWorker(tab.image_bgr, self._px_per_um, self.settings.get_params())
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self._on_progress)
-        self._worker.finished.connect(lambda r, t=tab: self._on_done(r, t))
-        self._worker.error.connect(self._on_error)
+        self._worker.finished.connect(lambda r, t=tab, i=idx: self._on_done(r, t, i))
+        self._worker.error.connect(lambda msg, i=idx: self._on_error(msg, i))
         self._worker.finished.connect(self._thread.quit)
         self._worker.error.connect(self._thread.quit)
         self._thread.finished.connect(self._cleanup_thread)
@@ -499,16 +475,15 @@ class MainWindow(QMainWindow):
     def _on_progress(self, pct: int, msg: str):
         self.progress_bar.setValue(pct)
         self._set_status(msg)
+        if self._progress_dlg:
+            self._progress_dlg.update_sub_progress(pct, msg)
 
-    def _on_done(self, result: AnalysisResult, tab: ImageTab):
+    def _on_done(self, result: AnalysisResult, tab: ImageTab, tab_idx: int):
         tab.set_result(result)
         self.progress_bar.setVisible(False)
-        self.settings.btn_analyze.setEnabled(True)
-        self.settings.set_export_enabled(True)
 
-        idx = self._image_tabs.index(tab)
         name = os.path.basename(tab.image_path)
-        self.tab_widget.setTabText(idx, f"{name} ({result.grain_count}g)")
+        self.tab_widget.setTabText(tab_idx, f"{name} ({result.grain_count}g)")
 
         if tab == self._current_tab():
             self.results.display_results(result)
@@ -517,13 +492,29 @@ class MainWindow(QMainWindow):
             f"{name}: {result.grain_count} grains"
             + (f", mean {result.mean_area_um2:.3f} µm²" if result.has_calibration else "")
         )
-        self._run_next_pending()
 
-    def _on_error(self, msg: str):
+        if self._progress_dlg:
+            self._progress_dlg.mark_done(tab_idx, result.grain_count)
+
+        # Pop completed item
+        if self._pending_tabs:
+            self._pending_tabs.pop(0)
+        if self._pending_indices:
+            self._pending_indices.pop(0)
+
+        # Small delay before next image to let UI breathe
+        QTimer.singleShot(300, self._run_next_pending)
+
+    def _on_error(self, msg: str, tab_idx: int):
         self.progress_bar.setVisible(False)
-        self.settings.btn_analyze.setEnabled(True)
+        if self._progress_dlg:
+            self._progress_dlg.mark_error(tab_idx)
         QMessageBox.critical(self, "Analysis Error", msg)
-        self._run_next_pending()
+        if self._pending_tabs:
+            self._pending_tabs.pop(0)
+        if self._pending_indices:
+            self._pending_indices.pop(0)
+        QTimer.singleShot(300, self._run_next_pending)
 
     def _cleanup_thread(self):
         if self._thread:
@@ -540,11 +531,9 @@ class MainWindow(QMainWindow):
         if not analysed:
             QMessageBox.information(self, "No Results", "Run analysis first.")
             return
-
         if len(analysed) == 1:
             self.export_current_excel()
             return
-
         path, _ = QFileDialog.getSaveFileName(
             self, "Save Combined Excel Report",
             "all_images_grains.xlsx", "Excel Files (*.xlsx)"
@@ -607,12 +596,12 @@ class MainWindow(QMainWindow):
     def _show_about(self):
         QMessageBox.about(
             self, "About SEM Grain Analyzer",
-            "<h2>SEM Grain Analyzer v1.1</h2>"
+            "<h2>SEM Grain Analyzer v1.2</h2>"
             "<p>Multi-image SEM grain analysis tool.</p>"
             "<ul>"
             "<li>Open multiple images at once (hold Ctrl)</li>"
-            "<li>Auto-detect scale bar from image</li>"
-            "<li>Analyze all images simultaneously</li>"
+            "<li>Set scale bar by clicking 2 points on image</li>"
+            "<li>Analyze all images with progress window</li>"
             "<li>Click a grain → press Delete to remove it</li>"
             "<li>Export combined Excel report</li>"
             "</ul>"
