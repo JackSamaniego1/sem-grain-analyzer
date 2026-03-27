@@ -1,9 +1,5 @@
 """
-Calibration Dialog
-==================
-User clicks TWO points on the scale bar in the image,
-then types the real-world distance → computes px/µm.
-Applies to ALL open images.
+Calibration Dialog - with zoom/pan for accurate 2-point clicking
 """
 
 import cv2
@@ -11,11 +7,13 @@ import numpy as np
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QDoubleSpinBox, QComboBox, QGroupBox, QScrollArea, QSizePolicy,
-    QWidget, QMessageBox
+    QDoubleSpinBox, QComboBox, QGroupBox, QSizePolicy,
+    QWidget, QMessageBox, QScrollBar
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPoint
-from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QImage, QCursor
+from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QPointF
+from PyQt6.QtGui import (
+    QPixmap, QPainter, QPen, QColor, QImage, QCursor, QWheelEvent
+)
 
 
 def _bgr_to_qpixmap(arr: np.ndarray) -> QPixmap:
@@ -25,83 +23,175 @@ def _bgr_to_qpixmap(arr: np.ndarray) -> QPixmap:
     return QPixmap.fromImage(qi)
 
 
-class ClickableImageLabel(QLabel):
-    """Label that emits image-pixel coordinates on click."""
-    point_clicked = pyqtSignal(int, int)  # image x, image y
+class ZoomableCalibCanvas(QWidget):
+    """
+    Zoomable, pannable canvas for picking 2 calibration points.
+    Scroll wheel to zoom, middle-click or Alt+drag to pan.
+    Left-click to place points (max 2).
+    """
+    point_placed = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._orig_pixmap = None
-        self._scale = 1.0
-        self._points = []          # list of (ix, iy) image coords
+        self._orig_pixmap: QPixmap | None = None
+        self._zoom = 1.0
+        self._pan_offset = QPointF(0, 0)
+        self._pan_start = QPoint()
+        self._is_panning = False
+        self._points: list[tuple[int, int]] = []   # image coords
+        self.setMinimumSize(700, 440)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
-    def set_pixmap_scaled(self, pix: QPixmap, max_w: int, max_h: int):
-        self._orig_pixmap = pix
-        self._scale = min(max_w / pix.width(), max_h / pix.height(), 1.0)
-        self._redraw()
-
-    def _redraw(self):
-        if self._orig_pixmap is None:
-            return
-        sw = int(self._orig_pixmap.width() * self._scale)
-        sh = int(self._orig_pixmap.height() * self._scale)
-        pix = self._orig_pixmap.scaled(sw, sh,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation)
-
-        painter = QPainter(pix)
-        for i, (ix, iy) in enumerate(self._points):
-            wx = int(ix * self._scale)
-            wy = int(iy * self._scale)
-            color = QColor(255, 80, 80) if i == 0 else QColor(80, 255, 80)
-            pen = QPen(color, 2)
-            painter.setPen(pen)
-            painter.drawEllipse(wx - 8, wy - 8, 16, 16)
-            painter.drawLine(wx - 12, wy, wx + 12, wy)
-            painter.drawLine(wx, wy - 12, wx, wy + 12)
-            painter.setPen(QPen(color, 1))
-            painter.drawText(wx + 10, wy - 6, f"P{i+1}")
-
-        if len(self._points) == 2:
-            x1 = int(self._points[0][0] * self._scale)
-            y1 = int(self._points[0][1] * self._scale)
-            x2 = int(self._points[1][0] * self._scale)
-            y2 = int(self._points[1][1] * self._scale)
-            painter.setPen(QPen(QColor(255, 220, 0), 2, Qt.PenStyle.DashLine))
-            painter.drawLine(x1, y1, x2, y2)
-
-        painter.end()
-        self.setPixmap(pix)
-
-    def mousePressEvent(self, event):
-        if self._orig_pixmap is None:
-            return
-        if event.button() == Qt.MouseButton.LeftButton and len(self._points) < 2:
-            lw, lh = self.width(), self.height()
-            sw = int(self._orig_pixmap.width() * self._scale)
-            sh = int(self._orig_pixmap.height() * self._scale)
-            ox = (lw - sw) // 2
-            oy = (lh - sh) // 2
-            wx = event.pos().x() - ox
-            wy = event.pos().y() - oy
-            if 0 <= wx < sw and 0 <= wy < sh:
-                ix = int(wx / self._scale)
-                iy = int(wy / self._scale)
-                self._points.append((ix, iy))
-                self._redraw()
-                self.point_clicked.emit(ix, iy)
+    def set_image(self, arr: np.ndarray):
+        self._orig_pixmap = _bgr_to_qpixmap(arr)
+        # Fit to widget initially
+        if self._orig_pixmap.width() > 0:
+            self._zoom = min(
+                self.width()  / self._orig_pixmap.width(),
+                self.height() / self._orig_pixmap.height(),
+                1.0
+            )
+        self._pan_offset = QPointF(0, 0)
+        self._points = []
+        self.update()
 
     def reset_points(self):
         self._points = []
-        self._redraw()
+        self.update()
 
     def pixel_distance(self) -> float | None:
         if len(self._points) < 2:
             return None
         dx = self._points[1][0] - self._points[0][0]
         dy = self._points[1][1] - self._points[0][1]
-        return float(np.sqrt(dx*dx + dy*dy))
+        return float(np.sqrt(dx * dx + dy * dy))
+
+    def point_count(self) -> int:
+        return len(self._points)
+
+    # ---- coordinate helpers ----
+
+    def _img_origin(self) -> QPointF:
+        """Top-left corner of the image in widget coords."""
+        if self._orig_pixmap is None:
+            return QPointF(0, 0)
+        pw = self._orig_pixmap.width()  * self._zoom
+        ph = self._orig_pixmap.height() * self._zoom
+        ox = (self.width()  - pw) / 2 + self._pan_offset.x()
+        oy = (self.height() - ph) / 2 + self._pan_offset.y()
+        return QPointF(ox, oy)
+
+    def _widget_to_image(self, wx: float, wy: float) -> tuple[int, int] | None:
+        if self._orig_pixmap is None:
+            return None
+        o = self._img_origin()
+        ix = (wx - o.x()) / self._zoom
+        iy = (wy - o.y()) / self._zoom
+        if 0 <= ix < self._orig_pixmap.width() and 0 <= iy < self._orig_pixmap.height():
+            return int(ix), int(iy)
+        return None
+
+    def _image_to_widget(self, ix: int, iy: int) -> QPointF:
+        o = self._img_origin()
+        return QPointF(o.x() + ix * self._zoom, o.y() + iy * self._zoom)
+
+    # ---- painting ----
+
+    def paintEvent(self, event):
+        if self._orig_pixmap is None:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.fillRect(self.rect(), QColor(20, 20, 26))
+
+        o = self._img_origin()
+        pw = int(self._orig_pixmap.width()  * self._zoom)
+        ph = int(self._orig_pixmap.height() * self._zoom)
+        painter.drawPixmap(int(o.x()), int(o.y()), pw, ph, self._orig_pixmap)
+
+        # Draw crosshairs at each point
+        colors = [QColor(255, 80, 80), QColor(80, 255, 80)]
+        for i, (ix, iy) in enumerate(self._points):
+            wp = self._image_to_widget(ix, iy)
+            wx, wy = int(wp.x()), int(wp.y())
+            c = colors[i]
+            painter.setPen(QPen(c, 2))
+            r = 10
+            painter.drawEllipse(wx - r, wy - r, r * 2, r * 2)
+            painter.drawLine(wx - r - 4, wy, wx + r + 4, wy)
+            painter.drawLine(wx, wy - r - 4, wx, wy + r + 4)
+            painter.setPen(QPen(c, 1))
+            painter.drawText(wx + 14, wy - 6, f"P{i+1} ({ix}, {iy})")
+
+        # Line between points
+        if len(self._points) == 2:
+            p1 = self._image_to_widget(*self._points[0])
+            p2 = self._image_to_widget(*self._points[1])
+            painter.setPen(QPen(QColor(255, 220, 0), 2, Qt.PenStyle.DashLine))
+            painter.drawLine(p1.toPoint(), p2.toPoint())
+            d = self.pixel_distance()
+            mid = QPointF((p1.x() + p2.x()) / 2, (p1.y() + p2.y()) / 2)
+            painter.setPen(QPen(QColor(255, 220, 0), 1))
+            painter.drawText(int(mid.x()) + 6, int(mid.y()) - 6, f"{d:.1f} px")
+
+        # Zoom level indicator
+        painter.setPen(QPen(QColor(150, 150, 180), 1))
+        painter.drawText(8, self.height() - 8, f"Zoom: {self._zoom*100:.0f}%  |  Scroll to zoom  |  Alt+drag to pan")
+
+    # ---- interaction ----
+
+    def wheelEvent(self, event: QWheelEvent):
+        factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
+        # Zoom around mouse position
+        mouse_pos = event.position()
+        o = self._img_origin()
+        # image coord under mouse before zoom
+        ix_before = (mouse_pos.x() - o.x()) / self._zoom
+        iy_before = (mouse_pos.y() - o.y()) / self._zoom
+
+        self._zoom = max(0.1, min(self._zoom * factor, 20.0))
+
+        # Adjust pan so the same image point stays under the mouse
+        new_ox = mouse_pos.x() - ix_before * self._zoom
+        new_oy = mouse_pos.y() - iy_before * self._zoom
+        if self._orig_pixmap:
+            pw = self._orig_pixmap.width()  * self._zoom
+            ph = self._orig_pixmap.height() * self._zoom
+            center_ox = (self.width()  - pw) / 2
+            center_oy = (self.height() - ph) / 2
+            self._pan_offset = QPointF(new_ox - center_ox, new_oy - center_oy)
+        self.update()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.MiddleButton or \
+           (event.button() == Qt.MouseButton.LeftButton and
+                event.modifiers() == Qt.KeyboardModifier.AltModifier):
+            self._is_panning = True
+            self._pan_start = event.pos() - self._pan_offset.toPoint()
+            self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
+
+        elif event.button() == Qt.MouseButton.LeftButton:
+            if len(self._points) >= 2:
+                return
+            coords = self._widget_to_image(event.pos().x(), event.pos().y())
+            if coords:
+                self._points.append(coords)
+                self.update()
+                self.point_placed.emit()
+
+    def mouseMoveEvent(self, event):
+        if self._is_panning:
+            self._pan_offset = QPointF(event.pos() - self._pan_start)
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        self._is_panning = False
+        self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
 
 
 class CalibrationDialog(QDialog):
@@ -109,43 +199,36 @@ class CalibrationDialog(QDialog):
 
     def __init__(self, image_bgr: np.ndarray, auto_bar_px=None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Set Scale Bar — Click 2 Points")
-        self.setMinimumSize(820, 620)
-        self.resize(900, 680)
+        self.setWindowTitle("Set Scale Bar — Scroll to zoom, click 2 points")
+        self.setMinimumSize(860, 660)
+        self.resize(960, 720)
         self._image_bgr = image_bgr
-        self._px_distance = None
+        self._px_distance: float | None = None
         self._build_ui()
 
     def _build_ui(self):
-        main_lay = QVBoxLayout(self)
-        main_lay.setSpacing(10)
+        lay = QVBoxLayout(self)
+        lay.setSpacing(8)
 
-        # Instructions
         inst = QLabel(
-            "Step 1: Click the START of the scale bar line on the image below.\n"
-            "Step 2: Click the END of the scale bar line.\n"
-            "Step 3: Enter the real-world length shown on the scale bar label, then click Apply."
+            "🔍  Scroll wheel to zoom in for precision.  Alt+drag to pan.\n"
+            "① Click the LEFT end of the scale bar line.  "
+            "② Click the RIGHT end.  "
+            "③ Enter the real-world length shown on the label → Apply."
         )
-        inst.setStyleSheet("color: #ccccee; font-size: 12px; padding: 6px;")
+        inst.setStyleSheet("color: #ccccee; font-size: 12px; padding: 6px; "
+                           "background: #1e1e2e; border-radius: 4px;")
         inst.setWordWrap(True)
-        main_lay.addWidget(inst)
+        lay.addWidget(inst)
 
-        # Image area
-        self.img_label = ClickableImageLabel()
-        self.img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.img_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.img_label.point_clicked.connect(self._on_point_clicked)
+        # Zoomable canvas
+        self.canvas = ZoomableCalibCanvas()
+        self.canvas.set_image(self._image_bgr)
+        self.canvas.point_placed.connect(self._on_point_placed)
+        lay.addWidget(self.canvas, 1)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self.img_label)
-        main_lay.addWidget(scroll, 1)
-
-        pix = _bgr_to_qpixmap(self._image_bgr)
-        self.img_label.set_pixmap_scaled(pix, 860, 460)
-
-        # Controls row
-        ctrl_group = QGroupBox("Scale Bar Measurement")
+        # Controls
+        ctrl_group = QGroupBox("Measurement")
         ctrl_lay = QHBoxLayout(ctrl_group)
         ctrl_lay.setSpacing(12)
 
@@ -158,29 +241,28 @@ class CalibrationDialog(QDialog):
         ctrl_lay.addWidget(QLabel("Real-world length:"))
         self.length_spin = QDoubleSpinBox()
         self.length_spin.setRange(0.001, 100000.0)
-        self.length_spin.setValue(1.0)
+        self.length_spin.setValue(50.0)
         self.length_spin.setDecimals(3)
-        self.length_spin.setSingleStep(0.1)
-        self.length_spin.setFixedWidth(100)
+        self.length_spin.setSingleStep(1.0)
+        self.length_spin.setFixedWidth(110)
         ctrl_lay.addWidget(self.length_spin)
 
         self.unit_combo = QComboBox()
         self.unit_combo.addItems(["µm", "nm", "mm"])
-        self.unit_combo.setFixedWidth(60)
+        self.unit_combo.setFixedWidth(64)
         ctrl_lay.addWidget(self.unit_combo)
 
         self.lbl_result = QLabel("px/µm:  —")
-        self.lbl_result.setStyleSheet("color: #00c8ff; font-size: 12px; font-weight: bold;")
+        self.lbl_result.setStyleSheet("color: #00c8ff; font-size: 13px; font-weight: bold;")
         ctrl_lay.addWidget(self.lbl_result)
 
         self.length_spin.valueChanged.connect(self._update_result)
         self.unit_combo.currentIndexChanged.connect(self._update_result)
 
-        main_lay.addWidget(ctrl_group)
+        lay.addWidget(ctrl_group)
 
         # Buttons
         btn_row = QHBoxLayout()
-
         self.btn_reset = QPushButton("↺  Reset Points")
         self.btn_reset.clicked.connect(self._reset)
         btn_row.addWidget(self.btn_reset)
@@ -198,38 +280,36 @@ class CalibrationDialog(QDialog):
         self.btn_apply.clicked.connect(self._apply)
         btn_row.addWidget(self.btn_apply)
 
-        main_lay.addLayout(btn_row)
+        lay.addLayout(btn_row)
 
-    def _on_point_clicked(self, ix: int, iy: int):
-        d = self.img_label.pixel_distance()
+    def _on_point_placed(self):
+        n = self.canvas.point_count()
+        d = self.canvas.pixel_distance()
         if d is not None:
             self._px_distance = d
             self.lbl_dist.setText(f"Pixel distance:  {d:.1f} px")
             self.btn_apply.setEnabled(True)
             self._update_result()
         else:
-            pts = len(self.img_label._points)
-            self.lbl_dist.setText(f"Point {pts} set — click point {pts+1}")
+            self.lbl_dist.setText(f"Point {n} placed — click point {n+1}")
 
     def _update_result(self):
         if self._px_distance is None:
             return
         length = self.length_spin.value()
         unit = self.unit_combo.currentText()
-        # Convert to microns
         if unit == "nm":
             length_um = length / 1000.0
         elif unit == "mm":
             length_um = length * 1000.0
         else:
             length_um = length
-
         if length_um > 0:
             px_per_um = self._px_distance / length_um
             self.lbl_result.setText(f"px/µm:  {px_per_um:.4f}")
 
     def _reset(self):
-        self.img_label.reset_points()
+        self.canvas.reset_points()
         self._px_distance = None
         self.lbl_dist.setText("Pixel distance:  — px")
         self.lbl_result.setText("px/µm:  —")
@@ -237,7 +317,7 @@ class CalibrationDialog(QDialog):
 
     def _apply(self):
         if self._px_distance is None:
-            QMessageBox.warning(self, "No measurement", "Please click 2 points on the scale bar first.")
+            QMessageBox.warning(self, "No measurement", "Please click 2 points first.")
             return
         length = self.length_spin.value()
         unit = self.unit_combo.currentText()
@@ -248,7 +328,7 @@ class CalibrationDialog(QDialog):
         else:
             length_um = length
         if length_um <= 0:
-            QMessageBox.warning(self, "Invalid length", "Length must be greater than 0.")
+            QMessageBox.warning(self, "Invalid", "Length must be > 0.")
             return
         px_per_um = self._px_distance / length_um
         self.calibration_set.emit(px_per_um)
