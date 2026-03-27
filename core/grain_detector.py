@@ -234,12 +234,15 @@ class GrainDetector:
         progress(12, "Adaptive denoising...")
         if texture_ratio > 3.5:
             bl = cv2.bilateralFilter(enhanced, d=5, sigmaColor=30, sigmaSpace=5)
+            bl_med = cv2.bilateralFilter(enhanced, d=9, sigmaColor=40, sigmaSpace=9)
             bl_heavy = cv2.bilateralFilter(enhanced, d=15, sigmaColor=50, sigmaSpace=15)
         else:
             bl = cv2.bilateralFilter(enhanced, d=9, sigmaColor=40, sigmaSpace=9)
+            bl_med = cv2.bilateralFilter(enhanced, d=15, sigmaColor=50, sigmaSpace=15)
             bl_heavy = cv2.bilateralFilter(enhanced, d=25, sigmaColor=60, sigmaSpace=25)
 
         bf = bl.astype(np.float32) / 255.0
+        bf_m = bl_med.astype(np.float32) / 255.0
         bf_h = bl_heavy.astype(np.float32) / 255.0
 
         # ---- PASS 1: Contrast-only boundary signals ----
@@ -263,11 +266,16 @@ class GrainDetector:
                 cv2.GaussianBlur(df, (ks, ks), ks / 4.0) - df, 0, None)
         dark /= max(dark.max(), 1e-6)
 
-        # Step change on heavy bilateral
-        gx_s = cv2.Sobel(bf_h, cv2.CV_32F, 1, 0, ksize=5)
-        gy_s = cv2.Sobel(bf_h, cv2.CV_32F, 0, 1, ksize=5)
-        step = np.sqrt(gx_s ** 2 + gy_s ** 2)
-        step /= max(step.max(), 1e-6)
+        # Multi-scale step change: medium + heavy bilateral
+        # Medium catches moderate contrast; heavy catches broad transitions
+        step_scores = np.zeros_like(bf)
+        for bf_scale in [bf_m, bf_h]:
+            gx_s = cv2.Sobel(bf_scale, cv2.CV_32F, 1, 0, ksize=5)
+            gy_s = cv2.Sobel(bf_scale, cv2.CV_32F, 0, 1, ksize=5)
+            s = np.sqrt(gx_s ** 2 + gy_s ** 2)
+            s /= max(s.max(), 1e-6)
+            step_scores = np.maximum(step_scores, s)
+        step = step_scores
 
         # Gradient
         gx = cv2.Sobel(bf, cv2.CV_32F, 1, 0, ksize=5)
@@ -276,8 +284,9 @@ class GrainDetector:
         grad /= max(grad.max(), 1e-6)
 
         progress(30, "Building contrast boundary map...")
-        contrast_combo = (0.25 * dog + 0.20 * nlap + 0.20 * dark +
-                          0.20 * step + 0.15 * grad)
+        # Increased step weight from 0.20 to 0.25, reduced grad from 0.15 to 0.10
+        contrast_combo = (0.25 * dog + 0.15 * nlap + 0.20 * dark +
+                          0.30 * step + 0.10 * grad)
         contrast_combo /= max(contrast_combo.max(), 1e-6)
 
         # Sensitivity boost
