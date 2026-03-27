@@ -1,21 +1,32 @@
 """
-Grain Detection Engine v2.0
+Grain Detection Engine v2.1
 ============================
-Major upgrade: multi-strategy detection for SEM grain images.
+BOUNDARY-FIRST paradigm for SEM polycrystalline grain images.
 
-Problems with v1.3:
-  - Single global Otsu threshold misses grains whose brightness is close
-    to the background (low-contrast grains appear as "background")
-  - Touching grains with subtle boundaries merge into blobs
-  - Edge carving is too aggressive or too timid depending on image
+Why previous approaches failed:
+  - Otsu/adaptive thresholding assumes "bright grains on dark background"
+  - But SEM grain images are a MOSAIC — the entire image is grains
+  - Grains vary in brightness due to crystallographic orientation
+  - The only consistent signal is the thin DARK BOUNDARY GROOVES between grains
 
-New approach (v2.0):
-  1. GRADIENT MAGNITUDE map — detects ALL edges regardless of absolute brightness
-  2. ADAPTIVE (local) thresholding — catches grains at every contrast level
-  3. MULTI-SCALE boundary detection — combines fine and coarse edge signals
-  4. MARKER-CONTROLLED WATERSHED on gradient — splits touching grains at their
-     true boundary lines rather than arbitrary distance-based cuts
-  5. Optional CLAHE preprocessing to boost local contrast before detection
+New paradigm:
+  1. Find the BOUNDARY NETWORK (dark grooves between grains)
+  2. Make boundaries into a connected skeleton
+  3. Everything BETWEEN boundaries = a separate grain
+  4. Use watershed on gradient to refine where boundaries are ambiguous
+
+The pipeline:
+  STEP 1: Preprocess (CLAHE + denoise)
+  STEP 2: Multi-strategy boundary detection:
+          a) Local darkness (pixels darker than their neighborhood)
+          b) Multi-scale gradient magnitude (edges at any contrast)
+          c) Morphological gradient (dilation - erosion)
+          d) Ridge/valley filter (Hessian-based dark line detector)
+  STEP 3: Fuse boundary votes + close gaps via morphology
+  STEP 4: Thin to 1px skeleton
+  STEP 5: Label connected regions (grains) between boundary lines
+  STEP 6: Watershed refinement on gradient to fix leaks
+  STEP 7: Filter by size, measure properties
 """
 
 import numpy as np
@@ -23,8 +34,11 @@ import cv2
 from scipy import ndimage as ndi
 from skimage.segmentation import watershed
 from skimage.feature import peak_local_max
-from skimage.measure import regionprops, label as sk_label
-from skimage.morphology import remove_small_objects, disk, erosion, dilation
+from skimage.measure import regionprops
+from skimage.morphology import (
+    remove_small_objects, skeletonize, remove_small_holes,
+    disk, square
+)
 from skimage.filters import threshold_otsu, gaussian, sobel
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
@@ -32,6 +46,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+# ======================================================================
+# Data classes (unchanged interface — compatible with rest of codebase)
+# ======================================================================
 
 @dataclass
 class GrainResult:
@@ -86,13 +104,19 @@ class DetectionParams:
     morph_close_size: int = 3
     morph_open_size: int = 2
     edge_sensitivity: float = 1.0
-    # --- v2.0 new params ---
-    use_adaptive: bool = True           # Use adaptive (local) thresholding
-    adaptive_block_size: int = 0        # 0 = auto-calculate from image size
-    use_clahe: bool = True              # CLAHE contrast enhancement
-    clahe_clip_limit: float = 2.0       # CLAHE clip limit (higher = more contrast)
-    boundary_weight: float = 0.5        # How much gradient boundaries influence watershed (0-1)
+    # --- v2.0+ params ---
+    use_adaptive: bool = True
+    adaptive_block_size: int = 0
+    use_clahe: bool = True
+    clahe_clip_limit: float = 2.0
+    boundary_weight: float = 0.5
+    # --- v2.1 boundary-first params ---
+    detection_mode: str = "auto"  # "auto", "boundary", "threshold"
 
+
+# ======================================================================
+# Main detector class
+# ======================================================================
 
 class GrainDetector:
 
@@ -109,76 +133,38 @@ class GrainDetector:
             if progress_callback:
                 progress_callback(pct, msg)
 
-        progress(2, "Preprocessing image...")
+        progress(2, "Preprocessing...")
         gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
         h, w = gray.shape
 
-        # ========== STAGE 1: Preprocessing ==========
-        progress(5, "Enhancing contrast (CLAHE)...")
-        if params.use_clahe:
-            enhanced = self._apply_clahe(gray, params.clahe_clip_limit)
+        # Decide which mode to use
+        mode = params.detection_mode
+        if mode == "auto":
+            mode = self._auto_detect_mode(gray)
+            logger.info(f"Auto-detected mode: {mode}")
+
+        if mode == "boundary":
+            labels, binary = self._boundary_first_pipeline(
+                gray, image_bgr, params, progress
+            )
         else:
-            enhanced = gray.copy()
+            labels, binary = self._threshold_pipeline(
+                gray, image_bgr, params, progress
+            )
 
-        # Apply blur
-        if params.blur_sigma > 0:
-            enhanced_blur = cv2.GaussianBlur(enhanced, (0, 0), params.blur_sigma)
-        else:
-            enhanced_blur = enhanced
-
-        # ========== STAGE 2: Multi-strategy grain mask ==========
-        progress(10, "Computing gradient map...")
-        gradient = self._compute_gradient(enhanced_blur)
-
-        progress(18, "Adaptive thresholding...")
-        if params.use_adaptive:
-            mask_adaptive = self._adaptive_threshold(enhanced_blur, params)
-        else:
-            mask_adaptive = None
-
-        progress(25, "Global thresholding (Otsu)...")
-        mask_otsu = self._otsu_threshold(enhanced_blur, params)
-
-        progress(30, "Combining detection strategies...")
-        binary = self._combine_masks(mask_otsu, mask_adaptive, gradient, params)
-
-        # ========== STAGE 3: Morphological cleanup ==========
-        progress(38, "Morphological cleanup...")
-        binary = self._morphological_cleanup(binary, params)
-
-        # ========== STAGE 4: Boundary carving ==========
-        progress(45, "Detecting grain boundaries...")
-        boundary_mask = self._detect_boundaries_v2(gray, enhanced_blur, gradient, params)
-        if boundary_mask is not None:
-            binary[boundary_mask > 0] = 0
-
-        binary_bool = binary.astype(bool)
         result.binary_image = binary
 
-        # ========== STAGE 5: Remove debris ==========
-        progress(50, "Removing debris...")
-        if params.min_grain_size_px > 0:
-            binary_bool = remove_small_objects(binary_bool, min_size=params.min_grain_size_px)
-
-        # ========== STAGE 6: Watershed segmentation ==========
-        progress(58, "Watershed segmentation...")
-        if params.use_watershed:
-            labels = self._watershed_on_gradient(binary_bool, gradient, params, boundary_mask)
-        else:
-            labels, _ = ndi.label(binary_bool)
-
-        # ========== STAGE 7: Measure grains ==========
-        progress(70, "Measuring grain properties...")
+        # ---- Measure grains ----
+        progress(75, "Measuring grain properties...")
         grains = self._measure_grains(labels, params, px_per_um)
 
-        # ========== STAGE 8: Statistics ==========
-        progress(82, "Computing statistics...")
+        progress(85, "Computing statistics...")
         result.grains = grains
         result.grain_count = len(grains)
         result.label_image = labels
         result = self._compute_statistics(result, image_bgr)
 
-        progress(90, "Generating overlay...")
+        progress(92, "Generating overlay...")
         result.overlay_image = self._draw_overlay(image_bgr, labels, grains)
 
         progress(100, f"Complete — {result.grain_count} grains detected.")
@@ -186,304 +172,513 @@ class GrainDetector:
         return result
 
     # ==================================================================
-    # STAGE 1: Preprocessing
+    # Auto-detect: is this a "grains on background" or "mosaic" image?
     # ==================================================================
 
-    def _apply_clahe(self, gray: np.ndarray, clip_limit: float) -> np.ndarray:
+    def _auto_detect_mode(self, gray: np.ndarray) -> str:
         """
-        CLAHE (Contrast Limited Adaptive Histogram Equalization).
-        Boosts local contrast so low-contrast grains become visible
-        without blowing out already-bright areas.
+        Determine if the image is:
+        - "threshold" mode: distinct grains on a different-colored background
+          (e.g. bright grains on dark, or dark grains on bright)
+        - "boundary" mode: grains cover the entire field of view as a mosaic
+          separated only by thin boundary grooves
+
+        Heuristic: compute Otsu threshold, check what fraction of pixels
+        fall in each class. If it's very lopsided (>80% one class),
+        it's a mosaic — use boundary mode.
         """
-        clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
-        return clahe.apply(gray)
+        gray_f = gray.astype(np.float64) / 255.0
+        blurred = gaussian(gray_f, sigma=2.0)
+        thresh = threshold_otsu(blurred)
+        fg_frac = np.mean(blurred > thresh)
+        # If one class dominates, it's a mosaic
+        balance = min(fg_frac, 1.0 - fg_frac)
+        logger.info(f"Auto-detect: Otsu balance = {balance:.3f} (fg={fg_frac:.3f})")
+        if balance < 0.20:
+            # Very lopsided — one class >80%. Classic foreground/background.
+            return "threshold"
+        else:
+            # Roughly balanced or nearly all one class with subtle variation
+            # → mosaic grain image, use boundary detection
+            return "boundary"
 
     # ==================================================================
-    # STAGE 2: Multi-strategy mask generation
+    # PIPELINE A: Boundary-first (for mosaic grain images)
     # ==================================================================
 
-    def _compute_gradient(self, gray: np.ndarray) -> np.ndarray:
+    def _boundary_first_pipeline(self, gray, image_bgr, params, progress):
         """
-        Multi-scale gradient magnitude map.
-        This finds ALL edges regardless of whether grains are bright or dark.
-        Uses Sobel at multiple kernel sizes and combines them.
-        """
-        gray_f = gray.astype(np.float32) / 255.0
-
-        # Fine scale (3x3) — catches thin boundary lines
-        gx3 = cv2.Sobel(gray_f, cv2.CV_32F, 1, 0, ksize=3)
-        gy3 = cv2.Sobel(gray_f, cv2.CV_32F, 0, 1, ksize=3)
-        mag3 = np.sqrt(gx3**2 + gy3**2)
-
-        # Medium scale (5x5) — catches broader gradients
-        gx5 = cv2.Sobel(gray_f, cv2.CV_32F, 1, 0, ksize=5)
-        gy5 = cv2.Sobel(gray_f, cv2.CV_32F, 0, 1, ksize=5)
-        mag5 = np.sqrt(gx5**2 + gy5**2)
-
-        # Combine: weight fine edges more heavily
-        combined = 0.6 * mag3 + 0.4 * mag5
-        # Normalize to 0-1
-        cmax = combined.max()
-        if cmax > 0:
-            combined = combined / cmax
-
-        return combined
-
-    def _adaptive_threshold(self, gray: np.ndarray, params: DetectionParams) -> np.ndarray:
-        """
-        Adaptive (local) thresholding — the key improvement.
-        Instead of one global threshold, each pixel is compared against
-        the mean of its local neighborhood. This catches grains that are
-        only slightly different from their local background.
+        Detect grains by finding the BOUNDARY NETWORK first.
+        This is the correct approach when grains fill the entire FOV.
         """
         h, w = gray.shape
 
-        # Auto block size: ~1/15th of smallest dimension, must be odd and >= 11
-        if params.adaptive_block_size > 0:
-            block = params.adaptive_block_size
+        # ---- Step 1: Preprocess ----
+        progress(5, "Enhancing contrast (CLAHE)...")
+        if params.use_clahe:
+            clahe = cv2.createCLAHE(
+                clipLimit=params.clahe_clip_limit, tileGridSize=(8, 8)
+            )
+            enhanced = clahe.apply(gray)
         else:
-            block = max(11, int(min(h, w) / 15))
-            if block % 2 == 0:
-                block += 1
+            enhanced = gray.copy()
 
-        # Offset: positive C means we need MORE difference from local mean
-        # Negative threshold_offset -> detect more (lower the bar)
-        c_value = 5 + int(params.threshold_offset * 30)
-
-        if params.dark_grains:
-            method = cv2.ADAPTIVE_THRESH_MEAN_C
-            thresh_type = cv2.THRESH_BINARY_INV
-        else:
-            method = cv2.ADAPTIVE_THRESH_MEAN_C
-            thresh_type = cv2.THRESH_BINARY
-
-        adaptive = cv2.adaptiveThreshold(
-            gray, 255, method, thresh_type, block, c_value
-        )
-        return adaptive
-
-    def _otsu_threshold(self, gray: np.ndarray, params: DetectionParams) -> np.ndarray:
-        """Classic Otsu thresholding (kept as one signal among several)."""
-        gray_float = gray.astype(np.float64) / 255.0
+        # Light denoise to suppress texture noise but keep boundary grooves
         if params.blur_sigma > 0:
-            blurred = gaussian(gray_float, sigma=params.blur_sigma)
+            denoised = cv2.GaussianBlur(enhanced, (0, 0), params.blur_sigma)
         else:
-            blurred = gray_float
+            denoised = enhanced
+        denoised_f = denoised.astype(np.float32) / 255.0
 
-        thresh_val = threshold_otsu(blurred)
+        # ---- Step 2: Multi-strategy boundary detection ----
+        progress(12, "Detecting boundaries: local darkness...")
+        dark_score = self._detect_dark_valleys(denoised, params)
+
+        progress(20, "Detecting boundaries: gradient magnitude...")
+        grad_score = self._detect_gradient_boundaries(denoised_f, params)
+
+        progress(28, "Detecting boundaries: morphological edges...")
+        morph_score = self._detect_morph_gradient(denoised, params)
+
+        progress(35, "Detecting boundaries: ridge filter...")
+        ridge_score = self._detect_ridges(denoised_f, params)
+
+        # ---- Step 3: Fuse boundary signals ----
+        progress(42, "Fusing boundary signals...")
+        boundary_map = self._fuse_boundary_signals(
+            dark_score, grad_score, morph_score, ridge_score, params
+        )
+
+        # ---- Step 4: Create closed boundary network ----
+        progress(50, "Closing boundary gaps...")
+        boundary_binary = self._close_boundary_gaps(boundary_map, params)
+
+        # Binary image: 1 = grain interior, 0 = boundary
+        grain_mask = (boundary_binary == 0).astype(np.uint8)
+
+        # ---- Step 5: Label grains between boundaries ----
+        progress(57, "Labeling grain regions...")
+        labels, _ = ndi.label(grain_mask)
+
+        # Remove tiny fragments (noise between close boundaries)
+        progress(62, "Removing fragments...")
+        min_sz = max(params.min_grain_size_px, 20)
+        for region in regionprops(labels):
+            if region.area < min_sz:
+                labels[labels == region.label] = 0
+
+        # ---- Step 6: Watershed refinement ----
+        progress(67, "Watershed refinement on gradient...")
+        if params.use_watershed:
+            labels = self._watershed_refine_on_gradient(
+                labels, grain_mask, denoised_f, boundary_map, params
+            )
+
+        # Re-filter after watershed
+        for region in regionprops(labels):
+            if region.area < min_sz:
+                labels[labels == region.label] = 0
+            if params.max_grain_size_px > 0 and region.area > params.max_grain_size_px:
+                labels[labels == region.label] = 0
+
+        # Relabel consecutively
+        unique = np.unique(labels)
+        unique = unique[unique > 0]
+        new_labels = np.zeros_like(labels)
+        for i, lbl in enumerate(unique, 1):
+            new_labels[labels == lbl] = i
+        labels = new_labels
+
+        return labels, grain_mask * 255
+
+    # ------------------------------------------------------------------
+    # Boundary detection sub-strategies
+    # ------------------------------------------------------------------
+
+    def _detect_dark_valleys(self, gray: np.ndarray,
+                             params: DetectionParams) -> np.ndarray:
+        """
+        Find pixels that are darker than their local neighborhood.
+        Grain boundaries in SEM are typically dark grooves.
+        Returns float score 0-1 (higher = more likely boundary).
+        """
+        gray_f = gray.astype(np.float32)
+
+        # Multi-scale local mean comparison
+        scores = np.zeros_like(gray_f)
+        for ksize in [11, 21, 41]:
+            local_mean = cv2.GaussianBlur(gray_f, (ksize, ksize), ksize / 4.0)
+            diff = local_mean - gray_f  # positive = pixel darker than neighborhood
+            diff = np.clip(diff, 0, None)
+            scores += diff
+
+        # Normalize to 0-1
+        smax = scores.max()
+        if smax > 0:
+            scores /= smax
+
+        return scores
+
+    def _detect_gradient_boundaries(self, gray_f: np.ndarray,
+                                     params: DetectionParams) -> np.ndarray:
+        """
+        Multi-scale Sobel gradient magnitude.
+        High gradient = transition between grains = boundary.
+        """
+        scores = np.zeros_like(gray_f)
+
+        for ksize in [3, 5, 7]:
+            gx = cv2.Sobel(gray_f, cv2.CV_32F, 1, 0, ksize=ksize)
+            gy = cv2.Sobel(gray_f, cv2.CV_32F, 0, 1, ksize=ksize)
+            mag = np.sqrt(gx ** 2 + gy ** 2)
+            mmax = mag.max()
+            if mmax > 0:
+                mag /= mmax
+            scores += mag
+
+        scores /= 3.0  # average across scales
+        return scores
+
+    def _detect_morph_gradient(self, gray: np.ndarray,
+                                params: DetectionParams) -> np.ndarray:
+        """
+        Morphological gradient: dilation - erosion.
+        Highlights transitions; thick at boundaries, zero in uniform regions.
+        """
+        scores = np.zeros(gray.shape, dtype=np.float32)
+
+        for ksize in [3, 5]:
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
+            grad = cv2.morphologyEx(gray, cv2.MORPH_GRADIENT, kernel)
+            g_f = grad.astype(np.float32)
+            gmax = g_f.max()
+            if gmax > 0:
+                g_f /= gmax
+            scores += g_f
+
+        scores /= 2.0
+        return scores
+
+    def _detect_ridges(self, gray_f: np.ndarray,
+                       params: DetectionParams) -> np.ndarray:
+        """
+        Hessian-based ridge/valley detector.
+        Detects thin dark LINES (grain boundary grooves).
+        Uses the eigenvalues of the Hessian matrix:
+        a dark line has one large positive eigenvalue.
+        """
+        # Smooth slightly to suppress texture
+        smooth = cv2.GaussianBlur(gray_f, (0, 0), 1.5)
+
+        # Hessian components
+        dxx = cv2.Sobel(smooth, cv2.CV_32F, 2, 0, ksize=5)
+        dyy = cv2.Sobel(smooth, cv2.CV_32F, 0, 2, ksize=5)
+        dxy = cv2.Sobel(smooth, cv2.CV_32F, 1, 1, ksize=5)
+
+        # Eigenvalues of 2x2 Hessian at each pixel
+        # lambda1, lambda2 = 0.5 * (dxx+dyy +/- sqrt((dxx-dyy)^2 + 4*dxy^2))
+        trace = dxx + dyy
+        det = dxx * dyy - dxy * dxy
+        discriminant = np.sqrt(np.clip(trace ** 2 - 4 * det, 0, None))
+
+        lambda1 = 0.5 * (trace + discriminant)
+
+        # For dark valleys (boundary grooves), the larger eigenvalue is positive
+        # (concave up = valley in at least one direction)
+        ridge_strength = np.clip(lambda1, 0, None)
+
+        rmax = ridge_strength.max()
+        if rmax > 0:
+            ridge_strength /= rmax
+
+        return ridge_strength
+
+    # ------------------------------------------------------------------
+    # Fuse + close boundaries
+    # ------------------------------------------------------------------
+
+    def _fuse_boundary_signals(self, dark_score, grad_score, morph_score,
+                                ridge_score, params) -> np.ndarray:
+        """
+        Combine all boundary signals into one probability map.
+        Uses weighted sum + nonlinear boost.
+        """
+        sensitivity = params.edge_sensitivity
+
+        # Weighted combination — ridge and dark valleys are most reliable
+        # for SEM grain boundaries
+        combined = (
+            0.30 * dark_score +
+            0.25 * grad_score +
+            0.15 * morph_score +
+            0.30 * ridge_score
+        )
+
+        # Nonlinear boost: push strong signals higher, suppress weak ones
+        combined = np.power(combined, 1.0 / max(sensitivity, 0.3))
+
+        # Normalize
+        cmax = combined.max()
+        if cmax > 0:
+            combined /= cmax
+
+        return combined
+
+    def _close_boundary_gaps(self, boundary_map: np.ndarray,
+                              params: DetectionParams) -> np.ndarray:
+        """
+        Convert the continuous boundary probability map into a clean,
+        connected binary boundary network.
+
+        Key challenge: boundaries must be CLOSED loops to separate grains.
+        If there are gaps, grains merge. So we use aggressive gap-closing.
+        """
+        h, w = boundary_map.shape
+        sensitivity = params.edge_sensitivity
+
+        # Threshold the boundary map
+        # Use Otsu on the boundary scores to find natural cutoff
+        bmap_uint8 = (boundary_map * 255).astype(np.uint8)
+        otsu_val, _ = cv2.threshold(bmap_uint8, 0, 255, cv2.THRESH_OTSU)
+
+        # Adjust threshold by sensitivity
+        # Lower threshold = more boundary pixels = more separation
+        thresh_val = otsu_val * (1.3 - 0.3 * sensitivity)
+        thresh_val = max(10, min(200, thresh_val))
+
+        # Apply threshold offset from user params
+        thresh_val = thresh_val + params.threshold_offset * 100
+        thresh_val = max(5, min(220, thresh_val))
+
+        boundary_binary = (bmap_uint8 > thresh_val).astype(np.uint8)
+
+        # ---- Gap closing strategy ----
+        # 1. Dilate to connect nearby boundary fragments
+        k_close = max(3, int(3 * sensitivity))
+        if k_close % 2 == 0:
+            k_close += 1
+        kernel_close = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (k_close, k_close)
+        )
+        closed = cv2.morphologyEx(boundary_binary, cv2.MORPH_CLOSE, kernel_close)
+
+        # 2. Thin back down so boundaries don't eat grain area
+        #    Use skimage skeletonize for true 1-pixel skeleton
+        skeleton = skeletonize(closed > 0)
+
+        # 3. Dilate skeleton slightly (1-2px) to ensure it's connected
+        #    and acts as a proper barrier
+        kernel_fatten = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        boundary_final = cv2.dilate(
+            skeleton.astype(np.uint8), kernel_fatten, iterations=1
+        )
+
+        return boundary_final
+
+    # ------------------------------------------------------------------
+    # Watershed refinement
+    # ------------------------------------------------------------------
+
+    def _watershed_refine_on_gradient(self, labels, grain_mask, gray_f,
+                                      boundary_map, params):
+        """
+        Use watershed on the gradient image to fix places where
+        boundaries had gaps (grains that leaked into each other).
+
+        Only applies to suspiciously large regions that might be
+        multiple merged grains.
+        """
+        # Compute expected grain size from existing labels
+        areas = []
+        for region in regionprops(labels):
+            if region.area >= params.min_grain_size_px:
+                areas.append(region.area)
+
+        if len(areas) < 3:
+            return labels
+
+        median_area = np.median(areas)
+        # Regions larger than 3x median are suspicious
+        merge_threshold = median_area * 3.0
+
+        # Build gradient landscape for watershed
+        gradient = self._compute_gradient_for_watershed(gray_f)
+
+        output_labels = labels.copy()
+        max_label = labels.max()
+
+        for region in regionprops(labels):
+            if region.area < merge_threshold:
+                continue
+
+            # This region is suspiciously large — try to split it
+            region_mask = (labels == region.label)
+            r0, c0, r1, c1 = region.bbox
+
+            # Extract local patch
+            local_mask = region_mask[r0:r1, c0:c1]
+            local_grad = gradient[r0:r1, c0:c1]
+            local_bmap = boundary_map[r0:r1, c0:c1]
+
+            # Use gradient + boundary map as watershed landscape
+            landscape = 0.5 * local_grad + 0.5 * local_bmap
+            landscape_u8 = (landscape * 255).astype(np.uint8)
+
+            # Find seeds via distance transform of the mask
+            dist = ndi.distance_transform_edt(local_mask)
+            min_dist = max(params.watershed_min_dist, 5)
+            coords = peak_local_max(
+                dist, min_distance=min_dist,
+                labels=local_mask, exclude_border=False
+            )
+
+            if len(coords) <= 1:
+                # Can't split further
+                continue
+
+            # Create markers
+            markers = np.zeros_like(local_mask, dtype=np.int32)
+            for i, (r, c) in enumerate(coords, 1):
+                markers[r, c] = i
+
+            # Watershed
+            sub_labels = watershed(
+                landscape_u8, markers, mask=local_mask
+            )
+
+            # Check if the split produced reasonably sized pieces
+            sub_regions = regionprops(sub_labels)
+            all_valid = all(
+                sr.area >= params.min_grain_size_px
+                for sr in sub_regions
+            )
+
+            if all_valid and len(sub_regions) > 1:
+                # Accept the split
+                for sr in sub_regions:
+                    max_label += 1
+                    sub_mask = (sub_labels == sr.label)
+                    full_mask = np.zeros_like(labels, dtype=bool)
+                    full_mask[r0:r1, c0:c1] = sub_mask
+                    output_labels[full_mask] = max_label
+
+        return output_labels
+
+    def _compute_gradient_for_watershed(self, gray_f):
+        """Compute a clean gradient magnitude map for watershed."""
+        gx = cv2.Sobel(gray_f, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(gray_f, cv2.CV_32F, 0, 1, ksize=3)
+        mag = np.sqrt(gx ** 2 + gy ** 2)
+        mmax = mag.max()
+        if mmax > 0:
+            mag /= mmax
+        return mag
+
+    # ==================================================================
+    # PIPELINE B: Threshold-based (for grains-on-background images)
+    # ==================================================================
+
+    def _threshold_pipeline(self, gray, image_bgr, params, progress):
+        """
+        Classic approach for images with distinct foreground/background.
+        Kept for backward compatibility with sparse grain images.
+        """
+        h, w = gray.shape
+
+        progress(5, "Enhancing contrast...")
+        if params.use_clahe:
+            clahe = cv2.createCLAHE(
+                clipLimit=params.clahe_clip_limit, tileGridSize=(8, 8)
+            )
+            enhanced = clahe.apply(gray)
+        else:
+            enhanced = gray.copy()
+
+        if params.blur_sigma > 0:
+            blurred = cv2.GaussianBlur(enhanced, (0, 0), params.blur_sigma)
+        else:
+            blurred = enhanced
+
+        # Otsu threshold
+        progress(15, "Applying threshold...")
+        gray_float = blurred.astype(np.float64) / 255.0
+        blurred_g = gaussian(gray_float, sigma=max(params.blur_sigma, 0.5))
+        thresh_val = threshold_otsu(blurred_g)
         thresh_val = float(np.clip(thresh_val + params.threshold_offset, 0.01, 0.99))
 
         if params.dark_grains:
-            binary = (blurred < thresh_val).astype(np.uint8) * 255
+            binary_otsu = (blurred_g < thresh_val).astype(np.uint8)
         else:
-            binary = (blurred > thresh_val).astype(np.uint8) * 255
+            binary_otsu = (blurred_g > thresh_val).astype(np.uint8)
 
-        return binary
+        # Adaptive threshold
+        if params.use_adaptive:
+            progress(22, "Adaptive thresholding...")
+            block = max(11, int(min(h, w) / 15))
+            if block % 2 == 0:
+                block += 1
+            c_value = 5 + int(params.threshold_offset * 30)
 
-    def _combine_masks(self, mask_otsu: np.ndarray,
-                       mask_adaptive: Optional[np.ndarray],
-                       gradient: np.ndarray,
-                       params: DetectionParams) -> np.ndarray:
-        """
-        Combine multiple detection signals into one binary mask.
+            if params.dark_grains:
+                thresh_type = cv2.THRESH_BINARY_INV
+            else:
+                thresh_type = cv2.THRESH_BINARY
 
-        Strategy: UNION of Otsu and adaptive, then use gradient to
-        carve boundaries. The union catches grains that either method
-        alone would miss.
-        """
-        # Start with Otsu
-        combined = mask_otsu.copy()
+            adaptive = cv2.adaptiveThreshold(
+                blurred, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
+                thresh_type, block, c_value
+            )
+            binary = cv2.bitwise_or(binary_otsu * 255, adaptive)
+            binary = (binary > 0).astype(np.uint8)
+        else:
+            binary = binary_otsu
 
-        if mask_adaptive is not None:
-            # Union: a pixel is "grain" if EITHER method says so
-            combined = cv2.bitwise_or(combined, mask_adaptive)
-
-        # Clean up tiny specks introduced by adaptive thresholding
-        kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel_small)
-
-        # Use high-gradient pixels as boundary hints: zero out pixels
-        # where gradient is very strong (these are edges, not interiors)
-        grad_thresh = np.percentile(gradient, 90)
-        strong_edges = (gradient > grad_thresh).astype(np.uint8)
-        # Only carve edges that are thin (1-2px wide boundary lines)
-        # by checking that the edge pixels are narrow
-        kernel_edge = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
-        thin_edges = cv2.erode(strong_edges, kernel_edge, iterations=1)
-        combined[thin_edges > 0] = 0
-
-        return (combined > 0).astype(np.uint8)
-
-    # ==================================================================
-    # STAGE 3: Morphological cleanup
-    # ==================================================================
-
-    def _morphological_cleanup(self, binary: np.ndarray, params: DetectionParams) -> np.ndarray:
-        """Fill holes inside grains and remove noise outside."""
+        # Morphological cleanup
+        progress(30, "Morphological cleanup...")
         if params.morph_close_size > 0:
             k = params.morph_close_size * 2 + 1
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
             binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-
         if params.morph_open_size > 0:
             k = params.morph_open_size * 2 + 1
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
             binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
 
-        # Fill small internal holes (common in SEM grains with texture)
-        # Use flood fill from the border: anything not reached = hole
-        h, w = binary.shape
-        flood = binary.copy()
-        mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
-        # Invert: holes become foreground
-        inv = 1 - flood
-        # Flood fill from corners
-        cv2.floodFill(inv, mask, (0, 0), 0)
-        # inv now contains only internal holes
-        binary = binary | inv
+        binary_bool = binary.astype(bool)
 
-        return binary
+        # Remove small objects
+        progress(40, "Removing debris...")
+        if params.min_grain_size_px > 0:
+            binary_bool = remove_small_objects(
+                binary_bool, min_size=params.min_grain_size_px
+            )
 
-    # ==================================================================
-    # STAGE 4: Boundary detection v2
-    # ==================================================================
+        # Watershed
+        progress(50, "Watershed segmentation...")
+        if params.use_watershed:
+            distance = ndi.distance_transform_edt(binary_bool)
+            min_dist = max(params.watershed_min_dist, 3)
+            coords = peak_local_max(
+                distance, min_distance=min_dist,
+                labels=binary_bool, exclude_border=False
+            )
+            if len(coords) > 0:
+                markers = np.zeros(distance.shape, dtype=bool)
+                markers[tuple(coords.T)] = True
+                markers_labeled, _ = ndi.label(markers)
+                labels = watershed(-distance, markers_labeled, mask=binary_bool)
+            else:
+                labels, _ = ndi.label(binary_bool)
+        else:
+            labels, _ = ndi.label(binary_bool)
 
-    def _detect_boundaries_v2(self, gray: np.ndarray, enhanced: np.ndarray,
-                               gradient: np.ndarray,
-                               params: DetectionParams) -> Optional[np.ndarray]:
-        """
-        Multi-strategy boundary detection.
-
-        Combines:
-        1. Gradient ridges (high gradient = boundary between grains)
-        2. Dark valley detection (SEM boundaries are often darker)
-        3. Morphological gradient (dilation - erosion = edge)
-
-        Returns thin boundary lines suitable for carving into binary mask.
-        """
-        if params.edge_sensitivity <= 0:
-            return None
-
-        h, w = gray.shape
-        sensitivity = params.edge_sensitivity
-
-        # --- Strategy 1: Gradient ridges ---
-        # Top percentile of gradient magnitude = boundaries
-        grad_pct = max(75, 95 - sensitivity * 10)  # sensitivity=1 -> top 15%
-        grad_thresh = np.percentile(gradient, grad_pct)
-        grad_mask = (gradient > grad_thresh).astype(np.uint8) * 255
-
-        # --- Strategy 2: Dark valleys (local minima) ---
-        local_mean = cv2.GaussianBlur(gray.astype(np.float32), (21, 21), 6.0)
-        dark_diff = local_mean - gray.astype(np.float32)
-        dark_pct = max(75, 92 - sensitivity * 8)
-        dark_thresh = np.percentile(dark_diff, dark_pct)
-        dark_mask = (dark_diff > dark_thresh).astype(np.uint8) * 255
-
-        # --- Strategy 3: Morphological gradient ---
-        kernel_mg = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        morph_grad = cv2.morphologyEx(enhanced, cv2.MORPH_GRADIENT, kernel_mg)
-        mg_thresh = np.percentile(morph_grad, max(75, 90 - sensitivity * 8))
-        morph_mask = (morph_grad > mg_thresh).astype(np.uint8) * 255
-
-        # Combine: require at least 2 of 3 strategies to agree
-        # This reduces false boundaries while catching real ones
-        vote = (grad_mask > 0).astype(np.uint8) + \
-               (dark_mask > 0).astype(np.uint8) + \
-               (morph_mask > 0).astype(np.uint8)
-        combined = (vote >= 2).astype(np.uint8) * 255
-
-        # Thin the boundaries via morphological skeleton approximation
-        kernel_thin = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
-        thinned = cv2.morphologyEx(combined, cv2.MORPH_ERODE, kernel_thin, iterations=1)
-
-        # Only keep if meaningful
-        boundary_frac = np.sum(thinned > 0) / (h * w)
-        if boundary_frac < 0.002:
-            logger.info(f"Boundary fraction too low ({boundary_frac:.4f}), skipping edge carving")
-            return None
-        if boundary_frac > 0.15:
-            # Too many boundaries = noisy, raise the bar
-            logger.info(f"Boundary fraction too high ({boundary_frac:.4f}), tightening")
-            thinned = (vote >= 3).astype(np.uint8) * 255
-            thinned = cv2.morphologyEx(thinned, cv2.MORPH_ERODE, kernel_thin, iterations=1)
-
-        logger.info(f"Boundary detection v2: {np.sum(thinned > 0) / (h * w):.3f} coverage")
-        return thinned
+        return labels, binary_bool.astype(np.uint8) * 255
 
     # ==================================================================
-    # STAGE 6: Watershed on gradient
+    # Measurement
     # ==================================================================
 
-    def _watershed_on_gradient(self, binary: np.ndarray, gradient: np.ndarray,
-                                params: DetectionParams,
-                                boundary_mask: Optional[np.ndarray] = None) -> np.ndarray:
-        """
-        Marker-controlled watershed on the GRADIENT IMAGE.
-
-        Key insight: instead of doing watershed on the distance transform
-        (which makes arbitrary cuts), we do it on the gradient magnitude.
-        This means watershed lines naturally follow the actual grain
-        boundaries visible in the image.
-
-        Seeds come from the distance transform (grain centers), but the
-        flooding landscape is the gradient — so cuts land on real edges.
-        """
-        distance = ndi.distance_transform_edt(binary)
-
-        # Build the landscape for watershed
-        # Blend distance-based (traditional) with gradient-based (new)
-        bw = params.boundary_weight  # 0 = pure distance, 1 = pure gradient
-
-        # Invert gradient for watershed (low = ridge = boundary)
-        grad_for_ws = gradient.copy()
-        # Suppress gradient outside the binary mask
-        grad_for_ws[~binary] = 0
-
-        # Composite landscape
-        dist_norm = distance / max(distance.max(), 1)
-        landscape = (1.0 - bw) * (-dist_norm) + bw * grad_for_ws
-        # Convert to form where boundaries are HIGH (watershed floods into valleys)
-        landscape = -landscape  # now: boundaries=low valleys=high
-
-        # If we have a boundary mask, strengthen it in the landscape
-        if boundary_mask is not None:
-            edge_float = (boundary_mask > 0).astype(np.float32)
-            kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-            edge_dilated = cv2.dilate(edge_float, kern, iterations=1)
-            # Push edges further down in the landscape (stronger barrier)
-            landscape = landscape - edge_dilated * 0.5
-
-        # Find seed points (grain centers)
-        min_dist = max(params.watershed_min_dist, 3)
-
-        # Use distance transform for seeds — these are grain centers
-        coords = peak_local_max(
-            distance,
-            min_distance=min_dist,
-            labels=binary,
-            exclude_border=False,
-        )
-
-        if len(coords) == 0:
-            labels, _ = ndi.label(binary)
-            return labels
-
-        mask_markers = np.zeros(distance.shape, dtype=bool)
-        mask_markers[tuple(coords.T)] = True
-        markers, _ = ndi.label(mask_markers)
-
-        # Watershed on the gradient-based landscape
-        labels = watershed(landscape.astype(np.float64), markers, mask=binary)
-
-        return labels
-
-    # ==================================================================
-    # STAGE 7: Measure grains
-    # ==================================================================
-
-    def _measure_grains(self, labels: np.ndarray, params: DetectionParams,
-                        px_per_um: float) -> List[GrainResult]:
+    def _measure_grains(self, labels, params, px_per_um):
         """Measure properties of each labeled grain."""
         regions = regionprops(labels)
         grains = []
@@ -535,7 +730,7 @@ class GrainDetector:
         return grains
 
     # ==================================================================
-    # Statistics + overlay
+    # Statistics + overlay (unchanged interface)
     # ==================================================================
 
     def _compute_statistics(self, result, original):
@@ -586,15 +781,25 @@ class GrainDetector:
             grain = grain_map[lbl]
             color = colors.get(lbl, [0, 200, 255])
             grain_mask = (labels == lbl).astype(np.uint8)
-            contours, _ = cv2.findContours(grain_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours, _ = cv2.findContours(
+                grain_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
             cv2.drawContours(overlay, contours, -1, color, 1)
             cx, cy = int(grain.centroid_x), int(grain.centroid_y)
             if 0 <= cx < overlay.shape[1] and 0 <= cy < overlay.shape[0]:
                 text = str(grain.grain_id)
                 fs = 0.35
-                (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)
+                (tw, th), _ = cv2.getTextSize(
+                    text, cv2.FONT_HERSHEY_SIMPLEX, fs, 1
+                )
                 tx = max(0, cx - tw // 2)
                 ty = max(th, cy + th // 2)
-                cv2.putText(overlay, text, (tx + 1, ty + 1), cv2.FONT_HERSHEY_SIMPLEX, fs, (0, 0, 0), 2)
-                cv2.putText(overlay, text, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, fs, (255, 255, 255), 1)
+                cv2.putText(
+                    overlay, text, (tx + 1, ty + 1),
+                    cv2.FONT_HERSHEY_SIMPLEX, fs, (0, 0, 0), 2
+                )
+                cv2.putText(
+                    overlay, text, (tx, ty),
+                    cv2.FONT_HERSHEY_SIMPLEX, fs, (255, 255, 255), 1
+                )
         return overlay
