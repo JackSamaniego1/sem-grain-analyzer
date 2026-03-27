@@ -1,6 +1,11 @@
 """
 Settings Panel - resizable left panel, clean layout
 Updated for Grain Detection Engine v2.1 (boundary-first)
+
+Changes:
+  - Added "Reanalyze Current Image" button
+  - Detection Parameters section is collapsible (collapsed by default)
+  - Image Enhancement section is collapsible (collapsed by default)
 """
 
 from PyQt6.QtWidgets import (
@@ -12,13 +17,81 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from core.grain_detector import DetectionParams
 
 
+class CollapsibleGroupBox(QWidget):
+    """
+    A group box that can be collapsed/expanded by clicking a toggle button.
+    Shows ▸ when collapsed and ▾ when expanded.
+    """
+
+    def __init__(self, title: str, parent=None, collapsed=False):
+        super().__init__(parent)
+        self._collapsed = collapsed
+        self._title = title
+
+        self._main_layout = QVBoxLayout(self)
+        self._main_layout.setContentsMargins(0, 0, 0, 0)
+        self._main_layout.setSpacing(0)
+
+        # Toggle button styled to look like a group header
+        self._toggle_btn = QPushButton()
+        self._toggle_btn.setCheckable(True)
+        self._toggle_btn.setChecked(not collapsed)
+        self._toggle_btn.clicked.connect(self._on_toggle)
+        self._toggle_btn.setStyleSheet("""
+            QPushButton {
+                background: #2a2a32;
+                border: 1px solid #3c3c48;
+                border-radius: 6px;
+                color: #aaaacc;
+                font-weight: 600;
+                font-size: 12px;
+                text-align: left;
+                padding: 8px 12px;
+            }
+            QPushButton:hover {
+                background: #33333d;
+                border-color: #008cc8;
+            }
+        """)
+        self._main_layout.addWidget(self._toggle_btn)
+
+        # Content container
+        self._content = QWidget()
+        self._content_layout = QVBoxLayout(self._content)
+        self._content_layout.setContentsMargins(0, 4, 0, 0)
+        self._content_layout.setSpacing(0)
+        self._main_layout.addWidget(self._content)
+
+        # Apply initial state
+        self._content.setVisible(not collapsed)
+        self._update_button_text()
+
+    def _on_toggle(self):
+        self._collapsed = not self._toggle_btn.isChecked()
+        self._content.setVisible(not self._collapsed)
+        self._update_button_text()
+
+    def _update_button_text(self):
+        arrow = "▾" if not self._collapsed else "▸"
+        self._toggle_btn.setText(f"{arrow}  {self._title}")
+
+    def content_layout(self):
+        """Return the layout to add child widgets into."""
+        return self._content_layout
+
+    def add_widget(self, widget):
+        """Convenience: add a widget to the content area."""
+        self._content_layout.addWidget(widget)
+
+
 class SettingsPanel(QScrollArea):
-    params_changed  = pyqtSignal(object)
-    run_analysis    = pyqtSignal()
-    open_image      = pyqtSignal()
-    set_calibration = pyqtSignal()
-    set_scan_area   = pyqtSignal()
-    export_excel    = pyqtSignal()
+    params_changed       = pyqtSignal(object)
+    run_analysis         = pyqtSignal()
+    run_analysis_current = pyqtSignal()
+    open_image           = pyqtSignal()
+    set_calibration      = pyqtSignal()
+    set_scan_area        = pyqtSignal()
+    export_excel         = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -135,12 +208,15 @@ class SettingsPanel(QScrollArea):
         lay.addWidget(mode_group)
 
         # ============================================================
-        # -- Enhancement --
+        # -- Image Enhancement (collapsible, collapsed by default) --
         # ============================================================
-        enh_group = QGroupBox("Image Enhancement")
-        enh_lay = QFormLayout(enh_group)
+        enh_collapsible = CollapsibleGroupBox("Image Enhancement", collapsed=True)
+
+        enh_inner = QWidget()
+        enh_lay = QFormLayout(enh_inner)
         enh_lay.setSpacing(8)
         enh_lay.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        enh_lay.setContentsMargins(8, 8, 8, 8)
 
         self.clahe_cb = QCheckBox("CLAHE contrast boost")
         self.clahe_cb.setChecked(True)
@@ -161,15 +237,19 @@ class SettingsPanel(QScrollArea):
         )
         enh_lay.addRow("CLAHE strength:", self.clahe_clip_spin)
 
-        lay.addWidget(enh_group)
+        enh_collapsible.add_widget(enh_inner)
+        lay.addWidget(enh_collapsible)
 
         # ============================================================
-        # -- Detection Parameters --
+        # -- Detection Parameters (collapsible, collapsed by default) --
         # ============================================================
-        det_group = QGroupBox("Detection Parameters")
-        det_lay = QFormLayout(det_group)
+        det_collapsible = CollapsibleGroupBox("Detection Parameters", collapsed=True)
+
+        det_inner = QWidget()
+        det_lay = QFormLayout(det_inner)
         det_lay.setSpacing(8)
         det_lay.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        det_lay.setContentsMargins(8, 8, 8, 8)
 
         self.blur_spin = QDoubleSpinBox()
         self.blur_spin.setRange(0.0, 10.0)
@@ -250,7 +330,12 @@ class SettingsPanel(QScrollArea):
         )
         det_lay.addRow("", self.adaptive_cb)
 
-        lay.addWidget(det_group)
+        btn_reset = QPushButton("↺  Reset to Defaults")
+        btn_reset.clicked.connect(self._reset_params)
+        det_lay.addRow("", btn_reset)
+
+        det_collapsible.add_widget(det_inner)
+        lay.addWidget(det_collapsible)
 
         # Connect all value-change signals
         for w in [self.blur_spin, self.thresh_spin, self.min_size_spin,
@@ -262,12 +347,11 @@ class SettingsPanel(QScrollArea):
             cb.stateChanged.connect(self._emit_params)
         self.mode_combo.currentIndexChanged.connect(self._emit_params)
 
-        btn_reset = QPushButton("↺  Reset to Defaults")
-        btn_reset.clicked.connect(self._reset_params)
-        lay.addWidget(btn_reset)
-
         self._sep()
 
+        # ============================================================
+        # -- Analyze Buttons --
+        # ============================================================
         self.btn_analyze = QPushButton("🔬  Analyze ALL Images")
         self.btn_analyze.setObjectName("primary")
         self.btn_analyze.setMinimumHeight(44)
@@ -278,6 +362,17 @@ class SettingsPanel(QScrollArea):
         self.btn_analyze.setFont(f)
         self.btn_analyze.clicked.connect(self.run_analysis.emit)
         lay.addWidget(self.btn_analyze)
+
+        self.btn_analyze_current = QPushButton("🔬  Reanalyze Current Image")
+        self.btn_analyze_current.setMinimumHeight(36)
+        self.btn_analyze_current.setEnabled(False)
+        self.btn_analyze_current.setToolTip(
+            "Re-run analysis on only the currently selected image.\n"
+            "Useful for tweaking detection parameters on one image\n"
+            "without re-analyzing everything. (Ctrl+F5)"
+        )
+        self.btn_analyze_current.clicked.connect(self.run_analysis_current.emit)
+        lay.addWidget(self.btn_analyze_current)
 
         self._sep()
 
@@ -357,6 +452,7 @@ class SettingsPanel(QScrollArea):
 
     def set_analyze_enabled(self, enabled: bool):
         self.btn_analyze.setEnabled(enabled)
+        self.btn_analyze_current.setEnabled(enabled)
 
     def set_scan_area_label(self, rect):
         if rect is None:
