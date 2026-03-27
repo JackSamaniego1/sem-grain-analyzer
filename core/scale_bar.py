@@ -1,12 +1,8 @@
 """
-Scale Bar Detection
-===================
-Detects scale bar in SEM images to establish pixel-to-micron calibration.
-Strategy:
-  1. Crop bottom region (scale bars are almost always at the bottom)
-  2. Find horizontal white/light lines using Hough transform
-  3. Use OCR (pytesseract if available) or manual input for the length value
-  4. Fall back to manual calibration if auto-detection fails
+Scale Bar Detection - fully automatic
+======================================
+Detects the scale bar LINE and reads the TEXT label automatically.
+No manual input needed.
 """
 
 import numpy as np
@@ -17,107 +13,141 @@ from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+_UNIT_TO_UM = {
+    'nm': 0.001, 'um': 1.0, 'µm': 1.0, 'μm': 1.0,
+    'micron': 1.0, 'microns': 1.0, 'mm': 1000.0,
+}
 
-def detect_scale_bar_length_px(image_bgr: np.ndarray) -> Tuple[Optional[int], Optional[np.ndarray]]:
-    """
-    Try to detect the scale bar pixel length from the image.
-    Returns (length_in_pixels, debug_image) or (None, None).
-    """
+
+def auto_detect_scale_bar(image_bgr: np.ndarray) -> Tuple[Optional[float], Optional[np.ndarray]]:
+    """Fully automatic scale bar detection. Returns (px_per_um, annotated_image) or (None, None)."""
     h, w = image_bgr.shape[:2]
-    
-    # Scale bar is almost always in the bottom 15-20% of SEM images
-    crop_top = int(h * 0.80)
-    bottom_strip = image_bgr[crop_top:, :]
-    gray = cv2.cvtColor(bottom_strip, cv2.COLOR_BGR2GRAY)
-    
-    # Threshold: scale bar lines are typically bright white
-    _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
-    
-    # Look for horizontal line segments
-    # Use morphological erosion to find only wide horizontal structures
-    kernel_horiz = cv2.getStructuringElement(cv2.MORPH_RECT, (30, 1))
-    horiz = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel_horiz)
-    
-    # Find contours of horizontal bars
+    crop_top = int(h * 0.78)
+    strip_bgr = image_bgr[crop_top:, :]
+    strip_gray = cv2.cvtColor(strip_bgr, cv2.COLOR_BGR2GRAY)
+
+    bar_px, bar_rect = _find_bar_pixels(strip_gray)
+    if bar_px is None or bar_px < 10:
+        logger.warning("No scale bar line found")
+        return None, None
+
+    um_value = _read_label_ocr(strip_bgr, bar_rect, strip_gray)
+    if um_value is None:
+        um_value = _read_label_simple(strip_gray)
+
+    if um_value is None or um_value <= 0:
+        logger.warning(f"Scale bar found ({bar_px} px) but could not read label")
+        return None, None
+
+    px_per_um = bar_px / um_value
+    logger.info(f"Scale bar: {bar_px} px = {um_value} µm  →  {px_per_um:.4f} px/µm")
+    annotated = _annotate_image(image_bgr.copy(), bar_rect, crop_top, bar_px, um_value, px_per_um)
+    return px_per_um, annotated
+
+
+def _find_bar_pixels(gray: np.ndarray) -> Tuple[Optional[int], Optional[tuple]]:
+    _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (20, 1))
+    horiz = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
     contours, _ = cv2.findContours(horiz, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    best_bar = None
-    best_length = 0
-    
+    best = None
+    best_len = 0
     for cnt in contours:
         x, y, cw, ch = cv2.boundingRect(cnt)
-        # Scale bar: much wider than tall, and reasonably long
-        if cw > 30 and ch <= 8 and cw > best_length:
-            # Check fill ratio (must be mostly solid)
+        if cw > 20 and ch <= 10:
             roi = horiz[y:y+ch, x:x+cw]
-            fill = np.sum(roi > 0) / roi.size
-            if fill > 0.6:
-                best_bar = (x, y + crop_top, cw, ch)
-                best_length = cw
-    
-    if best_bar is None:
+            fill = np.sum(roi > 0) / max(roi.size, 1)
+            if fill > 0.5 and cw > best_len:
+                best = (x, y, cw, ch)
+                best_len = cw
+    if best is None:
         return None, None
-    
-    # Draw debug visualization
-    debug = image_bgr.copy()
-    x, y, cw, ch = best_bar
-    cv2.rectangle(debug, (x, y), (x + cw, y + ch), (0, 255, 0), 2)
-    cv2.putText(debug, f"{cw}px", (x, y - 5),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-    
-    return best_length, debug
+    return best[2], best
 
 
-def read_scale_bar_text(image_bgr: np.ndarray) -> Optional[float]:
-    """
-    Attempt to read the scale bar label using pytesseract OCR.
-    Returns value in micrometers, or None if OCR unavailable / failed.
-    """
+def _read_label_ocr(strip_bgr, bar_rect, gray):
     try:
         import pytesseract
     except ImportError:
-        logger.info("pytesseract not available — using manual calibration")
         return None
-    
-    h, w = image_bgr.shape[:2]
-    crop_top = int(h * 0.78)
-    strip = image_bgr[crop_top:, :]
-    
-    # Upscale for better OCR accuracy
-    strip_up = cv2.resize(strip, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-    gray = cv2.cvtColor(strip_up, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 160, 255, cv2.THRESH_BINARY)
-    
-    try:
-        text = pytesseract.image_to_string(thresh, config='--psm 7')
-        logger.info(f"OCR text: {repr(text)}")
-    except Exception as e:
-        logger.warning(f"OCR failed: {e}")
+    x, y, cw, ch = bar_rect
+    h, w = strip_bgr.shape[:2]
+    sy1 = max(0, y - 30)
+    sy2 = min(h, y + ch + 30)
+    sx1 = max(0, x - 10)
+    sx2 = min(w, x + cw + 60)
+    roi = strip_bgr[sy1:sy2, sx1:sx2]
+    if roi.size == 0:
         return None
-    
-    # Parse common SEM scale bar formats: "1 µm", "500 nm", "10 um", "2.5μm"
-    text = text.strip()
-    
-    # Match patterns like "1 µm", "500nm", "10 um", "0.5 mm"
-    pattern = r'(\d+(?:\.\d+)?)\s*(nm|um|µm|μm|mm|micron|microns)?'
-    matches = re.findall(pattern, text, re.IGNORECASE)
-    
-    for value_str, unit in matches:
-        value = float(value_str)
-        unit = unit.lower().strip()
-        
-        if unit in ('nm',):
-            return value / 1000.0  # nm -> µm
-        elif unit in ('um', 'µm', 'μm', 'micron', 'microns', ''):
-            return value  # already µm
-        elif unit in ('mm',):
-            return value * 1000.0  # mm -> µm
-    
+    roi_up = cv2.resize(roi, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+    gray_up = cv2.cvtColor(roi_up, cv2.COLOR_BGR2GRAY)
+    results = []
+    for tv in [128, 160, 200]:
+        _, binary = cv2.threshold(gray_up, tv, 255, cv2.THRESH_BINARY)
+        _, inv = cv2.threshold(gray_up, tv, 255, cv2.THRESH_BINARY_INV)
+        for img in [binary, inv]:
+            try:
+                text = pytesseract.image_to_string(img, config='--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789.nmkuµμ ')
+                val = _parse_scale_text(text)
+                if val:
+                    results.append(val)
+            except Exception:
+                pass
+    return results[0] if results else None
+
+
+def _read_label_simple(gray):
     return None
 
 
-def compute_px_per_um(bar_length_px: int, bar_length_um: float) -> float:
-    """Convert bar measurements to pixels-per-micron calibration."""
+def _parse_scale_text(text):
+    if not text:
+        return None
+    text = text.strip().replace('\n', ' ')
+    pattern = r'(\d+(?:[.,]\d+)?)\s*(nm|um|µm|μm|mm|micron|microns)?'
+    matches = re.findall(pattern, text, re.IGNORECASE)
+    for value_str, unit in matches:
+        try:
+            value = float(value_str.replace(',', '.'))
+            unit = unit.lower().strip() if unit else 'um'
+            multiplier = _UNIT_TO_UM.get(unit, 1.0)
+            result = value * multiplier
+            if 0.001 <= result <= 10000:
+                return result
+        except ValueError:
+            continue
+    return None
+
+
+def _annotate_image(image, bar_rect, crop_top, bar_px, um_value, px_per_um):
+    x, y, cw, ch = bar_rect
+    abs_y = crop_top + y
+    cv2.rectangle(image, (x-4, abs_y-8), (x+cw+4, abs_y+ch+8), (0, 255, 80), 3)
+    label = f"{bar_px}px = {um_value}µm  ({px_per_um:.2f} px/µm)"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale, thickness = 0.6, 2
+    (tw, th), _ = cv2.getTextSize(label, font, scale, thickness)
+    tx = max(0, x)
+    ty = max(th+4, abs_y-12)
+    cv2.putText(image, label, (tx+1, ty+1), font, scale, (0,0,0), thickness+1)
+    cv2.putText(image, label, (tx, ty), font, scale, (0, 255, 80), thickness)
+    return image
+
+
+def detect_scale_bar_length_px(image_bgr):
+    h, w = image_bgr.shape[:2]
+    crop_top = int(h * 0.80)
+    strip_gray = cv2.cvtColor(image_bgr[crop_top:, :], cv2.COLOR_BGR2GRAY)
+    bar_px, bar_rect = _find_bar_pixels(strip_gray)
+    if bar_px is None:
+        return None, None
+    debug = image_bgr.copy()
+    x, y, cw, ch = bar_rect
+    cv2.rectangle(debug, (x, crop_top+y), (x+cw, crop_top+y+ch), (0,255,0), 2)
+    return bar_px, debug
+
+
+def compute_px_per_um(bar_length_px, bar_length_um):
     if bar_length_um <= 0:
         raise ValueError("Scale bar length must be positive")
     return bar_length_px / bar_length_um
