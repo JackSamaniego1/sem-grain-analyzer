@@ -463,4 +463,3 @@ class SettingsPanel(QScrollArea):
 
     def set_export_enabled(self, enabled: bool):
         self.btn_export.setEnabled(enabled)
- 
