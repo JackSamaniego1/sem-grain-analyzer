@@ -261,7 +261,7 @@ class SettingsPanel(QScrollArea):
 
         self.edge_sens_spin = QDoubleSpinBox()
         self.edge_sens_spin.setRange(0.1, 3.0)
-        self.edge_sens_spin.setValue(1.0)
+        self.edge_sens_spin.setValue(1.5)
         self.edge_sens_spin.setSingleStep(0.1)
         self.edge_sens_spin.setDecimals(1)
         self.edge_sens_spin.setToolTip(
@@ -273,7 +273,7 @@ class SettingsPanel(QScrollArea):
 
         self.thresh_spin = QDoubleSpinBox()
         self.thresh_spin.setRange(-0.5, 0.5)
-        self.thresh_spin.setValue(0.0)
+        self.thresh_spin.setValue(-0.1)
         self.thresh_spin.setSingleStep(0.02)
         self.thresh_spin.setDecimals(3)
         self.thresh_spin.setToolTip(
@@ -463,4 +463,3 @@ class SettingsPanel(QScrollArea):
 
     def set_export_enabled(self, enabled: bool):
         self.btn_export.setEnabled(enabled)
- 
