@@ -22,7 +22,6 @@ from ui.calibration_dialog import CalibrationDialog
 from ui.scan_area_dialog import ScanAreaDialog
 from ui.analysis_progress_dialog import AnalysisProgressDialog
 from core.grain_detector import GrainDetector, DetectionParams, AnalysisResult
-from utils.excel_export import export_to_excel
 
 
 class AnalysisWorker(QObject):
@@ -614,21 +613,12 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            import openpyxl
-            from utils.excel_export import (
-                _write_summary_sheet, _write_grains_sheet, _write_distribution_sheet
-            )
-            wb = openpyxl.Workbook()
-            wb.remove(wb.active)
-            for tab in analysed:
-                base = os.path.splitext(os.path.basename(tab.image_path))[0][:20]
-                _write_summary_sheet(wb, tab.result, tab.image_path, None)
-                wb.worksheets[-1].title = f"{base}-Summary"[:31]
-                _write_grains_sheet(wb, tab.result)
-                wb.worksheets[-1].title = f"{base}-Grains"[:31]
-                _write_distribution_sheet(wb, tab.result)
-                wb.worksheets[-1].title = f"{base}-Dist"[:31]
-            wb.save(path)
+            from utils.excel_export import export_multi_to_excel
+            tabs_data = [
+                (tab.result, tab.image_path, tab.image_bgr)
+                for tab in analysed
+            ]
+            export_multi_to_excel(tabs_data, path)
             self._set_status(f"Exported {len(analysed)} images → {os.path.basename(path)}")
             self._open_file(path)
         except Exception as e:
@@ -646,7 +636,11 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            export_to_excel(tab.result, tab.image_path, path)
+            from utils.excel_export import export_to_excel
+            export_to_excel(
+                tab.result, tab.image_path, path,
+                image_bgr=tab.image_bgr
+            )
             self._set_status(f"Exported: {os.path.basename(path)}")
             self._open_file(path)
         except Exception as e:
@@ -677,5 +671,5 @@ class MainWindow(QMainWindow):
             "<li>Click grain → Delete to remove</li>"
             "</ul>")
 
-    def _set_status(self, msg: str): 
+    def _set_status(self, msg: str):
         self.status_msg.setText(msg)
