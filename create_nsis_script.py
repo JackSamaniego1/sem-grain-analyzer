@@ -1,23 +1,21 @@
 """
 Generates an NSIS installer script for Windows.
-NSIS (Nullsoft Scriptable Install System) creates a proper
-Windows Setup wizard that installs the app and adds Start Menu shortcuts.
 """
 import os
 
 nsis_content = r"""
-; SEM Grain Analyzer NSIS Installer Script
+; Grain Analyzer NSIS Installer Script
 ; Generated automatically by create_nsis_script.py
 
-!define APP_NAME "SEM Grain Analyzer"
-!define APP_VERSION "1.0.0"
-!define APP_PUBLISHER "SEM Tools"
-!define APP_EXE "SEMGrainAnalyzer.exe"
-!define APP_DIR "SEMGrainAnalyzer"
-!define INSTALL_REG_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\SEMGrainAnalyzer"
+!define APP_NAME "Grain Analyzer"
+!define APP_VERSION "2.3"
+!define APP_PUBLISHER "Jack Samaniego"
+!define APP_EXE "GrainAnalyzer.exe"
+!define APP_DIR "GrainAnalyzer"
+!define INSTALL_REG_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\GrainAnalyzer"
 
 Name "${APP_NAME} ${APP_VERSION}"
-OutFile "SEMGrainAnalyzer_Setup.exe"
+OutFile "GrainAnalyzer_Setup.exe"
 InstallDir "$PROGRAMFILES64\${APP_DIR}"
 InstallDirRegKey HKLM "${INSTALL_REG_KEY}" "InstallLocation"
 RequestExecutionLevel admin
