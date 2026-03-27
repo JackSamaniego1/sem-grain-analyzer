@@ -618,7 +618,8 @@ class MainWindow(QMainWindow):
                 (tab.result, tab.image_path, tab.image_bgr)
                 for tab in analysed
             ]
-            export_multi_to_excel(tabs_data, path)
+            n_bins = self.results.get_bin_count()
+            export_multi_to_excel(tabs_data, path, n_bins=n_bins)
             self._set_status(f"Exported {len(analysed)} images → {os.path.basename(path)}")
             self._open_file(path)
         except Exception as e:
@@ -637,9 +638,10 @@ class MainWindow(QMainWindow):
             return
         try:
             from utils.excel_export import export_to_excel
+            n_bins = self.results.get_bin_count()
             export_to_excel(
                 tab.result, tab.image_path, path,
-                image_bgr=tab.image_bgr
+                image_bgr=tab.image_bgr, n_bins=n_bins
             )
             self._set_status(f"Exported: {os.path.basename(path)}")
             self._open_file(path)
