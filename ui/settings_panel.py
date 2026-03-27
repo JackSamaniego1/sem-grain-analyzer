@@ -16,6 +16,7 @@ class SettingsPanel(QScrollArea):
     run_analysis    = pyqtSignal()
     open_image      = pyqtSignal()
     set_calibration = pyqtSignal()
+    set_scan_area   = pyqtSignal()
     export_excel    = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -89,6 +90,18 @@ class SettingsPanel(QScrollArea):
         note.setWordWrap(True)
         note.setAlignment(Qt.AlignmentFlag.AlignCenter)
         cal_lay.addWidget(note)
+
+        # Scan area button
+        self.btn_scan_area = QPushButton("📐  Set Scan Area (Draw Rectangle)")
+        self.btn_scan_area.setMinimumHeight(34)
+        self.btn_scan_area.clicked.connect(self.set_scan_area.emit)
+        cal_lay.addWidget(self.btn_scan_area)
+
+        self.lbl_scan_area = QLabel("Full image (no crop)")
+        self.lbl_scan_area.setStyleSheet("color: #888899; font-size: 10px;")
+        self.lbl_scan_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cal_lay.addWidget(self.lbl_scan_area)
+
         lay.addWidget(cal_group)
 
         # -- Detection Parameters --
@@ -225,6 +238,14 @@ class SettingsPanel(QScrollArea):
 
     def set_analyze_enabled(self, enabled: bool):
         self.btn_analyze.setEnabled(enabled)
+
+
+    def set_scan_area_label(self, rect):
+        if rect is None:
+            self.lbl_scan_area.setText("Full image (no crop)")
+        else:
+            x, y, w, h = rect
+            self.lbl_scan_area.setText(f"Scan area: {w}×{h}px at ({x},{y})")
 
     def set_export_enabled(self, enabled: bool):
         self.btn_export.setEnabled(enabled)
