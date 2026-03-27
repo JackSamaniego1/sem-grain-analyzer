@@ -1,10 +1,10 @@
 """
-Results Panel v2.2
+Results Panel v2.3
 ==================
-- Grain Size Distribution tab (default) with adjustable bin count
-- Grain area on X axis, normal curve overlay
-- Dark background with light axis edges
-- Bin spinner live-updates the histogram
+- Grain Size Distribution tab with adjustable bin count
+- Bins start at 0, whole-number increments (0-10, 10-20, etc.)
+- Smart unit auto-scaling to avoid tiny decimals
+- Grain area on X axis
 """
 
 from PyQt6.QtWidgets import (
@@ -21,9 +21,39 @@ import numpy as np
 import math
 
 
-class HistogramWidget(QWidget):
-    """Custom-painted histogram — grain area, dark bg, normal curve."""
+def smart_unit(px_per_um):
+    """Pick units so values are close to whole numbers, never tiny exponents.
+    Returns (area_unit, area_mult, diam_unit, diam_mult)."""
+    if px_per_um <= 0:
+        return "px²", 1.0, "px", 1.0
+    um_per_px = 1.0 / px_per_um
+    nm_per_px = um_per_px * 1000.0
+    if nm_per_px < 50:
+        return "nm²", 1e6, "nm", 1000.0
+    return "µm²", 1.0, "µm", 1.0
 
+
+def smart_format(val):
+    """Format number as close to whole number as possible, no exponents."""
+    if val == 0:
+        return "0"
+    av = abs(val)
+    if av >= 1000:
+        return f"{val:.0f}"
+    if av >= 100:
+        return f"{val:.0f}"
+    if av >= 10:
+        return f"{val:.1f}"
+    if av >= 1:
+        return f"{val:.2f}"
+    if av >= 0.1:
+        return f"{val:.3f}"
+    if av >= 0.01:
+        return f"{val:.4f}"
+    return f"{val:.3g}"
+
+
+class HistogramWidget(QWidget):
     BAR_COLOR = QColor(100, 120, 220)
     CURVE_COLOR = QColor(220, 50, 120)
     BG_COLOR = QColor(42, 42, 52)
@@ -32,7 +62,6 @@ class HistogramWidget(QWidget):
     GRID_COLOR = QColor(65, 65, 78)
     TEXT_COLOR = QColor(200, 200, 220)
     LABEL_COLOR = QColor(220, 220, 235)
-
     MARGIN_LEFT = 58
     MARGIN_RIGHT = 15
     MARGIN_TOP = 20
@@ -45,13 +74,14 @@ class HistogramWidget(QWidget):
         self._values = np.array([])
         self._xlabel = "Grain Area"
         self._unit = ""
-        self._n_bins = 0  # 0 = auto
+        self._n_bins = 0
         self._bins = []
         self._counts = []
         self._bin_labels = []
         self._mu = 0.0
         self._sigma = 0.0
         self._has_data = False
+        self._actual_bins = 0
 
     def set_data(self, values, xlabel="Grain Area", unit="", n_bins=0):
         self._values = values
@@ -61,8 +91,8 @@ class HistogramWidget(QWidget):
         self._recompute()
         self.update()
 
-    def set_bin_count(self, n_bins):
-        self._n_bins = n_bins
+    def set_bin_count(self, n):
+        self._n_bins = n
         if len(self._values) >= 2:
             self._recompute()
             self.update()
@@ -71,41 +101,48 @@ class HistogramWidget(QWidget):
         return self._actual_bins
 
     def _recompute(self):
-        values = self._values
-        if len(values) < 2:
-            self._has_data = False
-            return
+        v = self._values
+        if len(v) < 2:
+            self._has_data = False; return
         self._has_data = True
-        self._mu = float(np.mean(values))
-        self._sigma = float(np.std(values))
+        self._mu = float(np.mean(v))
+        self._sigma = float(np.std(v))
 
+        vmax = float(np.max(v))
+        # Determine nice bin width (whole number)
         if self._n_bins > 0:
             nb = self._n_bins
+            bw = max(1, math.ceil(vmax / nb))
         else:
-            nb = min(max(int(math.sqrt(len(values))), 5), 30)
-        self._actual_bins = nb
+            nb = min(max(int(math.sqrt(len(v))), 5), 30)
+            bw = max(1, math.ceil(vmax / nb))
 
-        counts, edges = np.histogram(values, bins=nb)
+        # Bins: 0, bw, 2*bw, ... up past vmax
+        edges = []
+        e = 0
+        while e <= vmax + bw:
+            edges.append(e)
+            e += bw
+        edges = np.array(edges, dtype=float)
+
+        counts, _ = np.histogram(v, bins=edges)
+        # Remove trailing empty bins
+        while len(counts) > 1 and counts[-1] == 0:
+            counts = counts[:-1]
+            edges = edges[:len(counts) + 1]
+
+        self._actual_bins = len(counts)
         self._counts = counts.tolist()
         self._bins = edges.tolist()
-
-        def fmt(v):
-            if abs(v) >= 1000: return f"{v:.0f}"
-            elif abs(v) >= 10: return f"{v:.1f}"
-            elif abs(v) >= 1: return f"{v:.1f}"
-            else: return f"{v:.2f}"
-
         self._bin_labels = [
-            f"{fmt(edges[i])}-{fmt(edges[i+1])}{self._unit}"
-            for i in range(len(edges) - 1)
+            f"{int(edges[i])}-{int(edges[i+1])}{self._unit}"
+            for i in range(len(counts))
         ]
 
     def clear_data(self):
         self._has_data = False
         self._values = np.array([])
-        self._counts = []
-        self._bins = []
-        self._bin_labels = []
+        self._counts = []; self._bins = []; self._bin_labels = []
         self.update()
 
     def paintEvent(self, event):
@@ -119,27 +156,21 @@ class HistogramWidget(QWidget):
             p.setFont(QFont("Arial", 12))
             p.drawText(QRectF(0, 0, w, h), Qt.AlignmentFlag.AlignCenter,
                        "Run analysis to see\ngrain size distribution")
-            p.end()
-            return
+            p.end(); return
 
         ml, mr, mt, mb = self.MARGIN_LEFT, self.MARGIN_RIGHT, self.MARGIN_TOP, self.MARGIN_BOTTOM
         px, py, pw, ph = ml, mt, w - ml - mr, h - mt - mb
-        if pw < 20 or ph < 20:
-            p.end(); return
+        if pw < 20 or ph < 20: p.end(); return
 
         p.fillRect(int(px), int(py), int(pw), int(ph), self.PLOT_BG)
         p.setPen(QPen(self.AXIS_COLOR, 1))
         p.drawRect(int(px), int(py), int(pw), int(ph))
 
         mc = max(self._counts)
-        if mc == 0:
-            p.end(); return
-
+        if mc == 0: p.end(); return
         x_min, x_max = self._bins[0], self._bins[-1]
         x_range = x_max - x_min
-        if x_range <= 0:
-            p.end(); return
-
+        if x_range <= 0: p.end(); return
         y_max = self._nice_ceil(mc * 1.1)
 
         def tx(val): return px + (val - x_min) / x_range * pw
@@ -150,10 +181,9 @@ class HistogramWidget(QWidget):
         nyt = min(6, max(2, int(y_max)))
         ys = y_max / nyt
         for i in range(1, nyt + 1):
-            yp = ty(i * ys)
-            p.drawLine(QPointF(px, yp), QPointF(px + pw, yp))
+            p.drawLine(QPointF(px, ty(i * ys)), QPointF(px + pw, ty(i * ys)))
 
-        # Bars — touching, no gap
+        # Bars
         p.setPen(QPen(QColor(30, 30, 45), 1))
         p.setBrush(QBrush(self.BAR_COLOR))
         for i in range(len(self._counts)):
@@ -166,8 +196,7 @@ class HistogramWidget(QWidget):
             p.setPen(QPen(self.CURVE_COLOR, 2.5))
             p.setBrush(Qt.BrushStyle.NoBrush)
             bw = self._bins[1] - self._bins[0]
-            path = QPainterPath()
-            started = False
+            path = QPainterPath(); started = False
             for j in range(200):
                 xv = x_min + x_range * j / 199
                 yv = ((1.0 / (self._sigma * math.sqrt(2 * math.pi))) *
@@ -178,7 +207,7 @@ class HistogramWidget(QWidget):
                 else: path.lineTo(xp, yp)
             p.drawPath(path)
 
-        # Y ticks outside
+        # Y ticks
         p.setPen(QPen(self.TEXT_COLOR))
         tf = QFont("Arial", 9); p.setFont(tf); fm = QFontMetrics(tf)
         for i in range(nyt + 1):
@@ -187,13 +216,11 @@ class HistogramWidget(QWidget):
             lbl = str(int(round(yv)))
             p.drawText(QPointF(px - fm.horizontalAdvance(lbl) - 7, yp + fm.ascent() / 2 - 1), lbl)
 
-        # X bin labels rotated
+        # X bin labels
         sf = QFont("Arial", 7); p.setFont(sf); sfm = QFontMetrics(sf)
         for i in range(len(self._bin_labels)):
             cx = (tx(self._bins[i]) + tx(self._bins[i + 1])) / 2
-            p.save()
-            p.translate(cx, py + ph + 6)
-            p.rotate(45)
+            p.save(); p.translate(cx, py + ph + 6); p.rotate(45)
             p.drawText(QPointF(0, sfm.ascent()), self._bin_labels[i])
             p.restore()
 
@@ -204,8 +231,7 @@ class HistogramWidget(QWidget):
         p.drawText(QPointF(px + pw / 2 - xtw / 2, h - 3), self._xlabel)
         p.save(); p.translate(13, py + ph / 2); p.rotate(-90)
         ylbl = "Number of Grains"; ytw = lfm.horizontalAdvance(ylbl)
-        p.drawText(QPointF(-ytw / 2, 0), ylbl)
-        p.restore()
+        p.drawText(QPointF(-ytw / 2, 0), ylbl); p.restore()
         p.end()
 
     @staticmethod
@@ -227,19 +253,21 @@ class StatCard(QFrame):
         lay = QVBoxLayout(self); lay.setContentsMargins(10, 8, 10, 8); lay.setSpacing(2)
         self.value_lbl = QLabel(value)
         self.value_lbl.setStyleSheet("font-size:16px;font-weight:700;color:#00c8ff;border:none;")
-        self.value_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lay.addWidget(self.value_lbl)
+        self.value_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter); lay.addWidget(self.value_lbl)
+        self.unit_lbl = None
         if unit:
-            u = QLabel(unit); u.setStyleSheet("font-size:10px;color:#7777aa;border:none;")
-            u.setAlignment(Qt.AlignmentFlag.AlignCenter); lay.addWidget(u)
+            self.unit_lbl = QLabel(unit)
+            self.unit_lbl.setStyleSheet("font-size:10px;color:#7777aa;border:none;")
+            self.unit_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter); lay.addWidget(self.unit_lbl)
         n = QLabel(label); n.setStyleSheet("font-size:10px;color:#9999bb;border:none;")
         n.setAlignment(Qt.AlignmentFlag.AlignCenter); n.setWordWrap(True); lay.addWidget(n)
 
     def set_value(self, v): self.value_lbl.setText(v)
+    def set_unit(self, u):
+        if self.unit_lbl: self.unit_lbl.setText(u)
 
 
 class ResultsPanel(QWidget):
-    # Signal emitted when user changes bin count — main_window can use this
     bin_count_changed = pyqtSignal(int)
 
     def __init__(self, parent=None):
@@ -250,16 +278,13 @@ class ResultsPanel(QWidget):
 
     def _build_ui(self):
         lay = QVBoxLayout(self); lay.setContentsMargins(4, 4, 4, 4); lay.setSpacing(8)
-
         title = QLabel("Analysis Results"); title.setObjectName("subheader")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter); lay.addWidget(title)
-
         self.empty_label = QLabel("Run analysis to see results here.")
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_label.setStyleSheet("color:#555577;font-size:12px;padding:40px;")
         lay.addWidget(self.empty_label)
 
-        # Stats cards
         self.stats_widget = QWidget(); self.stats_widget.setVisible(False)
         sl = QVBoxLayout(self.stats_widget); sl.setSpacing(8)
         r1 = QHBoxLayout()
@@ -275,33 +300,18 @@ class ResultsPanel(QWidget):
 
         self.tabs = QTabWidget(); self.tabs.setVisible(False); lay.addWidget(self.tabs)
 
-        # Histogram tab with bin spinner
-        hist_container = QWidget()
-        hlay = QVBoxLayout(hist_container); hlay.setContentsMargins(0, 0, 0, 0); hlay.setSpacing(4)
+        hc = QWidget(); hl = QVBoxLayout(hc); hl.setContentsMargins(0, 0, 0, 0); hl.setSpacing(4)
+        bb = QHBoxLayout()
+        bl = QLabel("Bins:"); bl.setStyleSheet("color:#aaaacc;font-size:11px;"); bb.addWidget(bl)
+        self.bin_spin = QSpinBox(); self.bin_spin.setRange(3, 100); self.bin_spin.setValue(0)
+        self.bin_spin.setToolTip("Number of histogram bins"); self.bin_spin.setFixedWidth(70)
+        self.bin_spin.valueChanged.connect(self._on_bin_changed); bb.addWidget(self.bin_spin)
+        bb.addStretch(); hl.addLayout(bb)
+        self.histogram = HistogramWidget(); hl.addWidget(self.histogram)
+        self.tabs.addTab(hc, "Grain Size Distribution")
 
-        # Bin count control bar
-        bin_bar = QHBoxLayout()
-        bin_label = QLabel("Bins:")
-        bin_label.setStyleSheet("color:#aaaacc;font-size:11px;")
-        bin_bar.addWidget(bin_label)
-        self.bin_spin = QSpinBox()
-        self.bin_spin.setRange(3, 100)
-        self.bin_spin.setValue(0)  # 0 = auto (will set to actual when data arrives)
-        self.bin_spin.setToolTip("Number of histogram bins. Changing this updates the chart instantly.")
-        self.bin_spin.setFixedWidth(70)
-        self.bin_spin.valueChanged.connect(self._on_bin_changed)
-        bin_bar.addWidget(self.bin_spin)
-        bin_bar.addStretch()
-        hlay.addLayout(bin_bar)
-
-        self.histogram = HistogramWidget()
-        hlay.addWidget(self.histogram)
-        self.tabs.addTab(hist_container, "Grain Size Distribution")
-
-        # Table tab
         tw = QWidget(); tl = QVBoxLayout(tw); tl.setContentsMargins(0, 4, 0, 0)
-        self.table = QTableWidget()
-        self.table.setAlternatingRowColors(True)
+        self.table = QTableWidget(); self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.horizontalHeader().setStretchLastSection(False)
@@ -309,20 +319,17 @@ class ResultsPanel(QWidget):
         self.table.verticalHeader().setVisible(False)
         tl.addWidget(self.table); self.tabs.addTab(tw, "Grain Table")
 
-        # Stats tab
         ss = QScrollArea(); ss.setWidgetResizable(True); ss.setFrameShape(QFrame.Shape.NoFrame)
-        self.full_stats_widget = QLabel()
-        self.full_stats_widget.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        self.full_stats_widget.setWordWrap(True)
-        self.full_stats_widget.setStyleSheet("padding:10px;color:#dcdce6;font-family:monospace;font-size:12px;")
-        ss.setWidget(self.full_stats_widget); self.tabs.addTab(ss, "Statistics")
+        self.full_stats = QLabel()
+        self.full_stats.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.full_stats.setWordWrap(True)
+        self.full_stats.setStyleSheet("padding:10px;color:#dcdce6;font-family:monospace;font-size:12px;")
+        ss.setWidget(self.full_stats); self.tabs.addTab(ss, "Statistics")
 
     def _on_bin_changed(self, val):
-        self.histogram.set_bin_count(val)
-        self.bin_count_changed.emit(val)
+        self.histogram.set_bin_count(val); self.bin_count_changed.emit(val)
 
     def get_bin_count(self):
-        """Return user-selected bin count (for Excel export)."""
         if self._current_result and self._current_result.grains:
             return self.histogram.get_bin_count()
         return 0
@@ -330,109 +337,98 @@ class ResultsPanel(QWidget):
     def display_results(self, result: AnalysisResult):
         self._current_result = result
         self.empty_label.setVisible(False)
-        self.stats_widget.setVisible(True)
-        self.tabs.setVisible(True)
+        self.stats_widget.setVisible(True); self.tabs.setVisible(True)
 
+        _, am, _, dm = smart_unit(result.px_per_um)
+        au_label, du_label = ("nm²", "nm") if am > 1 else ("µm²", "µm")
         has_cal = result.has_calibration
+
         self.card_count.set_value(str(result.grain_count))
         if has_cal:
             self.card_coverage.set_value(f"{result.grain_coverage_pct:.1f}")
-            self.card_mean_area.set_value(f"{result.mean_area_um2:.3f}")
-            self.card_mean_diam.set_value(f"{result.mean_diameter_um:.3f}")
+            self.card_mean_area.set_value(smart_format(result.mean_area_um2 * am))
+            self.card_mean_area.set_unit(au_label)
+            self.card_mean_diam.set_value(smart_format(result.mean_diameter_um * dm))
+            self.card_mean_diam.set_unit(du_label)
         else:
             self.card_coverage.set_value("N/A")
             areas = [g.area_px for g in result.grains]
             self.card_mean_area.set_value(f"{np.mean(areas):.0f}" if areas else "—")
+            self.card_mean_area.set_unit("px²")
             diams = [g.equivalent_diameter_px for g in result.grains]
             self.card_mean_diam.set_value(f"{np.mean(diams):.1f}" if diams else "—")
+            self.card_mean_diam.set_unit("px")
         self.card_circ.set_value(f"{result.mean_circularity:.3f}")
         self.card_ar.set_value(f"{result.mean_aspect_ratio:.3f}")
 
         self._update_histogram(result)
-        self._populate_table(result)
-        self._populate_stats_text(result)
+        self._populate_table(result, au_label, du_label, am, dm)
+        self._populate_stats(result, au_label, du_label, am, dm)
         self.tabs.setCurrentIndex(0)
 
     def _update_histogram(self, result):
-        if not result.grains:
-            self.histogram.clear_data(); return
-        has_cal = result.has_calibration
-        if has_cal:
-            nm_per_px = 1000.0 / result.px_per_um
-            if nm_per_px < 50:
-                values = np.array([g.area_um2 * 1e6 for g in result.grains])
-                xlabel, unit = "Grain Area (nm²)", "nm²"
-            else:
-                values = np.array([g.area_um2 for g in result.grains])
-                xlabel, unit = "Grain Area (µm²)", "µm²"
+        if not result.grains: self.histogram.clear_data(); return
+        _, am, _, _ = smart_unit(result.px_per_um)
+        au = "nm²" if am > 1 else "µm²"
+        if result.has_calibration:
+            values = np.array([g.area_um2 * am for g in result.grains])
+            xlabel = f"Grain Area ({au})"
         else:
             values = np.array([g.area_px for g in result.grains])
-            xlabel, unit = "Grain Area (px²)", "px²"
-
-        # Use current spinner value (0 = auto)
-        n_bins = self.bin_spin.value()
-        if n_bins < 3:
-            n_bins = 0  # auto
-
-        self.histogram.set_data(values, xlabel, unit, n_bins)
-
-        # Update spinner to show actual bin count used
+            xlabel = "Grain Area (px²)"; au = "px²"
+        nb = self.bin_spin.value()
+        if nb < 3: nb = 0
+        self.histogram.set_data(values, xlabel, au, nb)
         actual = self.histogram.get_bin_count()
-        self.bin_spin.blockSignals(True)
-        self.bin_spin.setValue(actual)
-        self.bin_spin.blockSignals(False)
+        self.bin_spin.blockSignals(True); self.bin_spin.setValue(actual); self.bin_spin.blockSignals(False)
 
-    def _populate_table(self, result):
-        has_cal = result.has_calibration
-        hdrs = (["ID", "Area (µm²)", "Diam (µm)", "Circ.", "AR"]
-                if has_cal else ["ID", "Area (px²)", "Diam (px)", "Circ.", "AR"])
-        self.table.setColumnCount(len(hdrs))
-        self.table.setHorizontalHeaderLabels(hdrs)
+    def _populate_table(self, result, au, du, am, dm):
+        hc = result.has_calibration
+        hdrs = (["ID", f"Area ({au})", f"Diam ({du})", "Circ.", "AR"]
+                if hc else ["ID", "Area (px²)", "Diam (px)", "Circ.", "AR"])
+        self.table.setColumnCount(len(hdrs)); self.table.setHorizontalHeaderLabels(hdrs)
         self.table.setRowCount(len(result.grains))
         for row, g in enumerate(result.grains):
-            vals = [str(g.grain_id),
-                    f"{g.area_um2:.4f}" if has_cal else f"{g.area_px:.0f}",
-                    f"{g.equivalent_diameter_um:.4f}" if has_cal else f"{g.equivalent_diameter_px:.1f}",
-                    f"{g.circularity:.3f}", f"{g.aspect_ratio:.3f}"]
+            if hc:
+                vals = [str(g.grain_id), smart_format(g.area_um2 * am),
+                        smart_format(g.equivalent_diameter_um * dm),
+                        f"{g.circularity:.3f}", f"{g.aspect_ratio:.3f}"]
+            else:
+                vals = [str(g.grain_id), f"{g.area_px:.0f}",
+                        f"{g.equivalent_diameter_px:.1f}",
+                        f"{g.circularity:.3f}", f"{g.aspect_ratio:.3f}"]
             for col, val in enumerate(vals):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table.setItem(row, col, item)
 
-    def _populate_stats_text(self, result):
+    def _populate_stats(self, result, au, du, am, dm):
         lines = [f"GRAIN COUNT:   {result.grain_count}", ""]
-        has_cal = result.has_calibration
-        if has_cal:
+        if result.has_calibration:
             lines += [f"Calibration:   {result.px_per_um:.4f} px/µm",
-                      f"Image area:    {result.total_analyzed_area_um2:.2f} µm²",
                       f"Grain coverage:{result.grain_coverage_pct:.2f}%", "",
-                      "── Area (µm²) ──────────────────",
-                      f"  Mean:        {result.mean_area_um2:.5f}",
-                      f"  Std Dev:     {result.std_area_um2:.5f}",
-                      f"  Median:      {result.median_area_um2:.5f}",
-                      f"  Min:         {result.min_area_um2:.5f}",
-                      f"  Max:         {result.max_area_um2:.5f}", "",
-                      "── Diameter (µm) ───────────────",
-                      f"  Mean:        {result.mean_diameter_um:.5f}",
-                      f"  Std Dev:     {result.std_diameter_um:.5f}"]
+                      f"── Area ({au}) ──────────────",
+                      f"  Mean:    {smart_format(result.mean_area_um2 * am)}",
+                      f"  Std Dev: {smart_format(result.std_area_um2 * am)}",
+                      f"  Median:  {smart_format(result.median_area_um2 * am)}",
+                      f"  Min:     {smart_format(result.min_area_um2 * am)}",
+                      f"  Max:     {smart_format(result.max_area_um2 * am)}", "",
+                      f"── Diameter ({du}) ──────────",
+                      f"  Mean:    {smart_format(result.mean_diameter_um * dm)}",
+                      f"  Std Dev: {smart_format(result.std_diameter_um * dm)}"]
         else:
             areas = [g.area_px for g in result.grains]
             if areas:
-                lines += ["── Area (px²) ──────────────────",
-                          f"  Mean:        {np.mean(areas):.2f}",
-                          f"  Std Dev:     {np.std(areas):.2f}",
-                          f"  Median:      {np.median(areas):.2f}",
-                          f"  Min:         {np.min(areas):.2f}",
-                          f"  Max:         {np.max(areas):.2f}"]
-        lines += ["", "── Shape ───────────────────────",
-                   f"  Mean Circularity:   {result.mean_circularity:.4f}",
-                   f"  Mean Aspect Ratio:  {result.mean_aspect_ratio:.4f}"]
-        self.full_stats_widget.setText("\n".join(lines))
+                lines += ["── Area (px²) ──────────────",
+                          f"  Mean:    {np.mean(areas):.1f}",
+                          f"  Std Dev: {np.std(areas):.1f}",
+                          f"  Median:  {np.median(areas):.1f}"]
+        lines += ["", "── Shape ───────────────────",
+                   f"  Circularity:    {result.mean_circularity:.4f}",
+                   f"  Aspect Ratio:   {result.mean_aspect_ratio:.4f}"]
+        self.full_stats.setText("\n".join(lines))
 
     def clear(self):
         self._current_result = None
-        self.empty_label.setVisible(True)
-        self.stats_widget.setVisible(False)
-        self.tabs.setVisible(False)
-        self.table.setRowCount(0)
-        self.histogram.clear_data()
+        self.empty_label.setVisible(True); self.stats_widget.setVisible(False)
+        self.tabs.setVisible(False); self.table.setRowCount(0); self.histogram.clear_data()
