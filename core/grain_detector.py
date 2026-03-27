@@ -1,25 +1,17 @@
 """
-Grain Detection Engine v2.2
+Grain Detection Engine v2.3
 ============================
-Optimized boundary-first detection for SEM polycrystalline grain images.
-
-Key improvements over v2.1:
-  - TEXTURE-ADAPTIVE denoising: measures fine/coarse gradient ratio to
-    detect internal grain texture (hatching/stripes) and applies bilateral
-    filter at appropriate strength — light for clean images, aggressive
-    for heavily textured ones
-  - DIFFERENCE-OF-GAUSSIANS (DoG) boundary signal: isolates features at
-    the grain-boundary spatial scale, robust against periodic texture
-  - LAPLACIAN-OF-GAUSSIAN (LoG) for dark valley detection
-  - PERCENTILE-BASED thresholding instead of Otsu (boundary scores are
-    heavily skewed, Otsu fails on them)
-  - DIRECTIONAL GAP CLOSING with oriented kernels at 0/45/90/135 degrees
-    to bridge boundary fragments that are nearly aligned
-  - AUTO-CROP to remove whitespace/text borders using variance-based
-    contiguous content detection
-  - ADAPTIVE weight mixing: texture-robust signals (DoG, dark valleys)
-    get higher weight when texture is detected
-  - More aggressive watershed splitting (2x median threshold)
+Key innovations:
+  - TEXTURE ORIENTATION detection via structure tensor: finds boundaries
+    where hatching/stripe direction changes between adjacent grains
+  - STEP CHANGE detection via heavy bilateral gradient: finds subtle
+    brightness transitions invisible to normal edge detectors
+  - DIRECT MARKER-CONTROLLED WATERSHED on boundary probability map:
+    finds grain centers as local minima of boundary signal, then floods
+    outward along boundary ridges — no skeleton needed
+  - Higher default sensitivity (edge_sensitivity=1.5, threshold_offset=-0.1)
+  - Texture-adaptive bilateral strength and signal weighting
+  - Auto-crop for whitespace/text borders
 """
 
 import numpy as np
@@ -36,10 +28,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-
-# ======================================================================
-# Data classes (unchanged interface)
-# ======================================================================
 
 @dataclass
 class GrainResult:
@@ -85,7 +73,7 @@ class AnalysisResult:
 @dataclass
 class DetectionParams:
     blur_sigma: float = 1.5
-    threshold_offset: float = 0.0
+    threshold_offset: float = -0.1       # more negative = detect more boundaries
     min_grain_size_px: int = 50
     max_grain_size_px: int = 0
     watershed_min_dist: int = 5
@@ -93,18 +81,14 @@ class DetectionParams:
     use_watershed: bool = True
     morph_close_size: int = 3
     morph_open_size: int = 2
-    edge_sensitivity: float = 1.0
+    edge_sensitivity: float = 1.5        # raised from 1.0
     use_adaptive: bool = True
     adaptive_block_size: int = 0
     use_clahe: bool = True
     clahe_clip_limit: float = 2.0
     boundary_weight: float = 0.5
-    detection_mode: str = "auto"  # "auto", "boundary", "threshold"
+    detection_mode: str = "auto"
 
-
-# ======================================================================
-# Main detector class
-# ======================================================================
 
 class GrainDetector:
 
@@ -124,19 +108,16 @@ class GrainDetector:
         progress(2, "Preprocessing...")
         gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
 
-        # Auto-crop whitespace/text borders
+        # Auto-crop on RAW gray (before any enhancement)
         crop_rect = self._auto_crop(gray)
         if crop_rect is not None:
             r0, c0, r1, c1 = crop_rect
             gray = gray[r0:r1, c0:c1]
             image_bgr = image_bgr[r0:r1, c0:c1]
-            logger.info(f"Auto-cropped to {c1-c0}x{r1-r0}")
 
-        # Choose detection mode
         mode = params.detection_mode
         if mode == "auto":
             mode = self._auto_detect_mode(gray)
-            logger.info(f"Auto-detected mode: {mode}")
 
         if mode == "boundary":
             labels, binary = self._boundary_pipeline(gray, image_bgr, params, progress)
@@ -165,32 +146,20 @@ class GrainDetector:
     # Auto-crop
     # ==================================================================
 
-    def _auto_crop(self, gray: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
-        """
-        Detect and remove whitespace/text borders around the SEM image.
-
-        Strategy: look for rows/columns that are nearly white (mean > 240).
-        Only crop if a significant fraction of the image is white border.
-        Uses the longest contiguous run of non-white rows/cols to find
-        the SEM content region.
-        """
+    def _auto_crop(self, gray):
         h, w = gray.shape
         if h < 50 or w < 50:
             return None
 
-        # Check if there's significant whitespace at all
         white_frac = (gray > 240).mean()
         if white_frac < 0.10:
-            # Less than 10% white — no border to crop
             return None
 
         col_means = gray.mean(axis=0)
         row_means = gray.mean(axis=1)
 
-        # A column/row is "white" if its mean > 240
-        def longest_dark_run(means, threshold=240):
-            """Find the longest contiguous run of non-white values."""
-            dark = means < threshold
+        def longest_dark_run(means, thresh=240):
+            dark = means < thresh
             runs = []
             start = None
             for i, v in enumerate(dark):
@@ -212,128 +181,134 @@ class GrainDetector:
         c0, c1, cw = col_run
         r0, r1, rh = row_run
 
-        # Only crop if we'd remove at least 15% of the image
-        crop_area = cw * rh
-        orig_area = w * h
-        if crop_area >= orig_area * 0.85:
+        if cw * rh >= w * h * 0.85:
             return None
 
-        # Add small margin
         margin = 2
         r0 = max(0, r0 - margin)
         c0 = max(0, c0 - margin)
         r1 = min(h, r1 + margin)
         c1 = min(w, c1 + margin)
-
-        logger.info(f"Auto-crop: {c0},{r0} to {c1},{r1} (was {w}x{h})")
         return (r0, c0, r1, c1)
 
     # ==================================================================
     # Auto-detect mode
     # ==================================================================
 
-    def _auto_detect_mode(self, gray: np.ndarray) -> str:
+    def _auto_detect_mode(self, gray):
         gray_f = gray.astype(np.float64) / 255.0
         blurred = gaussian(gray_f, sigma=2.0)
         thresh = threshold_otsu(blurred)
         fg_frac = np.mean(blurred > thresh)
         balance = min(fg_frac, 1.0 - fg_frac)
-        logger.info(f"Auto-detect: Otsu balance={balance:.3f}")
         return "threshold" if balance < 0.20 else "boundary"
 
     # ==================================================================
     # Texture measurement
     # ==================================================================
 
-    def _measure_texture(self, gray: np.ndarray) -> float:
-        """
-        Measure internal grain texture level.
-        Returns ratio of fine-scale to coarse-scale gradient energy.
-        High ratio (>3.5) = sharp clean boundaries, low internal texture.
-        Low ratio (<3.0) = significant internal texture (hatching/stripes).
-        """
-        gray_f = gray.astype(np.float32)
-        fine = cv2.GaussianBlur(gray_f, (0, 0), 1.0)
-        coarse = cv2.GaussianBlur(gray_f, (0, 0), 4.0)
-        fine_grad = np.abs(cv2.Sobel(fine, cv2.CV_32F, 1, 0, ksize=3)) + \
-                    np.abs(cv2.Sobel(fine, cv2.CV_32F, 0, 1, ksize=3))
-        coarse_grad = np.abs(cv2.Sobel(coarse, cv2.CV_32F, 1, 0, ksize=3)) + \
-                      np.abs(cv2.Sobel(coarse, cv2.CV_32F, 0, 1, ksize=3))
-        ratio = fine_grad.mean() / max(coarse_grad.mean(), 1e-6)
-        logger.info(f"Texture ratio: {ratio:.2f}")
-        return ratio
-
-    def _adaptive_denoise(self, gray: np.ndarray, texture_ratio: float) -> np.ndarray:
-        """Apply bilateral filter with strength adapted to texture level."""
-        if texture_ratio > 3.5:
-            return cv2.bilateralFilter(gray, d=5, sigmaColor=30, sigmaSpace=5)
-        elif texture_ratio > 2.8:
-            return cv2.bilateralFilter(gray, d=9, sigmaColor=40, sigmaSpace=9)
-        else:
-            return cv2.bilateralFilter(gray, d=15, sigmaColor=50, sigmaSpace=15)
+    def _measure_texture(self, gray):
+        gf = gray.astype(np.float32)
+        fine = cv2.GaussianBlur(gf, (0, 0), 1.0)
+        coarse = cv2.GaussianBlur(gf, (0, 0), 4.0)
+        fg = np.abs(cv2.Sobel(fine, cv2.CV_32F, 1, 0, ksize=3)) + \
+             np.abs(cv2.Sobel(fine, cv2.CV_32F, 0, 1, ksize=3))
+        cg = np.abs(cv2.Sobel(coarse, cv2.CV_32F, 1, 0, ksize=3)) + \
+             np.abs(cv2.Sobel(coarse, cv2.CV_32F, 0, 1, ksize=3))
+        return fg.mean() / max(cg.mean(), 1e-6)
 
     # ==================================================================
-    # PIPELINE A: Boundary-first (optimized v2.2)
+    # PIPELINE A: Boundary-first with texture orientation (v2.3)
     # ==================================================================
 
     def _boundary_pipeline(self, gray, image_bgr, params, progress):
         h, w = gray.shape
 
-        progress(5, "Measuring texture level...")
+        progress(5, "Measuring texture...")
         texture_ratio = self._measure_texture(gray)
 
-        progress(8, "Enhancing contrast (CLAHE)...")
+        progress(8, "CLAHE enhancement...")
         if params.use_clahe:
             clahe = cv2.createCLAHE(
-                clipLimit=params.clahe_clip_limit, tileGridSize=(8, 8)
-            )
+                clipLimit=params.clahe_clip_limit, tileGridSize=(8, 8))
             enhanced = clahe.apply(gray)
         else:
             enhanced = gray.copy()
 
         progress(12, "Adaptive denoising...")
-        denoised = self._adaptive_denoise(enhanced, texture_ratio)
-        df = denoised.astype(np.float32) / 255.0
-        df_raw = denoised.astype(np.float32)
+        # Two bilateral passes: light for edge signals, heavy for step changes
+        if texture_ratio > 3.5:
+            bl_light = cv2.bilateralFilter(enhanced, d=5, sigmaColor=30, sigmaSpace=5)
+            bl_heavy = cv2.bilateralFilter(enhanced, d=15, sigmaColor=50, sigmaSpace=15)
+        else:
+            bl_light = cv2.bilateralFilter(enhanced, d=9, sigmaColor=40, sigmaSpace=9)
+            bl_heavy = cv2.bilateralFilter(enhanced, d=25, sigmaColor=60, sigmaSpace=25)
 
-        # ---- Boundary detection signals ----
-        progress(18, "Boundary signal: Difference of Gaussians...")
-        dog = self._detect_dog(df)
+        bf_light = bl_light.astype(np.float32) / 255.0
+        bf_heavy = bl_heavy.astype(np.float32) / 255.0
+        gf_raw = gray.astype(np.float32) / 255.0
 
-        progress(25, "Boundary signal: Laplacian of Gaussian...")
-        neg_lap = self._detect_log(df)
+        # ---- Boundary signals ----
+        progress(18, "Detecting step changes...")
+        step = self._detect_step_change(bf_heavy)
 
-        progress(32, "Boundary signal: dark valleys...")
-        dark_scores = self._detect_dark_valleys(df_raw)
+        progress(25, "Detecting texture orientation changes...")
+        orient = self._detect_orientation_change(gf_raw)
 
-        progress(38, "Boundary signal: gradient magnitude...")
-        grad = self._detect_gradient(df)
-
-        progress(42, "Boundary signal: Hessian ridges...")
-        ridge = self._detect_ridges(df)
+        progress(35, "Detecting intensity edges...")
+        dog = self._detect_dog(bf_light)
+        neg_lap = self._detect_log(bf_light)
+        dark = self._detect_dark_valleys(bl_light.astype(np.float32))
+        grad = self._detect_gradient(bf_light)
 
         # ---- Fuse signals ----
-        progress(48, "Fusing boundary signals...")
-        combo = self._fuse_signals(
-            dog, neg_lap, dark_scores, grad, ridge,
-            texture_ratio, params.edge_sensitivity
+        progress(45, "Fusing boundary signals...")
+        if texture_ratio > 3.5:
+            # Clean image: balanced mix, more weight on classical
+            combo = (0.20 * dog + 0.15 * neg_lap + 0.20 * dark +
+                     0.20 * step + 0.10 * orient + 0.15 * grad)
+        else:
+            # Textured: heavy weight on step + orientation (texture-robust)
+            combo = (0.15 * dog + 0.10 * neg_lap + 0.15 * dark +
+                     0.30 * step + 0.30 * orient)
+
+        cmax = combo.max()
+        if cmax > 0:
+            combo /= cmax
+
+        # Sensitivity boost
+        power = 1.0 / max(params.edge_sensitivity, 0.3)
+        combo = np.power(combo, power)
+        cmax = combo.max()
+        if cmax > 0:
+            combo /= cmax
+
+        # ---- Direct watershed segmentation ----
+        progress(55, "Finding grain centers...")
+        interior = 1.0 - combo
+        interior_smooth = cv2.GaussianBlur(interior, (0, 0), 8.0)
+
+        # Adaptive min_distance
+        min_dist = max(8, min(h, w) // 40)
+        # Lower threshold to find more seed points
+        thresh_abs = max(0.15, 0.35 + params.threshold_offset)
+        coords = peak_local_max(
+            interior_smooth, min_distance=min_dist,
+            threshold_abs=thresh_abs
         )
 
-        # ---- Threshold + close gaps ----
-        progress(54, "Thresholding boundaries...")
-        binary_bound = self._threshold_boundary_map(
-            combo, texture_ratio, params.threshold_offset
-        )
+        progress(60, f"Watershed segmentation ({len(coords)} seeds)...")
+        if len(coords) == 0:
+            labels = np.zeros((h, w), dtype=np.int32)
+        else:
+            markers = np.zeros((h, w), dtype=np.int32)
+            for i, (r, c) in enumerate(coords, 1):
+                markers[r, c] = i
+            combo_u8 = (combo * 255).astype(np.uint8)
+            labels = watershed(combo_u8, markers)
 
-        progress(58, "Closing boundary gaps...")
-        final_boundary = self._close_gaps(binary_bound, texture_ratio)
-
-        grain_mask = (final_boundary == 0).astype(np.uint8)
-
-        # ---- Label + filter ----
-        progress(63, "Labeling grain regions...")
-        labels, _ = ndi.label(grain_mask)
-
+        # Filter by size
+        progress(68, "Filtering by size...")
         min_sz = max(params.min_grain_size_px, 20)
         for r in regionprops(labels):
             if r.area < min_sz:
@@ -341,208 +316,93 @@ class GrainDetector:
             if params.max_grain_size_px > 0 and r.area > params.max_grain_size_px:
                 labels[labels == r.label] = 0
 
-        # ---- Watershed refinement ----
-        progress(68, "Splitting merged grains (watershed)...")
-        if params.use_watershed:
-            labels = self._watershed_split(
-                labels, combo, grad, params
-            )
-
-        # ---- Relabel consecutively ----
+        # Relabel
         unique = np.unique(labels)
         unique = unique[unique > 0]
         new_labels = np.zeros_like(labels)
         for i, lbl in enumerate(unique, 1):
             new_labels[labels == lbl] = i
 
-        return new_labels, grain_mask * 255
+        binary = (combo * 255).astype(np.uint8)
+        return new_labels, binary
 
     # ------------------------------------------------------------------
     # Boundary detection signals
     # ------------------------------------------------------------------
 
-    def _detect_dog(self, df: np.ndarray) -> np.ndarray:
-        """Difference of Gaussians — isolates boundary-scale features."""
-        fine = cv2.GaussianBlur(df, (0, 0), 1.0)
-        coarse = cv2.GaussianBlur(df, (0, 0), 5.0)
-        dog = np.abs(fine - coarse)
-        dmax = dog.max()
-        return dog / dmax if dmax > 0 else dog
-
-    def _detect_log(self, df: np.ndarray) -> np.ndarray:
-        """Laplacian of Gaussian — detects dark valleys (boundary grooves)."""
-        blurred = cv2.GaussianBlur(df, (0, 0), 3.0)
-        lap = cv2.Laplacian(blurred, cv2.CV_32F)
-        neg_lap = np.clip(-lap, 0, None)
-        nmax = neg_lap.max()
-        return neg_lap / nmax if nmax > 0 else neg_lap
-
-    def _detect_dark_valleys(self, df_raw: np.ndarray) -> np.ndarray:
-        """Multi-scale local darkness detector."""
-        scores = np.zeros_like(df_raw)
-        for ksize in [11, 21, 41]:
-            local_mean = cv2.GaussianBlur(df_raw, (ksize, ksize), ksize / 4.0)
-            diff = np.clip(local_mean - df_raw, 0, None)
-            scores += diff
-        smax = scores.max()
-        return scores / smax if smax > 0 else scores
-
-    def _detect_gradient(self, df: np.ndarray) -> np.ndarray:
-        """Multi-scale Sobel gradient magnitude."""
-        gx = cv2.Sobel(df, cv2.CV_32F, 1, 0, ksize=5)
-        gy = cv2.Sobel(df, cv2.CV_32F, 0, 1, ksize=5)
+    def _detect_step_change(self, bf_heavy):
+        """Gradient on heavily smoothed image — captures subtle brightness steps."""
+        gx = cv2.Sobel(bf_heavy, cv2.CV_32F, 1, 0, ksize=5)
+        gy = cv2.Sobel(bf_heavy, cv2.CV_32F, 0, 1, ksize=5)
         mag = np.sqrt(gx ** 2 + gy ** 2)
         mmax = mag.max()
         return mag / mmax if mmax > 0 else mag
 
-    def _detect_ridges(self, df: np.ndarray) -> np.ndarray:
-        """Hessian-based ridge/valley detector for thin dark lines."""
-        smooth = cv2.GaussianBlur(df, (0, 0), 1.5)
-        dxx = cv2.Sobel(smooth, cv2.CV_32F, 2, 0, ksize=5)
-        dyy = cv2.Sobel(smooth, cv2.CV_32F, 0, 2, ksize=5)
-        dxy = cv2.Sobel(smooth, cv2.CV_32F, 1, 1, ksize=5)
-        trace = dxx + dyy
-        det = dxx * dyy - dxy * dxy
-        discriminant = np.sqrt(np.clip(trace ** 2 - 4 * det, 0, None))
-        lambda1 = 0.5 * (trace + discriminant)
-        ridge = np.clip(lambda1, 0, None)
-        rmax = ridge.max()
-        return ridge / rmax if rmax > 0 else ridge
+    def _detect_orientation_change(self, gf_raw):
+        """
+        Structure tensor: detect where texture hatching direction changes.
+        Computed on RAW (un-denoised) image to preserve texture signal.
+        """
+        gx = cv2.Sobel(gf_raw, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(gf_raw, cv2.CV_32F, 0, 1, ksize=3)
 
-    # ------------------------------------------------------------------
-    # Signal fusion + thresholding + gap closing
-    # ------------------------------------------------------------------
+        # Large integration window to average over many texture lines
+        sigma = 20
+        Jxx = cv2.GaussianBlur(gx * gx, (0, 0), sigma)
+        Jxy = cv2.GaussianBlur(gx * gy, (0, 0), sigma)
+        Jyy = cv2.GaussianBlur(gy * gy, (0, 0), sigma)
 
-    def _fuse_signals(self, dog, neg_lap, dark, grad, ridge,
-                      texture_ratio, sensitivity) -> np.ndarray:
-        """Weighted combination adapted to texture level."""
-        if texture_ratio > 3.5:
-            # Clean image: all signals reliable
-            combo = (0.25 * dog + 0.20 * neg_lap +
-                     0.25 * dark + 0.15 * grad + 0.15 * ridge)
-        else:
-            # Textured: favor DoG and dark valleys (most robust)
-            combo = (0.30 * dog + 0.25 * neg_lap +
-                     0.25 * dark + 0.10 * grad + 0.10 * ridge)
+        angle = 0.5 * np.arctan2(2 * Jxy, Jxx - Jyy)
+        trace = Jxx + Jyy
+        det = Jxx * Jyy - Jxy * Jxy
+        disc = np.sqrt(np.clip(trace ** 2 - 4 * det, 0, None))
+        coherence = np.where(trace > 1e-8, disc / (trace + 1e-8), 0)
 
-        cmax = combo.max()
-        if cmax > 0:
-            combo /= cmax
+        # Gradient of orientation field (handles angle wrapping via sin/cos)
+        cos2a = np.cos(2 * angle)
+        sin2a = np.sin(2 * angle)
+        dc_x = cv2.Sobel(cos2a, cv2.CV_32F, 1, 0, ksize=5)
+        dc_y = cv2.Sobel(cos2a, cv2.CV_32F, 0, 1, ksize=5)
+        ds_x = cv2.Sobel(sin2a, cv2.CV_32F, 1, 0, ksize=5)
+        ds_y = cv2.Sobel(sin2a, cv2.CV_32F, 0, 1, ksize=5)
 
-        # Nonlinear boost controlled by sensitivity
-        combo = np.power(combo, 1.0 / max(sensitivity, 0.3))
-        cmax = combo.max()
-        if cmax > 0:
-            combo /= cmax
-
-        return combo
-
-    def _threshold_boundary_map(self, combo, texture_ratio, thresh_offset):
-        """Percentile-based thresholding (Otsu fails on skewed boundary scores)."""
-        if texture_ratio > 3.5:
-            pct = 82  # clean: detect more boundaries
-        else:
-            pct = 85  # textured: be more selective
-
-        threshold_val = np.percentile(combo, pct)
-        threshold_val += thresh_offset * 0.1
-        threshold_val = max(0.01, threshold_val)
-
-        return (combo > threshold_val).astype(np.uint8)
-
-    def _close_gaps(self, binary_bound, texture_ratio):
-        """Directional + round gap closing, then skeletonize."""
-        # Directional closing at 0°, 45°, 90°, 135°
-        length = 9 if texture_ratio <= 3.5 else 7
-        for angle in [0, 45, 90, 135]:
-            kern = np.zeros((length, length), dtype=np.uint8)
-            mid = length // 2
-            if angle == 0:
-                kern[mid, :] = 1
-            elif angle == 90:
-                kern[:, mid] = 1
-            elif angle == 45:
-                for i in range(length):
-                    kern[i, i] = 1
-            elif angle == 135:
-                for i in range(length):
-                    kern[i, length - 1 - i] = 1
-            binary_bound = cv2.morphologyEx(
-                binary_bound, cv2.MORPH_CLOSE, kern
-            )
-
-        # Round closing for remaining gaps
-        kernel_round = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        binary_bound = cv2.morphologyEx(
-            binary_bound, cv2.MORPH_CLOSE, kernel_round
+        orient_change = np.sqrt(
+            dc_x ** 2 + dc_y ** 2 + ds_x ** 2 + ds_y ** 2
         )
+        orient_change *= coherence
+        omax = orient_change.max()
+        return orient_change / omax if omax > 0 else orient_change
 
-        # Skeletonize to 1px + fatten slightly
-        skel = skeletonize(binary_bound > 0)
-        kernel_fat = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        final = cv2.dilate(skel.astype(np.uint8), kernel_fat, iterations=1)
+    def _detect_dog(self, bf):
+        fine = cv2.GaussianBlur(bf, (0, 0), 1.0)
+        coarse = cv2.GaussianBlur(bf, (0, 0), 5.0)
+        dog = np.abs(fine - coarse)
+        dmax = dog.max()
+        return dog / dmax if dmax > 0 else dog
 
-        return final
+    def _detect_log(self, bf):
+        blurred = cv2.GaussianBlur(bf, (0, 0), 3.0)
+        neg_lap = np.clip(-cv2.Laplacian(blurred, cv2.CV_32F), 0, None)
+        nmax = neg_lap.max()
+        return neg_lap / nmax if nmax > 0 else neg_lap
 
-    # ------------------------------------------------------------------
-    # Watershed splitting
-    # ------------------------------------------------------------------
+    def _detect_dark_valleys(self, df_raw):
+        scores = np.zeros_like(df_raw)
+        for ksize in [11, 21, 41]:
+            lm = cv2.GaussianBlur(df_raw, (ksize, ksize), ksize / 4.0)
+            scores += np.clip(lm - df_raw, 0, None)
+        smax = scores.max()
+        return scores / smax if smax > 0 else scores
 
-    def _watershed_split(self, labels, combo, grad, params):
-        """Split regions larger than 2x median area."""
-        areas = [r.area for r in regionprops(labels)
-                 if r.area >= params.min_grain_size_px]
-        if len(areas) < 3:
-            return labels
-
-        median_area = np.median(areas)
-        merge_thresh = median_area * 2.0
-
-        output = labels.copy()
-        max_lbl = labels.max()
-
-        for region in regionprops(labels):
-            if region.area < merge_thresh:
-                continue
-
-            rmask = (labels == region.label)
-            r0, c0, r1, c1 = region.bbox
-            lmask = rmask[r0:r1, c0:c1]
-            lcombo = combo[r0:r1, c0:c1]
-            lgrad = grad[r0:r1, c0:c1]
-
-            landscape = (0.5 * lgrad + 0.5 * lcombo)
-            lu8 = (landscape * 255).astype(np.uint8)
-
-            dist = ndi.distance_transform_edt(lmask)
-            min_d = max(params.watershed_min_dist, 5)
-            coords = peak_local_max(
-                dist, min_distance=min_d,
-                labels=lmask, exclude_border=False
-            )
-
-            if len(coords) <= 1:
-                continue
-
-            markers = np.zeros_like(lmask, dtype=np.int32)
-            for i, (r, c) in enumerate(coords, 1):
-                markers[r, c] = i
-
-            sub = watershed(lu8, markers, mask=lmask)
-            sub_r = regionprops(sub)
-
-            if (len(sub_r) > 1 and
-                    all(sr.area >= params.min_grain_size_px for sr in sub_r)):
-                for sr in sub_r:
-                    max_lbl += 1
-                    fm = np.zeros_like(labels, dtype=bool)
-                    fm[r0:r1, c0:c1] = (sub == sr.label)
-                    output[fm] = max_lbl
-
-        return output
+    def _detect_gradient(self, bf):
+        gx = cv2.Sobel(bf, cv2.CV_32F, 1, 0, ksize=5)
+        gy = cv2.Sobel(bf, cv2.CV_32F, 0, 1, ksize=5)
+        mag = np.sqrt(gx ** 2 + gy ** 2)
+        mmax = mag.max()
+        return mag / mmax if mmax > 0 else mag
 
     # ==================================================================
-    # PIPELINE B: Threshold-based (backward compatible)
+    # PIPELINE B: Threshold-based (unchanged)
     # ==================================================================
 
     def _threshold_pipeline(self, gray, image_bgr, params, progress):
@@ -633,18 +493,15 @@ class GrainDetector:
     def _measure_grains(self, labels, params, px_per_um):
         regions = regionprops(labels)
         grains = []
-
         for region in regions:
             if region.area < max(params.min_grain_size_px, 5):
                 continue
             if (params.max_grain_size_px > 0 and
                     region.area > params.max_grain_size_px):
                 continue
-
             area_px = float(region.area)
             perim_px = float(region.perimeter) if region.perimeter > 0 else 1.0
             eq_diam_px = float(region.equivalent_diameter_area)
-
             if px_per_um > 0:
                 px2 = px_per_um ** 2
                 area_um2 = area_px / px2
@@ -654,14 +511,12 @@ class GrainDetector:
                 minor_um = region.axis_minor_length / px_per_um
             else:
                 area_um2 = perim_um = eq_diam_um = major_um = minor_um = 0.0
-
             circularity = min(
                 (4 * np.pi * area_px) / (perim_px ** 2), 1.0)
             major_ax = region.axis_major_length
             minor_ax = region.axis_minor_length
             aspect = (major_ax / minor_ax) if minor_ax > 0 else 1.0
             cy, cx = region.centroid
-
             grains.append(GrainResult(
                 grain_id=region.label,
                 area_px=area_px, area_um2=area_um2,
@@ -675,7 +530,6 @@ class GrainDetector:
                 centroid_x=float(cx), centroid_y=float(cy),
                 bbox=region.bbox,
             ))
-
         return grains
 
     # ==================================================================
@@ -719,12 +573,10 @@ class GrainDetector:
             bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0][0]
             colors[lbl] = bgr.tolist()
             color_map[labels == lbl] = bgr
-
         alpha = 0.4
         mask = labels > 0
         blended = cv2.addWeighted(overlay, 1 - alpha, color_map, alpha, 0)
         overlay[mask] = blended[mask]
-
         grain_map = {g.grain_id: g for g in grains}
         for lbl in unique_labels:
             if lbl not in grain_map:
