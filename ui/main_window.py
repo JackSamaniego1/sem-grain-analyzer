@@ -231,6 +231,7 @@ class MainWindow(QMainWindow):
         self.settings.set_calibration.connect(self.open_calibration)
         self.settings.set_scan_area.connect(self.open_scan_area)
         self.settings.run_analysis.connect(self.run_analysis_all)
+        self.settings.run_analysis_current.connect(self.run_analysis_current)
         self.settings.export_excel.connect(self.export_all_excel)
 
         div = QFrame()
@@ -474,7 +475,7 @@ class MainWindow(QMainWindow):
         self._progress_dlg.setModal(False)
         self._progress_dlg.show()
 
-        self.settings.btn_analyze.setEnabled(False)
+        self.settings.set_analyze_enabled(False)
         self._run_next_pending()
 
     def run_analysis_current(self):
@@ -490,7 +491,7 @@ class MainWindow(QMainWindow):
         self._pending_tabs    = [tab]
         self._pending_indices = [idx]
         self._progress_dlg    = None
-        self.settings.btn_analyze.setEnabled(False)
+        self.settings.set_analyze_enabled(False)
         self._run_next_pending()
 
     def _cancel_analysis(self):
@@ -499,12 +500,12 @@ class MainWindow(QMainWindow):
         self._pending_indices.clear()
         if self._thread and self._thread.isRunning():
             self._thread.quit()
-        self.settings.btn_analyze.setEnabled(True)
+        self.settings.set_analyze_enabled(True)
         self._set_status("Analysis cancelled.")
 
     def _run_next_pending(self):
         if self._cancelled or not self._pending_tabs:
-            self.settings.btn_analyze.setEnabled(True)
+            self.settings.set_analyze_enabled(True)
             self.settings.set_export_enabled(bool(any(t.result for t in self._image_tabs)))
             total = sum(t.result.grain_count for t in self._image_tabs if t.result)
             if not self._cancelled:
