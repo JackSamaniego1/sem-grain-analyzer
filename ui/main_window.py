@@ -677,5 +677,5 @@ class MainWindow(QMainWindow):
             "<li>Click grain → Delete to remove</li>"
             "</ul>")
 
-    def _set_status(self, msg: str):
+    def _set_status(self, msg: str): 
         self.status_msg.setText(msg)
