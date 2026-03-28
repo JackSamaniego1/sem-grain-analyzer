@@ -200,19 +200,11 @@ class GrainDetector:
         balance = min(fg_frac, 1.0 - fg_frac)
 
         # Strong foreground/background separation → threshold mode
+        # (e.g. particles on a substrate, not mosaic grains)
         if balance < 0.20:
             return "threshold"
 
-        # Check contrast range: threshold-type images have dark groove
-        # boundaries (10th percentile < 70) with wide dynamic range (>90).
-        # Mosaic images have subtle boundaries with narrow range.
-        dark_10 = np.percentile(gray, 10)
-        bright_90 = np.percentile(gray, 90)
-        contrast_range = bright_90 - dark_10
-
-        if dark_10 < 70 and contrast_range > 90:
-            return "threshold"
-
+        # Everything else: boundary mode (handles both grooves and mosaic)
         return "boundary"
 
     # ==================================================================
@@ -236,8 +228,14 @@ class GrainDetector:
     def _boundary_pipeline(self, gray, image_bgr, params, progress):
         h, w = gray.shape
 
-        progress(5, "Measuring texture level...")
+        progress(5, "Measuring image characteristics...")
         texture_ratio = self._measure_texture(gray)
+
+        # Detect groove-type boundaries via morphological gradient
+        kern_mg = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        morph_grad = cv2.morphologyEx(gray, cv2.MORPH_GRADIENT, kern_mg)
+        groove_strength = morph_grad.astype(float).mean()
+        has_grooves = groove_strength > 55
 
         progress(8, "CLAHE enhancement...")
         if params.use_clahe:
@@ -247,6 +245,92 @@ class GrainDetector:
         else:
             enhanced = gray.copy()
 
+        if has_grooves:
+            # ---- GROOVE MODE: dark boundary lines between grains ----
+            return self._groove_boundary_pipeline(
+                enhanced, image_bgr, h, w, params, progress)
+        else:
+            # ---- MOSAIC MODE: subtle contrast/texture boundaries ----
+            return self._mosaic_boundary_pipeline(
+                enhanced, gray, image_bgr, h, w, texture_ratio, params, progress)
+
+    def _groove_boundary_pipeline(self, enhanced, image_bgr, h, w, params, progress):
+        """Boundary detection for images with dark groove boundaries."""
+        progress(12, "Light denoising (groove mode)...")
+        bl = cv2.bilateralFilter(enhanced, d=5, sigmaColor=25, sigmaSpace=5)
+        bf = bl.astype(np.float32) / 255.0
+
+        # Multi-scale black top-hat: extracts dark grooves at multiple widths
+        progress(20, "Multi-scale groove detection...")
+        bth = np.zeros_like(bf)
+        for ks in [9, 15, 21]:
+            k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ks, ks))
+            b = cv2.morphologyEx(enhanced, cv2.MORPH_BLACKHAT, k)
+            b = b.astype(np.float32)
+            b /= max(b.max(), 1e-6)
+            bth = np.maximum(bth, b)
+
+        progress(30, "Supporting signals...")
+        dog = np.abs(cv2.GaussianBlur(bf, (0, 0), 1.0) -
+                     cv2.GaussianBlur(bf, (0, 0), 5.0))
+        dog /= max(dog.max(), 1e-6)
+
+        gx = cv2.Sobel(bf, cv2.CV_32F, 1, 0, ksize=5)
+        gy = cv2.Sobel(bf, cv2.CV_32F, 0, 1, ksize=5)
+        grad = np.sqrt(gx ** 2 + gy ** 2)
+        grad /= max(grad.max(), 1e-6)
+
+        progress(35, "Building groove boundary map...")
+        # Black top-hat dominates for groove images
+        contrast_combo = 0.10 * dog + 0.10 * grad + 0.80 * bth
+        contrast_combo /= max(contrast_combo.max(), 1e-6)
+
+        power = 1.0 / max(params.edge_sensitivity, 0.3)
+        boosted = np.power(contrast_combo, power)
+        boosted /= max(boosted.max(), 1e-6)
+
+        # Tight smoothing to separate closely-packed grains
+        progress(42, "Finding grain centers (groove mode)...")
+        interior = 1.0 - boosted
+        interior_smooth = cv2.GaussianBlur(interior, (0, 0), 3.0)
+
+        min_dist = max(8, min(h, w) // 40)
+        thresh_abs = max(0.15, 0.35 + params.threshold_offset)
+        coords = peak_local_max(
+            interior_smooth, min_distance=min_dist,
+            threshold_abs=thresh_abs)
+
+        progress(50, f"Watershed ({len(coords)} seeds)...")
+        if len(coords) == 0:
+            labels = np.zeros((h, w), dtype=np.int32)
+        else:
+            markers = np.zeros((h, w), dtype=np.int32)
+            for i, (r, c) in enumerate(coords, 1):
+                markers[r, c] = i
+            labels = watershed(
+                (boosted * 255).astype(np.uint8), markers)
+
+        # Filter
+        min_sz = max(params.min_grain_size_px, 20)
+        for r in regionprops(labels):
+            if r.area < min_sz:
+                labels[labels == r.label] = 0
+            if (params.max_grain_size_px > 0 and
+                    r.area > params.max_grain_size_px):
+                labels[labels == r.label] = 0
+
+        # Relabel
+        unique = np.unique(labels)
+        unique = unique[unique > 0]
+        new_labels = np.zeros_like(labels)
+        for i, lbl in enumerate(unique, 1):
+            new_labels[labels == lbl] = i
+
+        return new_labels, (boosted * 255).astype(np.uint8)
+
+    def _mosaic_boundary_pipeline(self, enhanced, gray, image_bgr,
+                                   h, w, texture_ratio, params, progress):
+        """Boundary detection for mosaic images with subtle boundaries."""
         progress(12, "Adaptive denoising...")
         if texture_ratio > 3.5:
             bl = cv2.bilateralFilter(enhanced, d=5, sigmaColor=30, sigmaSpace=5)
