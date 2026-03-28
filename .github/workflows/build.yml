@@ -37,7 +37,7 @@ jobs:
           "
 
       - name: Build with PyInstaller
-        run: pyinstaller sem_grain_analyzer.spec --clean --noconfirm
+        run: pyinstaller grain_analyzer.spec --clean --noconfirm
 
       - name: Install NSIS
         run: choco install nsis -y
@@ -55,8 +55,8 @@ jobs:
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: SEMGrainAnalyzer-Windows-Setup
-          path: SEMGrainAnalyzer_Setup.exe
+          name: GrainAnalyzer-Windows-Setup
+          path: GrainAnalyzer_Setup.exe
           retention-days: 30
 
   build-macos:
@@ -91,14 +91,14 @@ jobs:
           "
 
       - name: Build with PyInstaller
-        run: pyinstaller sem_grain_analyzer.spec --clean --noconfirm
+        run: pyinstaller grain_analyzer.spec --clean --noconfirm
 
       - name: Create DMG
-        run: hdiutil create -volname "SEM Grain Analyzer" -srcfolder "dist/SEMGrainAnalyzer.app" -ov -format UDZO SEMGrainAnalyzer.dmg
+        run: hdiutil create -volname "Grain Analyzer" -srcfolder "dist/GrainAnalyzer.app" -ov -format UDZO GrainAnalyzer.dmg
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
-          name: SEMGrainAnalyzer-macOS-DMG
-          path: SEMGrainAnalyzer.dmg
+          name: GrainAnalyzer-macOS-DMG
+          path: GrainAnalyzer.dmg
           retention-days: 30
