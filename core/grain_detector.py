@@ -196,8 +196,24 @@ class GrainDetector:
         gray_f = gray.astype(np.float64) / 255.0
         blurred = gaussian(gray_f, sigma=2.0)
         thresh = threshold_otsu(blurred)
-        balance = min(np.mean(blurred > thresh), 1.0 - np.mean(blurred > thresh))
-        return "threshold" if balance < 0.20 else "boundary"
+        fg_frac = np.mean(blurred > thresh)
+        balance = min(fg_frac, 1.0 - fg_frac)
+
+        # Strong foreground/background separation → threshold mode
+        if balance < 0.20:
+            return "threshold"
+
+        # Check contrast range: threshold-type images have dark groove
+        # boundaries (10th percentile < 70) with wide dynamic range (>90).
+        # Mosaic images have subtle boundaries with narrow range.
+        dark_10 = np.percentile(gray, 10)
+        bright_90 = np.percentile(gray, 90)
+        contrast_range = bright_90 - dark_10
+
+        if dark_10 < 70 and contrast_range > 90:
+            return "threshold"
+
+        return "boundary"
 
     # ==================================================================
     # Texture measurement
@@ -283,10 +299,24 @@ class GrainDetector:
         grad = np.sqrt(gx ** 2 + gy ** 2)
         grad /= max(grad.max(), 1e-6)
 
-        progress(30, "Building contrast boundary map...")
-        # Contrast-dominant: step change is the strongest contrast signal
-        contrast_combo = (0.20 * dog + 0.10 * nlap + 0.15 * dark +
-                          0.40 * step + 0.15 * grad)
+        # Black top-hat: detects thin dark grooves (boundary lines)
+        progress(28, "Detecting dark grooves...")
+        kern_bth = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+        bth = cv2.morphologyEx(enhanced, cv2.MORPH_BLACKHAT, kern_bth)
+        bth = bth.astype(np.float32)
+        bth /= max(bth.max(), 1e-6)
+
+        progress(32, "Building contrast boundary map...")
+        # Adaptive weighting: black top-hat is critical for groove boundaries
+        # but causes over-segmentation on mosaic/texture images
+        if texture_ratio > 3.0:
+            # Groove-type: bth is the key signal
+            contrast_combo = (0.15 * dog + 0.10 * nlap + 0.10 * dark +
+                              0.20 * step + 0.10 * grad + 0.35 * bth)
+        else:
+            # Mosaic/texture: step change dominates, bth is minor
+            contrast_combo = (0.15 * dog + 0.10 * nlap + 0.15 * dark +
+                              0.40 * step + 0.10 * grad + 0.10 * bth)
         contrast_combo /= max(contrast_combo.max(), 1e-6)
 
         # Sensitivity boost
@@ -295,7 +325,7 @@ class GrainDetector:
         boosted /= max(boosted.max(), 1e-6)
 
         # ---- Watershed on contrast map ----
-        progress(40, "Finding grain centers...")
+        progress(42, "Finding grain centers...")
         interior = 1.0 - boosted
         interior_smooth = cv2.GaussianBlur(interior, (0, 0), 8.0)
 
@@ -614,7 +644,7 @@ class GrainDetector:
         alpha = 0.4
         mask = labels > 0
         blended = cv2.addWeighted(overlay, 1 - alpha, color_map, alpha, 0)
-        overlay[mask] = blended[mask] 
+        overlay[mask] = blended[mask]
         grain_map = {g.grain_id: g for g in grains}
         for lbl in unique_labels:
             if lbl not in grain_map:
