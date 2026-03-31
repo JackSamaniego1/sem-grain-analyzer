@@ -2,47 +2,75 @@
 
 Automatic grain detection and measurement tool for Scanning Electron Microscope (SEM) images.
 
+## Download & Install
+
+1. Go to the [Releases](https://github.com/JackSamaniego1/sem-grain-analyzer/releases) page
+2. Download **GrainAnalyzer_Setup.exe** (Windows) or **GrainAnalyzer.dmg** (macOS)
+3. Run the installer — everything is included, no additional setup needed
+
+The installer bundles all dependencies including the AI model. No Python installation required.
+
 ## Features
-- Load SEM images (TIFF, PNG, JPG, BMP)
-- Automatic scale bar detection
-- Pixel-to-micron calibration
-- Automatic grain detection using Otsu threshold + Watershed segmentation
-- Grain overlay visualization
-- Excel export with full statistics
 
-## Building the Installer
+- **Three detection modes** — AI-assisted (SAM + ASTM E112), threshold-based, and boundary-first
+- **Batch processing** — Analyze multiple images with a progress tracker
+- **Scale bar calibration** — Click two points on the scale bar for real-world units
+- **Scan area selection** — Exclude SEM info bars; border-touching grains auto-discarded
+- **Interactive editing** — Click a grain and press Delete to remove false detections
+- **Histograms** — Grain area and diameter distributions with adjustable bins
+- **Excel export** — Reports with high-res images, charts, statistics, and per-grain data
 
-### Windows
-1. Install Python 3.10+ from https://python.org (check "Add Python to PATH")
-2. Double-click `BUILD_WINDOWS.bat`
-3. Wait ~5 minutes. Done.
+## Quick Start
 
-Output: `dist/SEMGrainAnalyzer/SEMGrainAnalyzer.exe`
+1. **Open images** — Click "Open SEM Images" or Ctrl+O (select multiple with Ctrl+click)
+2. **Calibrate** — Click "Set Scale Bar", zoom into the scale bar, click both ends, enter the length
+3. **Set scan area** — Click "Set Scan Area" and draw a rectangle to exclude the SEM legend bar (optional)
+4. **Analyze** — Click "Analyze ALL Images" or press F5
+5. **Review** — Switch to overlay view to inspect results, delete any false detections
+6. **Export** — Click "Export to Excel" or Ctrl+E
 
-Optional: Install NSIS (https://nsis.sourceforge.io) before building to get a proper
-`SEMGrainAnalyzer_Setup.exe` installer instead of a zip.
+## Detection Modes
 
-### macOS
-1. Install Python 3.10+: `brew install python` or from https://python.org
-2. Run: `bash BUILD_MAC.sh`
-3. App bundle appears in `dist/SEMGrainAnalyzer.app`
+| Mode | Best For | Speed |
+|------|----------|-------|
+| **AI-assisted (SAM + ASTM E112)** | Complex grain structures, highest accuracy | Slow (30-90s CPU) |
+| **Threshold-based** | Bright grains on dark background (or vice versa) | Fast |
+| **Boundary-first** | Dense mosaic grains with dark groove boundaries | Fast |
 
-## Usage
+## Keyboard Shortcuts
 
-1. **Open Image** — Load your SEM image file
-2. **Set Calibration** — Enter scale bar pixel width and real-world length (µm)
-3. **Adjust Parameters** — Tune detection settings if needed
-4. **Analyze** — Click "Analyze Grains" (F5)
-5. **Export** — Save Excel report with statistics
+| Shortcut | Action |
+|----------|--------|
+| Ctrl+O | Open images |
+| F5 | Analyze all images |
+| Ctrl+F5 | Reanalyze current image |
+| Ctrl+E | Export all to Excel |
+| Ctrl+K | Set scale bar |
+| Ctrl+R | Set scan area |
+| Delete | Remove selected grain |
+| Scroll wheel | Zoom |
+| Alt+drag | Pan |
 
-## Detection Parameters
+## Documentation
 
-| Parameter | Description |
-|---|---|
-| Blur (σ) | Gaussian blur to reduce noise. Higher = smoother |
-| Threshold offset | Adjust Otsu auto-threshold. Negative = detect more |
-| Min grain area | Ignore regions smaller than this (removes debris) |
-| Max grain area | Ignore regions larger than this (0 = no limit) |
-| Watershed separation | Distance between grain centers for watershed splitting |
-| Dark grains | Check if grains are darker than background |
-| Use watershed | Separate touching/overlapping grains |
+Full documentation is available in the [docs](docs/) folder, covering the user guide and technical details.
+
+## Building from Source
+
+If you prefer to run from source instead of using the installer:
+
+```bash
+git clone https://github.com/JackSamaniego1/sem-grain-analyzer.git
+cd sem-grain-analyzer
+pip install -r requirements.txt
+python main.py
+```
+
+For the AI-assisted mode, download the SAM checkpoint (~375MB):
+
+```bash
+mkdir models
+curl -L -o models/sam_vit_b_01ec64.pth https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth
+```
+
+To build the installer yourself, double-click `BUILD_WINDOWS.bat` (Windows) or run `bash BUILD_MAC.sh` (macOS). Requires Python 3.10+.
