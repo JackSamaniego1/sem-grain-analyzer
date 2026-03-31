@@ -26,7 +26,7 @@ python --version
 
 :: Create a virtual environment
 echo.
-echo [1/5] Creating isolated Python environment...
+echo [1/7] Creating isolated Python environment...
 if exist build_env rmdir /s /q build_env
 python -m venv build_env
 if errorlevel 1 (
@@ -38,7 +38,7 @@ echo [OK] Environment created.
 
 :: Activate and install dependencies
 echo.
-echo [2/5] Installing dependencies (this may take a few minutes)...
+echo [2/7] Installing dependencies (this may take a few minutes)...
 call build_env\Scripts\activate.bat
 pip install --upgrade pip --quiet
 pip install pyinstaller PyQt6 opencv-python scikit-image scipy numpy openpyxl Pillow torch torchvision segment-anything
@@ -49,9 +49,26 @@ if errorlevel 1 (
 )
 echo [OK] Packages installed.
 
+:: Download SAM model checkpoint
+echo.
+echo [3/7] Downloading SAM model checkpoint (~375MB)...
+if not exist models mkdir models
+if not exist models\sam_vit_b_01ec64.pth (
+    echo Downloading sam_vit_b_01ec64.pth...
+    powershell -Command "Invoke-WebRequest -Uri 'https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth' -OutFile 'models\sam_vit_b_01ec64.pth'"
+    if errorlevel 1 (
+        echo ERROR: Failed to download SAM model. Check your internet connection.
+        pause
+        exit /b 1
+    )
+    echo [OK] SAM model downloaded.
+) else (
+    echo [OK] SAM model already exists, skipping download.
+)
+
 :: Generate icon
 echo.
-echo [3/5] Creating application icon...
+echo [4/7] Creating application icon...
 python -c "
 import struct, zlib, base64
 # Minimal valid .ico file (16x16, blue microscope-themed)
@@ -78,7 +95,7 @@ echo [OK] Icon step done.
 
 :: Run PyInstaller
 echo.
-echo [4/5] Building executable (this takes 2-5 minutes)...
+echo [5/7] Building executable (this takes 5-10 minutes)...
 pyinstaller grain_analyzer.spec --clean --noconfirm
 if errorlevel 1 (
     echo ERROR: PyInstaller build failed. See output above.
@@ -89,7 +106,7 @@ echo [OK] Executable built.
 
 :: Create installer with NSIS if available, otherwise zip
 echo.
-echo [5/5] Packaging...
+echo [6/7] Packaging...
 
 :: Check for NSIS
 where makensis >nul 2>&1

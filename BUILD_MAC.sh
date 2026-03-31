@@ -17,16 +17,25 @@ if ! command -v python3 &>/dev/null; then
 fi
 echo "[OK] $(python3 --version)"
 
-echo "[1/4] Creating virtual environment..."
+echo "[1/5] Creating virtual environment..."
 rm -rf build_env
 python3 -m venv build_env
 source build_env/bin/activate
 
-echo "[2/4] Installing packages..."
+echo "[2/5] Installing packages..."
 pip install --upgrade pip -q
 pip install pyinstaller PyQt6 opencv-python scikit-image scipy numpy openpyxl Pillow torch torchvision segment-anything
 
-echo "[3/4] Creating icon..."
+echo "[3/5] Downloading SAM model checkpoint (~375MB)..."
+mkdir -p models
+if [ ! -f models/sam_vit_b_01ec64.pth ]; then
+    curl -L -o models/sam_vit_b_01ec64.pth https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth
+    echo "SAM model downloaded."
+else
+    echo "SAM model already exists, skipping."
+fi
+
+echo "[4/5] Creating icon..."
 python3 -c "
 try:
     from PIL import Image, ImageDraw
@@ -48,7 +57,7 @@ except Exception as e:
     open('resources/icon.icns','wb').close()
 "
 
-echo "[4/4] Building application..."
+echo "[5/5] Building application..."
 pyinstaller grain_analyzer.spec --clean --noconfirm
 
 echo ""
