@@ -24,7 +24,7 @@ source build_env/bin/activate
 
 echo "[2/4] Installing packages..."
 pip install --upgrade pip -q
-pip install pyinstaller PyQt6 opencv-python scikit-image scipy numpy openpyxl Pillow
+pip install pyinstaller PyQt6 opencv-python scikit-image scipy numpy openpyxl Pillow torch torchvision segment-anything
 
 echo "[3/4] Creating icon..."
 python3 -c "
@@ -49,7 +49,7 @@ except Exception as e:
 "
 
 echo "[4/4] Building application..."
-pyinstaller sem_grain_analyzer.spec --clean --noconfirm
+pyinstaller grain_analyzer.spec --clean --noconfirm
 
 echo ""
 echo "============================================================"

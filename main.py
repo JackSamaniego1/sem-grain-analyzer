@@ -32,7 +32,7 @@ def _create_splash():
     p.setFont(QFont("Arial", 11))
     p.setPen(QColor(0, 200, 255))
     p.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom,
-               "\nDeveloped by Jack Samaniego\n\n")
+               "\n\n")
     p.end()
     return QSplashScreen(pixmap)
 

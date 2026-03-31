@@ -1,0 +1,18 @@
+# SAM model checkpoint (375MB - download separately)
+models/*.pth
+
+# Build artifacts
+build/
+dist/
+build_env/
+*.spec.bak
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

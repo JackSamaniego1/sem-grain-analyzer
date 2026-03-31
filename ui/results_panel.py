@@ -1,10 +1,10 @@
 """
-Results Panel v2.3
+Results Panel v2.4
 ==================
-- Grain Size Distribution tab with adjustable bin count
+- Grain Area Distribution tab with adjustable bin count
+- Grain Diameter Distribution tab with adjustable bin count
 - Bins start at 0, whole-number increments (0-10, 10-20, etc.)
 - Smart unit auto-scaling to avoid tiny decimals
-- Grain area on X axis
 """
 
 from PyQt6.QtWidgets import (
@@ -155,7 +155,7 @@ class HistogramWidget(QWidget):
             p.setPen(QPen(QColor(100, 100, 130)))
             p.setFont(QFont("Arial", 12))
             p.drawText(QRectF(0, 0, w, h), Qt.AlignmentFlag.AlignCenter,
-                       "Run analysis to see\ngrain size distribution")
+                       "Run analysis to see\ndistribution")
             p.end(); return
 
         ml, mr, mt, mb = self.MARGIN_LEFT, self.MARGIN_RIGHT, self.MARGIN_TOP, self.MARGIN_BOTTOM
@@ -300,6 +300,7 @@ class ResultsPanel(QWidget):
 
         self.tabs = QTabWidget(); self.tabs.setVisible(False); lay.addWidget(self.tabs)
 
+        # -- Grain Area Distribution tab --
         hc = QWidget(); hl = QVBoxLayout(hc); hl.setContentsMargins(0, 0, 0, 0); hl.setSpacing(4)
         bb = QHBoxLayout()
         bl = QLabel("Bins:"); bl.setStyleSheet("color:#aaaacc;font-size:11px;"); bb.addWidget(bl)
@@ -308,7 +309,18 @@ class ResultsPanel(QWidget):
         self.bin_spin.valueChanged.connect(self._on_bin_changed); bb.addWidget(self.bin_spin)
         bb.addStretch(); hl.addLayout(bb)
         self.histogram = HistogramWidget(); hl.addWidget(self.histogram)
-        self.tabs.addTab(hc, "Grain Size Distribution")
+        self.tabs.addTab(hc, "Grain Area Distribution")
+
+        # -- Grain Diameter Distribution tab --
+        hc2 = QWidget(); hl2 = QVBoxLayout(hc2); hl2.setContentsMargins(0, 0, 0, 0); hl2.setSpacing(4)
+        bb2 = QHBoxLayout()
+        bl2 = QLabel("Bins:"); bl2.setStyleSheet("color:#aaaacc;font-size:11px;"); bb2.addWidget(bl2)
+        self.diam_bin_spin = QSpinBox(); self.diam_bin_spin.setRange(3, 100); self.diam_bin_spin.setValue(0)
+        self.diam_bin_spin.setToolTip("Number of histogram bins"); self.diam_bin_spin.setFixedWidth(70)
+        self.diam_bin_spin.valueChanged.connect(self._on_diam_bin_changed); bb2.addWidget(self.diam_bin_spin)
+        bb2.addStretch(); hl2.addLayout(bb2)
+        self.diam_histogram = HistogramWidget(); hl2.addWidget(self.diam_histogram)
+        self.tabs.addTab(hc2, "Grain Diameter Distribution")
 
         tw = QWidget(); tl = QVBoxLayout(tw); tl.setContentsMargins(0, 4, 0, 0)
         self.table = QTableWidget(); self.table.setAlternatingRowColors(True)
@@ -328,6 +340,9 @@ class ResultsPanel(QWidget):
 
     def _on_bin_changed(self, val):
         self.histogram.set_bin_count(val); self.bin_count_changed.emit(val)
+
+    def _on_diam_bin_changed(self, val):
+        self.diam_histogram.set_bin_count(val)
 
     def get_bin_count(self):
         if self._current_result and self._current_result.grains:
@@ -367,9 +382,15 @@ class ResultsPanel(QWidget):
         self.tabs.setCurrentIndex(0)
 
     def _update_histogram(self, result):
-        if not result.grains: self.histogram.clear_data(); return
-        _, am, _, _ = smart_unit(result.px_per_um)
+        if not result.grains:
+            self.histogram.clear_data()
+            self.diam_histogram.clear_data()
+            return
+        _, am, _, dm = smart_unit(result.px_per_um)
         au = "nm²" if am > 1 else "µm²"
+        du = "nm" if dm > 1 else "µm"
+
+        # Area histogram
         if result.has_calibration:
             values = np.array([g.area_um2 * am for g in result.grains])
             xlabel = f"Grain Area ({au})"
@@ -381,6 +402,19 @@ class ResultsPanel(QWidget):
         self.histogram.set_data(values, xlabel, au, nb)
         actual = self.histogram.get_bin_count()
         self.bin_spin.blockSignals(True); self.bin_spin.setValue(actual); self.bin_spin.blockSignals(False)
+
+        # Diameter histogram
+        if result.has_calibration:
+            diam_values = np.array([g.equivalent_diameter_um * dm for g in result.grains])
+            diam_xlabel = f"Grain Diameter ({du})"
+        else:
+            diam_values = np.array([g.equivalent_diameter_px for g in result.grains])
+            diam_xlabel = "Grain Diameter (px)"; du = "px"
+        dnb = self.diam_bin_spin.value()
+        if dnb < 3: dnb = 0
+        self.diam_histogram.set_data(diam_values, diam_xlabel, du, dnb)
+        diam_actual = self.diam_histogram.get_bin_count()
+        self.diam_bin_spin.blockSignals(True); self.diam_bin_spin.setValue(diam_actual); self.diam_bin_spin.blockSignals(False)
 
     def _populate_table(self, result, au, du, am, dm):
         hc = result.has_calibration
@@ -431,4 +465,5 @@ class ResultsPanel(QWidget):
     def clear(self):
         self._current_result = None
         self.empty_label.setVisible(True); self.stats_widget.setVisible(False)
-        self.tabs.setVisible(False); self.table.setRowCount(0); self.histogram.clear_data()
+        self.tabs.setVisible(False); self.table.setRowCount(0)
+        self.histogram.clear_data(); self.diam_histogram.clear_data()

@@ -39,11 +39,11 @@ def _fmt(val):
     if av >= 0.1: return f"{val:.3f}"
     return f"{val:.3g}"
 
-def _simg(bgr, mw=300):
+def _simg(bgr, mw=800):
     h, w = bgr.shape[:2]
-    if w > mw: s = mw / w; bgr = cv2.resize(bgr, (mw, int(h * s)))
+    if w > mw: s = mw / w; bgr = cv2.resize(bgr, (mw, int(h * s)), interpolation=cv2.INTER_AREA)
     t = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-    cv2.imwrite(t.name, bgr); t.close(); return t.name
+    cv2.imwrite(t.name, bgr, [cv2.IMWRITE_PNG_COMPRESSION, 3]); t.close(); return t.name
 
 
 def _build_bins(grains, ppu, n_bins=0):
@@ -74,6 +74,84 @@ def _build_bins(grains, ppu, n_bins=0):
     return labels, counts.tolist(), edges.tolist(), au, vals
 
 
+def _build_diam_bins(grains, ppu, n_bins=0):
+    """Build whole-number bins for grain diameter."""
+    _, _, du, dm = _unit(ppu)
+    if ppu > 0:
+        vals = np.array([g.equivalent_diameter_um * dm for g in grains])
+    else:
+        vals = np.array([g.equivalent_diameter_px for g in grains])
+        du = "px"
+    if len(vals) < 2: return [], [], [], du, vals
+
+    vmax = float(np.max(vals))
+    if n_bins < 3:
+        n_bins = min(max(int(math.sqrt(len(vals))), 5), 25)
+    bw = max(1, math.ceil(vmax / n_bins))
+
+    edges = []
+    e = 0
+    while e <= vmax + bw:
+        edges.append(e); e += bw
+    edges = np.array(edges, dtype=float)
+    counts, _ = np.histogram(vals, bins=edges)
+
+    while len(counts) > 1 and counts[-1] == 0:
+        counts = counts[:-1]; edges = edges[:len(counts) + 1]
+
+    labels = [f"{int(edges[i])}-{int(edges[i+1])}{du}" for i in range(len(counts))]
+    return labels, counts.tolist(), edges.tolist(), du, vals
+
+
+def _write_diam_hist(ws, grains, ppu, start_row, sc=1, chart_anchor=None, n_bins=0):
+    labels, counts, edges, du, vals = _build_diam_bins(grains, ppu, n_bins)
+    if not labels: return start_row
+    nb = len(labels)
+    mu, sigma = float(np.mean(vals)), float(np.std(vals))
+    bw = edges[1] - edges[0]; nt = len(vals)
+
+    dr = start_row; hc = sc
+    ws.cell(dr, hc, "Bin Range").font = _hfn(10); ws.cell(dr, hc).fill = _hf(C_MID_BLUE); ws.cell(dr, hc).alignment = _center
+    ws.cell(dr, hc+1, "Count").font = _hfn(10); ws.cell(dr, hc+1).fill = _hf(C_MID_BLUE); ws.cell(dr, hc+1).alignment = _center
+    ws.cell(dr, hc+2, "Normal Fit").font = _hfn(10); ws.cell(dr, hc+2).fill = _hf(C_MID_BLUE); ws.cell(dr, hc+2).alignment = _center
+
+    for i in range(nb):
+        r = dr + 1 + i
+        ws.cell(r, hc, labels[i]).font = _bf(9); ws.cell(r, hc).border = _border; ws.cell(r, hc).alignment = _center
+        ws.cell(r, hc+1, int(counts[i])).font = _bf(); ws.cell(r, hc+1).border = _border; ws.cell(r, hc+1).alignment = _center
+        bc = (edges[i] + edges[i+1]) / 2.0
+        nv = 0
+        if sigma > 0:
+            nv = (1.0 / (sigma * math.sqrt(2*math.pi))) * math.exp(-0.5*((bc-mu)/sigma)**2) * bw * nt
+        ws.cell(r, hc+2, round(nv, 2)).font = _bf(); ws.cell(r, hc+2).border = _border; ws.cell(r, hc+2).alignment = _center
+
+    bar = BarChart(); bar.type = "col"; bar.title = "Grain Diameter Distribution"
+    bar.y_axis.title = "Number of Grains"; bar.x_axis.title = f"Grain Diameter ({du})"
+    bar.style = 10; bar.width = 18; bar.height = 12; bar.legend = None; bar.gapWidth = 0
+    bar.add_data(Reference(ws, min_col=hc+1, min_row=dr, max_row=dr+nb), titles_from_data=True)
+    bar.set_categories(Reference(ws, min_col=hc, min_row=dr+1, max_row=dr+nb))
+    bar.x_axis.tickLblPos = "low"
+    if bar.series:
+        s = bar.series[0]; s.graphicalProperties.solidFill = "48B07A"
+        s.graphicalProperties.line.solidFill = "1E1E2D"; s.graphicalProperties.line.width = 6000
+
+    line = LineChart()
+    line.add_data(Reference(ws, min_col=hc+2, min_row=dr, max_row=dr+nb), titles_from_data=True)
+    line.legend = None
+    if line.series:
+        s = line.series[0]; s.graphicalProperties.line.solidFill = "DC3278"
+        s.graphicalProperties.line.width = 25000; s.smooth = True
+    bar += line
+
+    if chart_anchor:
+        ws.add_chart(bar, chart_anchor)
+    else:
+        ws.add_chart(bar, f"{get_column_letter(hc+4)}{dr}")
+
+    _scw(ws, hc, 18); _scw(ws, hc+1, 10); _scw(ws, hc+2, 12)
+    return dr + nb + 2
+
+
 def _write_hist(ws, grains, ppu, start_row, sc=1, chart_anchor=None, n_bins=0):
     labels, counts, edges, au, vals = _build_bins(grains, ppu, n_bins)
     if not labels: return start_row
@@ -98,7 +176,7 @@ def _write_hist(ws, grains, ppu, start_row, sc=1, chart_anchor=None, n_bins=0):
         ws.cell(r, hc+2, round(nv, 2)).font = _bf(); ws.cell(r, hc+2).border = _border; ws.cell(r, hc+2).alignment = _center
 
     # Build chart
-    bar = BarChart(); bar.type = "col"; bar.title = "Grain Size Distribution"
+    bar = BarChart(); bar.type = "col"; bar.title = "Grain Area Distribution"
     bar.y_axis.title = "Number of Grains"; bar.x_axis.title = f"Grain Area ({au})"
     bar.style = 10; bar.width = 18; bar.height = 12; bar.legend = None; bar.gapWidth = 0
     bar.add_data(Reference(ws, min_col=hc+1, min_row=dr, max_row=dr+nb), titles_from_data=True)
@@ -176,7 +254,7 @@ def _write_overview(wb, tabs, n_bins):
     c.font = Font(name="Arial", size=18, bold=True, color=C_WHITE); c.fill = _hf(C_DARK_BLUE); c.alignment = _center
     ws.row_dimensions[1].height = 36
     ws.merge_cells("A2:H2"); c = ws["A2"]
-    c.value = f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {len(tabs)} image(s) | Developer: Jack Samaniego"
+    c.value = f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {len(tabs)} image(s)"
     c.font = Font(name="Arial", size=10, color=C_WHITE); c.fill = _hf(C_MID_BLUE); c.alignment = _center
 
     ag = []; ppu = 0.0
@@ -199,9 +277,13 @@ def _write_overview(wb, tabs, n_bins):
         ws.merge_cells(f"A{row}:C{row}"); ws.cell(row,1,"Combined Summary").font = _hfn(12)
         ws.cell(row,1).fill = _hf(C_DARK_BLUE); ws.cell(row,1).alignment = _center; row += 1
         row = _write_summary(ws, comb, "All Images", row); row += 1
-        ws.merge_cells(f"A{row}:C{row}"); ws.cell(row,1,"Grain Size Distribution").font = _hfn(12)
+        ws.merge_cells(f"A{row}:C{row}"); ws.cell(row,1,"Grain Area Distribution").font = _hfn(12)
         ws.cell(row,1).fill = _hf(C_DARK_BLUE); ws.cell(row,1).alignment = _center; row += 1
-        _write_hist(ws, ag, ppu, row, n_bins=n_bins)
+        row = _write_hist(ws, ag, ppu, row, n_bins=n_bins)
+        row += 16  # space for chart
+        ws.merge_cells(f"A{row}:C{row}"); ws.cell(row,1,"Grain Diameter Distribution").font = _hfn(12)
+        ws.cell(row,1).fill = _hf(C_DARK_BLUE); ws.cell(row,1).alignment = _center; row += 1
+        _write_diam_hist(ws, ag, ppu, row, n_bins=n_bins)
     _scw(ws, 1, 28); _scw(ws, 2, 18); _scw(ws, 3, 16)
 
 
@@ -216,17 +298,25 @@ def _write_img_summary(wb, result, ip, bgr, idx, n_bins):
     ir = 3
     if bgr is not None:
         try:
-            ws.add_image(XlImage(_simg(bgr, 280)), f"A{ir}")
+            orig_img = XlImage(_simg(bgr, 800))
+            orig_img.width = 400; orig_img.height = int(400 * bgr.shape[0] / bgr.shape[1])
+            ws.add_image(orig_img, f"A{ir}")
             if result.overlay_image is not None:
-                ws.add_image(XlImage(_simg(result.overlay_image, 280)), f"E{ir}")
+                ovl_img = XlImage(_simg(result.overlay_image, 800))
+                ovl_img.width = 400; ovl_img.height = int(400 * result.overlay_image.shape[0] / result.overlay_image.shape[1])
+                ws.add_image(ovl_img, f"E{ir}")
         except Exception: pass
 
-    # Chart at column J (right of both images, not overlapping)
+    # Charts at column J (right of both images, not overlapping)
     if result.grains:
-        # Data table goes at row 22+ (below images), chart anchors at J3
+        # Area histogram: data at row 22+, chart at J3
         data_start = 22
-        _write_hist(ws, result.grains, result.px_per_um, data_start,
+        data_end = _write_hist(ws, result.grains, result.px_per_um, data_start,
                     sc=1, chart_anchor="J3", n_bins=n_bins)
+        # Diameter histogram: data below area data, chart at J20
+        diam_data_start = data_end + 2
+        _write_diam_hist(ws, result.grains, result.px_per_um, diam_data_start,
+                    sc=1, chart_anchor="J20", n_bins=n_bins)
 
     # Summary table below images
     hi = bgr.shape[0] if bgr is not None else 300

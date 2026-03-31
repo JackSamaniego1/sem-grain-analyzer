@@ -41,7 +41,7 @@ echo.
 echo [2/5] Installing dependencies (this may take a few minutes)...
 call build_env\Scripts\activate.bat
 pip install --upgrade pip --quiet
-pip install pyinstaller PyQt6 opencv-python scikit-image scipy numpy openpyxl Pillow
+pip install pyinstaller PyQt6 opencv-python scikit-image scipy numpy openpyxl Pillow torch torchvision segment-anything
 if errorlevel 1 (
     echo ERROR: Failed to install packages. Check your internet connection.
     pause
@@ -79,7 +79,7 @@ echo [OK] Icon step done.
 :: Run PyInstaller
 echo.
 echo [4/5] Building executable (this takes 2-5 minutes)...
-pyinstaller sem_grain_analyzer.spec --clean --noconfirm
+pyinstaller grain_analyzer.spec --clean --noconfirm
 if errorlevel 1 (
     echo ERROR: PyInstaller build failed. See output above.
     pause

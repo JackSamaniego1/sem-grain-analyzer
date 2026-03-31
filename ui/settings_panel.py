@@ -117,7 +117,7 @@ class SettingsPanel(QScrollArea):
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(title)
 
-        ver = QLabel("v2.3  —  by Jack Samaniego")
+        ver = QLabel("v2.3")
         ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ver.setStyleSheet("color: #6666aa; font-size: 11px;")
         lay.addWidget(ver)
@@ -184,21 +184,24 @@ class SettingsPanel(QScrollArea):
         mode_lay.setSpacing(6)
 
         self.mode_combo = QComboBox()
-        self.mode_combo.addItem("Auto-detect (recommended)", "auto")
-        self.mode_combo.addItem("Boundary-first (mosaic grains)", "boundary")
+        self.mode_combo.addItem("AI-assisted  (SAM + ASTM E112)", "sam_astm")
         self.mode_combo.addItem("Threshold-based (grains on background)", "threshold")
+        self.mode_combo.addItem("Boundary-first (mosaic grains)", "boundary")
         self.mode_combo.setToolTip(
-            "Auto: automatically chooses the best method for your image.\n\n"
+            "Threshold-based: for images with distinct bright grains on\n"
+            "a dark background (or vice versa).\n\n"
             "Boundary-first: for images where grains fill the entire view\n"
             "and are separated by thin dark grooves (most SEM grain images).\n\n"
-            "Threshold-based: for images with distinct bright grains on\n"
-            "a dark background (or vice versa)."
+            "AI-assisted: uses Meta's SAM model for segmentation,\n"
+            "refined with ASTM E112 intercept analysis. Most accurate\n"
+            "but slower (requires SAM checkpoint in 'models' folder)."
         )
         mode_lay.addWidget(self.mode_combo)
 
         mode_hint = QLabel(
-            "Auto selects boundary mode for dense grain mosaics\n"
-            "and threshold mode for sparse grains on background."
+            "Threshold mode for sparse grains on background.\n"
+            "Boundary mode for dense grain mosaics.\n"
+            "AI-assisted for best accuracy (requires SAM model)."
         )
         mode_hint.setStyleSheet("color: #888899; font-size: 10px;")
         mode_hint.setWordWrap(True)
@@ -210,7 +213,9 @@ class SettingsPanel(QScrollArea):
         # ============================================================
         # -- Image Enhancement (collapsible, collapsed by default) --
         # ============================================================
-        enh_collapsible = CollapsibleGroupBox("Image Enhancement", collapsed=True)
+        self._enh_collapsible = CollapsibleGroupBox("Image Enhancement", collapsed=True)
+        enh_collapsible = self._enh_collapsible
+        enh_collapsible.setVisible(False)
 
         enh_inner = QWidget()
         enh_lay = QFormLayout(enh_inner)
@@ -243,7 +248,9 @@ class SettingsPanel(QScrollArea):
         # ============================================================
         # -- Detection Parameters (collapsible, collapsed by default) --
         # ============================================================
-        det_collapsible = CollapsibleGroupBox("Detection Parameters", collapsed=True)
+        self._det_collapsible = CollapsibleGroupBox("Detection Parameters", collapsed=True)
+        det_collapsible = self._det_collapsible
+        det_collapsible.setVisible(False)
 
         det_inner = QWidget()
         det_lay = QFormLayout(det_inner)
@@ -346,6 +353,7 @@ class SettingsPanel(QScrollArea):
                    self.clahe_cb, self.adaptive_cb]:
             cb.stateChanged.connect(self._emit_params)
         self.mode_combo.currentIndexChanged.connect(self._emit_params)
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
 
         self._sep()
 
@@ -406,7 +414,7 @@ class SettingsPanel(QScrollArea):
 
     def _reset_params(self):
         d = DetectionParams()
-        self.mode_combo.setCurrentIndex(0)  # "auto"
+        self.mode_combo.setCurrentIndex(0)  # "sam_astm"
         self.blur_spin.setValue(d.blur_sigma)
         self.thresh_spin.setValue(d.threshold_offset)
         self.min_size_spin.setValue(d.min_grain_size_px)
@@ -460,6 +468,25 @@ class SettingsPanel(QScrollArea):
         else:
             x, y, w, h = rect
             self.lbl_scan_area.setText(f"Scan area: {w}×{h}px at ({x},{y})")
+
+    def show_tuning_sections(self):
+        """Reveal Image Enhancement and Detection Parameters after analysis,
+        but only if a non-SAM mode is selected."""
+        mode = self.mode_combo.currentData()
+        show = mode != "sam_astm"
+        self._enh_collapsible.setVisible(show)
+        self._det_collapsible.setVisible(show)
+        self._analysis_done = True
+
+    def _on_mode_changed(self):
+        """Hide tuning sections when SAM is selected, show if analysis was done with other modes."""
+        mode = self.mode_combo.currentData()
+        if mode == "sam_astm":
+            self._enh_collapsible.setVisible(False)
+            self._det_collapsible.setVisible(False)
+        elif getattr(self, '_analysis_done', False):
+            self._enh_collapsible.setVisible(True)
+            self._det_collapsible.setVisible(True)
 
     def set_export_enabled(self, enabled: bool):
         self.btn_export.setEnabled(enabled)

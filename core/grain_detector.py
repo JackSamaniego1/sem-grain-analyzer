@@ -22,6 +22,7 @@ contrast-based result, never override it. This prevents over-segmentation
 on clean images while still catching subtle boundaries on textured ones.
 """
 
+import sys
 import numpy as np
 import cv2
 from scipy import ndimage as ndi
@@ -126,7 +127,10 @@ class GrainDetector:
         if mode == "auto":
             mode = self._auto_detect_mode(gray)
 
-        if mode == "boundary":
+        if mode == "sam_astm":
+            labels, binary = self._sam_astm_pipeline(
+                gray, image_bgr, params, progress)
+        elif mode == "boundary":
             labels, binary = self._boundary_pipeline(
                 gray, image_bgr, params, progress)
         else:
@@ -637,6 +641,239 @@ class GrainDetector:
             labels, _ = ndi.label(binary_bool)
 
         return labels, binary_bool.astype(np.uint8) * 255
+
+    # ==================================================================
+    # PIPELINE C: SAM + ASTM E112 (AI-assisted)
+    # ==================================================================
+
+    def _sam_astm_pipeline(self, gray, image_bgr, params, progress):
+        """
+        Uses Meta's Segment Anything Model (SAM) for instance segmentation,
+        then applies ASTM E112 intercept-based validation.
+        """
+        from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
+        import torch
+        import os
+
+        h, w = gray.shape
+
+        # --- Step 1: Load SAM model ---
+        progress(2, "Loading SAM model...")
+        model_type = "vit_b"
+        # Look for checkpoint in a few locations (including PyInstaller bundle)
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        project_dir = os.path.dirname(script_dir)
+        frozen_dir = getattr(sys, '_MEIPASS', project_dir)
+        checkpoint_name = "sam_vit_b_01ec64.pth"
+        search_paths = [
+            os.path.join(frozen_dir, "models", checkpoint_name),
+            os.path.join(project_dir, "models", checkpoint_name),
+            os.path.join(project_dir, checkpoint_name),
+            os.path.join(script_dir, checkpoint_name),
+        ]
+        checkpoint_path = None
+        for p in search_paths:
+            if os.path.isfile(p):
+                checkpoint_path = p
+                break
+
+        if checkpoint_path is None:
+            raise FileNotFoundError(
+                f"SAM checkpoint not found. Please download '{checkpoint_name}' "
+                f"and place it in the 'models' folder next to main.py.\n"
+                f"Download: https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
+            )
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        progress(5, f"Loading SAM weights to {device.upper()}...")
+        sam = sam_model_registry[model_type](checkpoint=checkpoint_path)
+        sam.to(device=device)
+
+        # --- Step 2: Generate masks with SAM ---
+        # Downscale large images for CPU speed
+        max_dim = 1024 if device == "cpu" else 2048
+        scale = 1.0
+        if max(h, w) > max_dim:
+            scale = max_dim / max(h, w)
+            new_h, new_w = int(h * scale), int(w * scale)
+            image_resized = cv2.resize(image_bgr, (new_w, new_h),
+                                       interpolation=cv2.INTER_AREA)
+            progress(8, f"Downscaled {w}x{h} → {new_w}x{new_h} for speed...")
+        else:
+            image_resized = image_bgr
+
+        # Tune SAM parameters — use 32 points for CPU, 64 for GPU
+        min_area = max(params.min_grain_size_px, 50)
+        pts = 32 if device == "cpu" else 64
+        mask_generator = SamAutomaticMaskGenerator(
+            model=sam,
+            points_per_side=pts,
+            pred_iou_thresh=0.80,
+            stability_score_thresh=0.88,
+            crop_n_layers=0,
+            min_mask_region_area=int(min_area * scale * scale),
+        )
+
+        # SAM expects RGB
+        image_rgb = cv2.cvtColor(image_resized, cv2.COLOR_BGR2RGB)
+
+        # Monkey-patch SAM's predict method to track progress
+        total_points = pts * pts  # total point prompts
+        batch_size = mask_generator.points_per_batch  # default 64
+        total_batches = max(1, (total_points + batch_size - 1) // batch_size)
+        batch_counter = [0]
+        original_predict = sam.mask_decoder.forward
+
+        def _tracked_forward(*args, **kwargs):
+            batch_counter[0] += 1
+            pct = 10 + int(40 * batch_counter[0] / total_batches)
+            pct = min(pct, 50)
+            progress(pct, f"SAM on {device.upper()}: batch {batch_counter[0]}/{total_batches} "
+                          f"({pct}%)")
+            return original_predict(*args, **kwargs)
+
+        sam.mask_decoder.forward = _tracked_forward
+        progress(10, f"Running SAM on {device.upper()}: 0/{total_batches} batches...")
+        masks = mask_generator.generate(image_rgb)
+        sam.mask_decoder.forward = original_predict  # restore
+
+        # Scale masks back up if we downscaled
+        if scale < 1.0:
+            progress(55, "Upscaling masks to original resolution...")
+            for m in masks:
+                m['segmentation'] = cv2.resize(
+                    m['segmentation'].astype(np.uint8), (w, h),
+                    interpolation=cv2.INTER_NEAREST).astype(bool)
+                m['area'] = int(np.sum(m['segmentation']))
+
+        progress(60, f"SAM found {len(masks)} candidate regions...")
+
+        # --- Step 3: Filter and build label image ---
+        progress(65, "Filtering masks...")
+        # Sort by area descending so smaller grains overwrite larger background
+        masks = sorted(masks, key=lambda m: m['area'], reverse=True)
+
+        labels = np.zeros((h, w), dtype=np.int32)
+        binary = np.zeros((h, w), dtype=np.uint8)
+        grain_id = 0
+
+        max_area = params.max_grain_size_px if params.max_grain_size_px > 0 else (h * w * 0.5)
+
+        for mask_data in masks:
+            area = mask_data['area']
+            # Skip too small or too large
+            if area < min_area or area > max_area:
+                continue
+            # Skip masks that cover too much of the image (background)
+            if area > h * w * 0.4:
+                continue
+            # Filter by predicted quality
+            if mask_data['predicted_iou'] < 0.75:
+                continue
+
+            seg = mask_data['segmentation']  # bool array h x w
+
+            # Check overlap: skip if >50% overlaps existing grains
+            overlap = np.sum(seg & (labels > 0))
+            if overlap > 0.5 * area:
+                continue
+
+            grain_id += 1
+            labels[seg] = grain_id
+            binary[seg] = 255
+
+        progress(72, f"Accepted {grain_id} grains after filtering...")
+
+        # --- Step 4: ASTM E112 intercept validation ---
+        progress(75, "ASTM E112 intercept analysis...")
+        labels = self._astm_e112_refine(labels, params, h, w)
+
+        # Relabel contiguously
+        unique = np.unique(labels)
+        unique = unique[unique > 0]
+        new_labels = np.zeros_like(labels)
+        for i, lbl in enumerate(unique, 1):
+            new_labels[labels == lbl] = i
+
+        binary = (new_labels > 0).astype(np.uint8) * 255
+        return new_labels, binary
+
+    def _astm_e112_refine(self, labels, params, h, w):
+        """
+        Apply ASTM E112 linear intercept method to validate and refine
+        grain segmentation. Grains that are suspiciously large compared
+        to the intercept-derived mean grain size get re-examined.
+        """
+        # Draw test lines (horizontal + vertical) and count boundary crossings
+        n_lines = 20
+        total_intercepts = 0
+        total_line_length = 0
+
+        # Horizontal test lines
+        for i in range(n_lines):
+            row = int(h * (i + 1) / (n_lines + 1))
+            line = labels[row, :]
+            crossings = np.sum(np.diff(line) != 0)
+            total_intercepts += crossings
+            total_line_length += w
+
+        # Vertical test lines
+        for i in range(n_lines):
+            col = int(w * (i + 1) / (n_lines + 1))
+            line = labels[:, col]
+            crossings = np.sum(np.diff(line) != 0)
+            total_intercepts += crossings
+            total_line_length += h
+
+        if total_intercepts < 2:
+            return labels
+
+        # Mean intercept length in pixels
+        mean_intercept_px = total_line_length / max(total_intercepts, 1)
+        # Expected grain area from intercept (circular approximation)
+        expected_grain_area = np.pi * (mean_intercept_px / 2) ** 2
+
+        # Any region > 4x the expected area is likely multiple merged grains
+        # Try to split them with watershed
+        merge_threshold = expected_grain_area * 4.0
+        output = labels.copy()
+        max_lbl = labels.max()
+
+        for region in regionprops(labels):
+            if region.area < merge_threshold:
+                continue
+
+            rmask = (labels == region.label)
+            r0, c0, r1, c1 = region.bbox
+            lmask = rmask[r0:r1, c0:c1]
+
+            # Use distance transform + watershed to split
+            dist = ndi.distance_transform_edt(lmask)
+            min_d = max(5, int(mean_intercept_px / 3))
+            coords = peak_local_max(
+                dist, min_distance=min_d,
+                labels=lmask, exclude_border=False)
+
+            if len(coords) <= 1:
+                continue
+
+            lmarkers = np.zeros_like(lmask, dtype=np.int32)
+            for i, (r, c) in enumerate(coords, 1):
+                lmarkers[r, c] = i
+
+            sub = watershed(-dist, lmarkers, mask=lmask)
+            sub_regions = regionprops(sub)
+
+            min_sz = max(params.min_grain_size_px, 20)
+            if (len(sub_regions) > 1 and
+                    all(sr.area >= min_sz for sr in sub_regions)):
+                for sr in sub_regions:
+                    max_lbl += 1
+                    fm = np.zeros_like(labels, dtype=bool)
+                    fm[r0:r1, c0:c1] = (sub == sr.label)
+                    output[fm] = max_lbl
+
+        return output
 
     # ==================================================================
     # Measurement

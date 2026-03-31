@@ -3,8 +3,19 @@
 # Build: pyinstaller grain_analyzer.spec
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+import os
 
 block_cipher = None
+
+# Collect torch dynamic libs and data
+torch_datas = collect_data_files('torch', include_py_files=True)
+torch_hidden = collect_submodules('torch')
+tv_hidden = collect_submodules('torchvision')
+sam_hidden = collect_submodules('segment_anything')
+
+# SAM model checkpoint
+sam_model = [('models/sam_vit_b_01ec64.pth', 'models')] \
+    if os.path.isfile('models/sam_vit_b_01ec64.pth') else []
 
 a = Analysis(
     ['main.py'],
@@ -14,6 +25,8 @@ a = Analysis(
         *collect_data_files('skimage'),
         *collect_data_files('scipy'),
         *collect_data_files('cv2'),
+        *torch_datas,
+        *sam_model,
     ],
     hiddenimports=[
         'skimage.filters._gaussian','skimage.filters.rank',
@@ -28,6 +41,10 @@ a = Analysis(
         'ui.results_panel','ui.calibration_dialog','ui.theme',
         'ui.scan_area_dialog','ui.analysis_progress_dialog',
         'utils.excel_export',
+        'segment_anything',
+        *torch_hidden,
+        *tv_hidden,
+        *sam_hidden,
     ],
     hookspath=[],
     runtime_hooks=[],

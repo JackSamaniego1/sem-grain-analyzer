@@ -58,6 +58,27 @@ class AnalysisWorker(QObject):
                 progress_callback=self.progress.emit
             )
 
+            # Discard grains touching the scan area border
+            if self.scan_rect and result.label_image is not None:
+                crop_h, crop_w = result.label_image.shape[:2]
+                border_labels = set()
+                border_labels.update(result.label_image[0, :].tolist())       # top
+                border_labels.update(result.label_image[-1, :].tolist())      # bottom
+                border_labels.update(result.label_image[:, 0].tolist())       # left
+                border_labels.update(result.label_image[:, -1].tolist())      # right
+                border_labels.discard(0)
+                if border_labels:
+                    for lbl in border_labels:
+                        result.label_image[result.label_image == lbl] = 0
+                    result.grains = [g for g in result.grains
+                                     if g.grain_id not in border_labels]
+                    result.grain_count = len(result.grains)
+                    # Recompute statistics and overlay
+                    detector2 = GrainDetector()
+                    result = detector2._compute_statistics(result, img)
+                    result.overlay_image = detector2._draw_overlay(
+                        img, result.label_image, result.grains)
+
             # Shift grain centroids back to full-image coords
             if (offset_x or offset_y) and result.grains:
                 for g in result.grains:
@@ -499,6 +520,9 @@ class MainWindow(QMainWindow):
         self._pending_indices.clear()
         if self._thread and self._thread.isRunning():
             self._thread.quit()
+        if self._progress_dlg:
+            self._progress_dlg.close()
+            self._progress_dlg = None
         self.settings.set_analyze_enabled(True)
         self._set_status("Analysis cancelled.")
 
@@ -509,6 +533,7 @@ class MainWindow(QMainWindow):
             total = sum(t.result.grain_count for t in self._image_tabs if t.result)
             if not self._cancelled:
                 self._set_status(f"All images analysed — {total} total grains.")
+                self.settings.show_tuning_sections()
                 if self._progress_dlg:
                     self._progress_dlg.all_done()
             return
@@ -674,7 +699,17 @@ class MainWindow(QMainWindow):
             "<li>Click grain → Delete to remove</li>"
             "<li>Adjustable histogram bins</li>"
             "</ul>"
-            "<p>Boundary-first detection with texture orientation</p>")
+            "<h3>Detection Modes</h3>"
+            "<p><b>AI-Assisted (SAM + ASTM E112)</b> — Uses Meta's Segment "
+            "Anything Model for instance segmentation, refined with ASTM E112 "
+            "linear intercept analysis. Most accurate for complex grain "
+            "structures. Slower, runs on CPU or GPU.</p>"
+            "<p><b>Threshold-Based</b> — Classical Otsu/adaptive thresholding "
+            "with watershed segmentation. Best for images with distinct bright "
+            "grains on a dark background (or vice versa).</p>"
+            "<p><b>Boundary-First</b> — Multi-signal boundary detection using "
+            "contrast, gradient, and texture orientation analysis. Designed for "
+            "dense mosaic grain images separated by thin dark grooves.</p>")
 
     def _set_status(self, msg: str):
         self.status_msg.setText(msg)
