@@ -5,25 +5,26 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 ## Phase 0 — Foundation
 | ID | Task | Owner | Status | Notes |
 |----|------|-------|--------|-------|
-| FND-01 | Create branch `v3-dev`; add `version.py` (`3.0.0-dev`) and `CHANGELOG.md`; wire version into main.py, main_window, settings_panel, spec, NSIS, README | build-engineer | todo | |
-| FND-02 | Add `xlsxwriter`, `python-pptx`, `qtawesome` to requirements/build scripts/CI/spec hiddenimports (+ `collect_data_files('qtawesome')`); delete `.github/workflows/build.ymlresources/`; CPU-only torch index in build scripts | build-engineer | todo | |
+| FND-01 | Create branch `v3-dev`; add `version.py` (`3.0.0-dev`) and `CHANGELOG.md`; wire version into main.py, main_window, settings_panel, spec, NSIS, README | build-engineer | done | a0b4d3b |
+| FND-02 | Add `xlsxwriter`, `python-pptx`, `qtawesome` to requirements/build scripts/CI/spec hiddenimports (+ `collect_data_files('qtawesome')`); delete `.github/workflows/build.ymlresources/`; CPU-only torch index in build scripts | build-engineer | done | a0b4d3b |
 | FND-03 | Get user decision on D-03 (PyQt6 licensing) and D-10/D-11 | coordinator | done | D-03 → PySide6; D-14 offline added; D-10..13 defaulted |
 | FND-04 | User fixes GitHub auth; push `v3-dev` | user | blocked | creds cached for `Harvey-FS` |
-| FND-05 | Baseline: `/run-tests` + `/smoke-app`; record results in progress log | qa-engineer | todo | expect 2 failing tests |
-| FND-06 | Migrate PyQt6 → PySide6 across main.py + ui/; requirements, spec, build scripts, CI; LICENSE.txt + THIRD_PARTY_LICENSES.txt | build-engineer | todo | D-03 |
-| FND-07 | `core/offline_guard.py` network kill-switch installed first in main.py; env hardening; `tests/test_offline.py` (AST scan + runtime socket spy); remove download URL from SAM error; installer must bundle SAM checkpoint (fail build if missing) | build-engineer | todo | D-14 |
+| FND-05 | Baseline: `/run-tests` + `/smoke-app`; record results in progress log | qa-engineer | done | 47 passed / 0 failed |
+| FND-06 | Migrate PyQt6 → PySide6 across main.py + ui/; requirements, spec, build scripts, CI; LICENSE.txt + THIRD_PARTY_LICENSES.txt | build-engineer | done | D-03; a0b4d3b |
+| FND-07 | `core/offline_guard.py` network kill-switch installed first in main.py; env hardening; `tests/test_offline.py` (AST scan + runtime socket spy); remove download URL from SAM error; installer must bundle SAM checkpoint (fail build if missing) | build-engineer | done | D-14; a0b4d3b |
 
 ## Phase 1 — Detection correctness
 | ID | Task | Owner | Status | Notes |
 |----|------|-------|--------|-------|
-| DET-01 | Valid-pixel mask through all pipelines; SAM post-filter (mean, std, valid-fraction); `_measure_grains` intensity filter; `DetectionParams.invalid_intensity_threshold`; make `tests/test_black_regions.py` pass | detection-engineer | todo | R1 |
-| DET-02 | Coverage % / `total_analyzed_area` over valid area; add `valid_area_um2`, `invalid_area_pct` to `AnalysisResult`; scan-border discard must go through core | detection-engineer | todo | R2, B3 |
-| DET-03 | Move stats recompute into `core/metrics.py` (single function); fix binary-view overflow (B2) | detection-engineer | todo | B4 |
+| DET-01 | Valid-pixel mask through all pipelines; SAM post-filter (mean, std, valid-fraction); `_measure_grains` intensity filter; `DetectionParams.invalid_intensity_threshold`; make `tests/test_black_regions.py` pass | detection-engineer | done | fc412c0 |
+| DET-02 | Coverage % / `total_analyzed_area` over valid area; add `valid_area_um2`, `invalid_area_pct` to `AnalysisResult`; scan-border discard must go through core | detection-engineer | done | fc412c0 |
+| DET-03 | Move stats recompute into `core/metrics.py` (single function); fix binary-view overflow (B2) | detection-engineer | doing | core/metrics.compute_statistics done; UI still uses ImageTab._recompute_stats and binary-view uint8 overflow (main_window.py show_view) not yet fixed |
 | DET-04 | ASTM E112 G-number (planimetric + intercept) in results and reports | detection-engineer | todo | B15, D-12 |
 | DET-05 | Extend `_auto_crop` to black info bars/borders | detection-engineer | todo | B9 |
 | DET-06 | Add `auto` mode to combo; fix reset inconsistency; fix bin spinbox clamp | ui-designer | todo | B10, B16 |
 | DET-07 | Per-image calibration and scan rect (model + UI override) | detection-engineer + ui-designer | todo | B7 |
-| DET-08 | Dark-grain regression fixture (legit dark grains must survive DET-01) | qa-engineer | todo | |
+| DET-08 | Dark-grain regression fixture (legit dark grains must survive DET-01) | qa-engineer | done | fc412c0 |
+| DET-09 | Expose new detection params (invalid_intensity_threshold etc.) + invalid-area overlay in UI; switch worker to core.discard_border_grains | ui-designer | todo | |
 
 ## Phase 2 — Data layer
 | ID | Task | Owner | Status | Notes |
@@ -64,7 +65,12 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 ## Phase 5 — Innovation (populated from 07_IDEAS_BACKLOG.md)
 | ID | Task | Owner | Status | Notes |
 |----|------|-------|--------|-------|
-| INN-run | Run innovator at session start; approve ≥1 idea per session | coordinator | todo | |
+| INN-run | Run innovator at session start; approve ≥1 idea per session | coordinator | done | 06493ff: 07_IDEAS_BACKLOG.md rewritten (40 ideas, top 25 active); INN-02, INN-26, INN-27, INN-29, INN-30 specs approved |
+| INN-02 | Spec limits PASS/FAIL/INCONCLUSIVE | data-architect + ui-designer | todo | |
+| INN-26 | ASTM E112/E1382 compliance engine (detection-engineer, depends DET-04) | detection-engineer | todo | |
+| INN-27 | Lot statistics + 95% CI + fields-needed (report-engineer+data-architect, depends DATA-03, INN-26) | report-engineer + data-architect | todo | |
+| INN-29 | Calibration verification vs reference standard | detection-engineer | todo | |
+| INN-30 | Approval + SHA-256 sealed sign-off, local only | data-architect | todo | |
 
 ## Phase 6 — Release
 | ID | Task | Owner | Status | Notes |

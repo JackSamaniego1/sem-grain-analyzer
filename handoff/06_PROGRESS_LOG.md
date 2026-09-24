@@ -9,3 +9,11 @@
 - Defined the agent team (`.claude/agents/`: scribe, detection-engineer, data-architect, ui-designer, report-engineer, innovator, qa-engineer, build-engineer, code-reviewer) and skills (`/run-tests`, `/smoke-app`, `/save-handoff`).
 - Wrote the coordinator brief `00_START_HERE.md`, task board, decisions, ideas backlog, release checklist, `CLAUDE.md`.
 - Project permissions set to auto-accept (`.claude/settings.json`, `acceptEdits` + full allow list) per user request.
+
+## 2026-09-23 — Opus coordinator session 1
+- **Phase 0 completed**: FND-01 (version.py 3.0.0-dev, CHANGELOG.md, wired into main/UI); FND-02 (xlsxwriter, python-pptx, qtawesome deps + offline torch); FND-06 (PyQt6→PySide6 migration); FND-07 (offline_guard.py, test_offline.py, Firewall rules). Baseline FND-05: **47 tests passing / 0 failing**.
+- **Phase 1 partial**: DET-01 (valid-pixel mask, test_black_regions passes), DET-02 (coverage %, valid_area fields), DET-08 (dark-grain regression). DET-03 in progress (metrics module done; UI overflow fix pending).
+- **Decisions approved**: D-03 PySide6 (user), D-14 fully offline/zero egress (user). D-15 added (Windows Firewall defense-in-depth); D-16 added (agent registration at session start).
+- **Innovation run approved**: INN-run complete (06493ff). Innovator rewrote 07_IDEAS_BACKLOG.md (40 ideas, top 25 active) and wrote specs INN-02, INN-26, INN-27, INN-29, INN-30. Added to Phase 5.
+- **Phase 2/3/4 launched in parallel**: DATA-01..05, DATA-08; REP-01..04; UI-01, UI-02.
+- **Blocked**: FND-04 GitHub auth (Harvey-FS credentials cached; user action needed). DET validaton: D-13 flagged (real SEM images wanted for black-region threshold validation).

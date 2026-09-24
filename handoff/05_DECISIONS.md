@@ -43,3 +43,9 @@ Consequences: some ideas (auto-update check, crash reporting) are re-scoped to l
 ### D-11 · defaulted — branding assets (default: neutral)
 ### D-12 · defaulted — ASTM G-number in reports (default: yes when calibrated)
 ### D-13 · defaulted — real SEM validation images (default: synthetic only, flagged risk)
+
+### D-15 · 2026-09-23 · accepted — Defense-in-depth for offline
+Context: in-process socket guard cannot see sockets opened by native C/C++ libraries (e.g., OpenCV, ONNX). Decision: NSIS installer adds Windows Firewall inbound + outbound block rules for GrainAnalyzer.exe (removed on uninstall); non-fatal if firewall is centrally managed by IT. Consequences: two-layer protection (code + OS); offline guarantee survives even if a native dep leaks a socket.
+
+### D-16 · 2026-09-23 · accepted — Custom agents in .claude/agents registered at session start
+Context: `.claude/agents/` defines scribe, detection-engineer, data-architect, etc. as agent types; this session used fallback (general-purpose + "ROLE: read .claude/agents/scribe.md"). Decision: next session will register these agents at startup; `subagent_type` parameter in Agent calls will work directly. Consequences: cleaner prompt syntax; agents inherit model pinning from `.md` frontmatter.

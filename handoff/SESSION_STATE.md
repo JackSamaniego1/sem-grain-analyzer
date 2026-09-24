@@ -1,25 +1,27 @@
 # SESSION STATE — read this first when resuming
 
-**Last updated:** 2026-09-23 (planning session, Fable)
-**Branch:** `main` (v3 work has not started; coordinator creates `v3-dev` in FND-01)
-**Last commit:** see `git log --oneline -1` (handoff artefacts committed at end of planning)
-**Current phase:** Phase 0 not started. Planning complete.
+**Last updated:** 2026-09-23 (Opus coordinator session 1)
+**Branch:** `v3-dev`
+**Last commit:** `fc412c0` (before scribe update)
+**Current phase:** Phase 0 + Phase 1 core complete; Phase 2/3 back-ends and design system in progress.
 
 ## In progress
-Nothing in progress. No source code has been modified beyond adding `tests/`, `requirements-dev.txt`, `.gitignore`, docs and `.claude/`.
+- **DATA-01..05 + DATA-08** (data-architect, sonnet) — building `data/` package (models, workspace, session I/O, catalog, QSettings, auto-save)
+- **REP-01..04** (report-engineer, sonnet) — building `reports/` package (model, charts, Excel/PowerPoint renderers)
+- **UI-01 + UI-02** (ui-designer, opus) — building `ui/design/` (tokens + theme) and `ui/widgets/` (component library)
 
 ## Blocked
-- FND-04 GitHub push: credential manager holds `Harvey-FS`; remote needs `JackSamaniego1`. User action required (see `DEVELOPMENT_STATUS.md` → "GitHub Authentication Issue").
-- FND-03 user decisions D-03, D-10, D-11, D-12, D-13 (see `00_START_HERE.md` §8).
+- **FND-04**: GitHub push — cached credentials for `Harvey-FS` (403); user action required to fix or change remote config.
+- **DET validation**: D-13 flagged — real SEM images still wanted for validating the black-region thresholds.
 
 ## Next 3 actions for the coordinator
-1. `git checkout -b v3-dev`; run `/run-tests` (baseline: 2 failed — both `test_black_regions_are_not_grains` params — 2 passed) and `/smoke-app`; delegate FND-01 + FND-02 to `build-engineer`.
-2. Delegate DET-01 to `detection-engineer` with `tests/test_black_regions.py` as the acceptance test (runs in parallel with Phase 0 — disjoint files).
-3. Delegate UI-01 + UI-02 (design tokens + widget library) to `ui-designer`; run `innovator` once to expand `07_IDEAS_BACKLOG.md`. Then `/save-handoff`.
+1. Review + commit `data/`, `reports/`, `ui/design/` + `ui/widgets/` when back-end agents finish (expect ~2 sessions).
+2. Launch **DET-04** (ASTM G-number, detection-engineer) and **INN-26** (compliance engine, depends DET-04) in parallel; launch **UI-03** app shell (ui-designer).
+3. Wire UI to data layer (DATA-06/07: Projects page + New Session wizard) and reports page (REP-05).
 
 ## How to run
 ```powershell
 cd "C:\Users\saman\GRAIN ANALYSIS TOOL"
-.venv\Scripts\python -m pytest tests -q -p no:cacheprovider     # tests
+.venv\Scripts\python -m pytest tests -q -p no:cacheprovider     # 47 tests passing
 .venv\Scripts\python main.py                                     # GUI
 ```
