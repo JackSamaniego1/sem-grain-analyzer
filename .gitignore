@@ -9,9 +9,15 @@ build_env/
 __pycache__/
 *.pyc
 
+# Virtual environment
+.venv/
+venv/
+env/
+
 # IDE
 .vscode/
 .idea/
+.claude/
 
 # OS
 .DS_Store
