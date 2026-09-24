@@ -6,12 +6,12 @@ One image at a time, with ETA, per-image status, and overall progress.
 """
 
 import time
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar,
     QPushButton, QScrollArea, QWidget, QFrame
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer
-from PyQt6.QtGui import QColor
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtGui import QColor
 
 
 class ImageStatusRow(QWidget):
@@ -56,7 +56,7 @@ class AnalysisProgressDialog(QDialog):
     Call mark_running(i), mark_done(i, grains), mark_error(i) from main_window.
     """
 
-    cancelled = pyqtSignal()
+    cancelled = Signal()
 
     def __init__(self, image_names: list[str], parent=None):
         super().__init__(parent)

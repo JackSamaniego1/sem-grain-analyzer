@@ -4,10 +4,20 @@ SEM Grain Analyzer - License
 This software is provided for scientific research and analysis purposes.
 
 Third-party libraries used:
-- PyQt6 (GPL v3)
+- PySide6 (LGPL v3) — see THIRD_PARTY_LICENSES.txt for the dynamic-linking notice
 - OpenCV (Apache 2.0)
 - scikit-image (Modified BSD)
 - scipy (BSD)
 - numpy (BSD)
 - openpyxl (MIT)
+- xlsxwriter (BSD)
+- python-pptx (MIT)
+- qtawesome (MIT)
 - Pillow (HPND)
+- torch (BSD)
+- torchvision (BSD)
+- segment-anything (Apache 2.0)
+
+Full licence texts and upstream project URLs for every runtime dependency
+are listed in THIRD_PARTY_LICENSES.txt, which is installed alongside this
+application.

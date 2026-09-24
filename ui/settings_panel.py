@@ -8,13 +8,14 @@ Changes:
   - Image Enhancement section is collapsible (collapsed by default)
 """
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox,
     QCheckBox, QFrame, QScrollArea, QSizePolicy, QComboBox
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PySide6.QtCore import Qt, Signal
 from core.grain_detector import DetectionParams
+from version import __version__
 
 
 class CollapsibleGroupBox(QWidget):
@@ -85,13 +86,13 @@ class CollapsibleGroupBox(QWidget):
 
 
 class SettingsPanel(QScrollArea):
-    params_changed       = pyqtSignal(object)
-    run_analysis         = pyqtSignal()
-    run_analysis_current = pyqtSignal()
-    open_image           = pyqtSignal()
-    set_calibration      = pyqtSignal()
-    set_scan_area        = pyqtSignal()
-    export_excel         = pyqtSignal()
+    params_changed       = Signal(object)
+    run_analysis         = Signal()
+    run_analysis_current = Signal()
+    open_image           = Signal()
+    set_calibration      = Signal()
+    set_scan_area        = Signal()
+    export_excel         = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -117,7 +118,7 @@ class SettingsPanel(QScrollArea):
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(title)
 
-        ver = QLabel("v2.3")
+        ver = QLabel(f"v{__version__}")
         ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ver.setStyleSheet("color: #6666aa; font-size: 11px;")
         lay.addWidget(ver)

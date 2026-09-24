@@ -8,9 +8,9 @@ Supports click-to-select a grain and Delete key to remove it.
 import numpy as np
 import cv2
 
-from PyQt6.QtWidgets import QWidget, QSizePolicy, QApplication
-from PyQt6.QtCore import Qt, QPoint, pyqtSignal
-from PyQt6.QtGui import QPixmap, QPainter, QColor, QPen, QImage, QCursor, QWheelEvent
+from PySide6.QtWidgets import QWidget, QSizePolicy, QApplication
+from PySide6.QtCore import Qt, QPoint, Signal
+from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QImage, QCursor, QWheelEvent
 
 
 def numpy_bgr_to_qimage(arr):
@@ -18,15 +18,16 @@ def numpy_bgr_to_qimage(arr):
         return QImage()
     if len(arr.shape) == 2:
         h, w = arr.shape
-        return QImage(arr.data, w, h, w, QImage.Format.Format_Grayscale8)
+        arr = np.ascontiguousarray(arr)
+        return QImage(arr.data, w, h, w, QImage.Format.Format_Grayscale8).copy()
     h, w, ch = arr.shape
     rgb = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
     return QImage(rgb.data.tobytes(), w, h, w * 3, QImage.Format.Format_RGB888)
 
 
 class ImageCanvas(QWidget):
-    zoom_changed   = pyqtSignal(float)
-    grain_clicked  = pyqtSignal(int, int)  # ix, iy  OR  -1, grain_id (delete)
+    zoom_changed   = Signal(float)
+    grain_clicked  = Signal(int, int)  # ix, iy  OR  -1, grain_id (delete)
 
     def __init__(self, parent=None):
         super().__init__(parent)

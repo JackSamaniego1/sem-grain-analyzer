@@ -8,12 +8,12 @@ Anything outside the rectangle (e.g. the bottom legend bar) is excluded.
 import cv2
 import numpy as np
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QSizePolicy, QWidget, QMessageBox
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QRect, QRectF, QPointF
-from PyQt6.QtGui import (
+from PySide6.QtCore import Qt, Signal, QPoint, QRect, QRectF, QPointF
+from PySide6.QtGui import (
     QPixmap, QPainter, QPen, QColor, QImage, QCursor,
     QBrush, QWheelEvent
 )
@@ -28,7 +28,7 @@ def _bgr_to_qpixmap(arr: np.ndarray) -> QPixmap:
 
 class RectDrawCanvas(QWidget):
     """Canvas that lets the user drag a rectangle and zoom/pan."""
-    rect_changed = pyqtSignal()
+    rect_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -193,7 +193,7 @@ class RectDrawCanvas(QWidget):
 
 class ScanAreaDialog(QDialog):
     """Dialog for setting the analysis scan rectangle."""
-    scan_area_set = pyqtSignal(int, int, int, int)   # x, y, w, h  (image coords)
+    scan_area_set = Signal(int, int, int, int)   # x, y, w, h  (image coords)
 
     def __init__(self, image_bgr: np.ndarray, current_rect=None, parent=None):
         super().__init__(parent)

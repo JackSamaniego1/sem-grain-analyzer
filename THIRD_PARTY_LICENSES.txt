@@ -1,0 +1,75 @@
+SEM Grain Analyzer - Third-Party Licences
+==========================================
+
+This application bundles the following third-party software. All are
+permissive (MIT/BSD/Apache/HPND) or LGPL; none require a paid licence to
+distribute. No dependency was added that requires network access at
+runtime — this application never connects to the internet
+(see core/offline_guard.py and CLAUDE.md HARD CONSTRAINT #1).
+
+--------------------------------------------------------------------------
+PySide6 — Qt for Python
+Licence: GNU Lesser General Public License v3 (LGPL v3)
+Upstream: https://www.qt.io/qt-for-python
+Source:   https://code.qt.io/cgit/pyside/pyside-setup.git/
+
+LGPL v3 notice: PySide6 dynamically links against the Qt libraries at
+runtime (the .dll files shipped alongside GrainAnalyzer.exe in this
+install directory). Per the LGPL, you may replace those Qt library files
+with a compatible version of your own build/choosing; the application
+will load whichever compatible libraries are present in its install
+directory at startup. PySide6's own Python bindings are licensed LGPL v3;
+no part of this application's own source code is required to be
+disclosed as a result of linking against PySide6/Qt.
+--------------------------------------------------------------------------
+OpenCV (opencv-python)
+Licence: Apache License 2.0
+Upstream: https://opencv.org/  https://github.com/opencv/opencv-python
+--------------------------------------------------------------------------
+scikit-image
+Licence: Modified BSD (3-Clause)
+Upstream: https://scikit-image.org/
+--------------------------------------------------------------------------
+SciPy
+Licence: BSD 3-Clause
+Upstream: https://scipy.org/
+--------------------------------------------------------------------------
+NumPy
+Licence: BSD 3-Clause
+Upstream: https://numpy.org/
+--------------------------------------------------------------------------
+openpyxl
+Licence: MIT
+Upstream: https://openpyxl.readthedocs.io/
+--------------------------------------------------------------------------
+XlsxWriter
+Licence: BSD 2-Clause
+Upstream: https://xlsxwriter.readthedocs.io/
+--------------------------------------------------------------------------
+python-pptx
+Licence: MIT
+Upstream: https://python-pptx.readthedocs.io/
+--------------------------------------------------------------------------
+QtAwesome
+Licence: MIT (icon fonts bundled under their own OFL/MIT terms — see
+         https://github.com/spyder-ide/qtawesome#license)
+Upstream: https://github.com/spyder-ide/qtawesome
+--------------------------------------------------------------------------
+Pillow
+Licence: HPND (Historical Permission Notice and Disclaimer)
+Upstream: https://python-pillow.org/
+--------------------------------------------------------------------------
+PyTorch (torch, torchvision) — CPU-only build
+Licence: BSD 3-Clause
+Upstream: https://pytorch.org/
+--------------------------------------------------------------------------
+segment-anything
+Licence: Apache License 2.0
+Upstream: https://github.com/facebookresearch/segment-anything
+Model checkpoint: sam_vit_b_01ec64.pth, bundled at build time under the
+same licence; not downloaded at runtime.
+--------------------------------------------------------------------------
+
+This file is installed alongside the application (see the NSIS installer
+script and grain_analyzer.spec) so licence information is available
+offline, without needing to visit any of the URLs above.

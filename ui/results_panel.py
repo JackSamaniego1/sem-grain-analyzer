@@ -7,13 +7,13 @@ Results Panel v2.4
 - Smart unit auto-scaling to avoid tiny decimals
 """
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTableWidget,
     QTableWidgetItem, QFrame, QSizePolicy,
     QTabWidget, QHeaderView, QScrollArea, QSpinBox
 )
-from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal
-from PyQt6.QtGui import (
+from PySide6.QtCore import Qt, QRectF, QPointF, Signal
+from PySide6.QtGui import (
     QColor, QFont, QPainter, QPen, QBrush, QPainterPath, QFontMetrics
 )
 from core.grain_detector import AnalysisResult
@@ -268,7 +268,7 @@ class StatCard(QFrame):
 
 
 class ResultsPanel(QWidget):
-    bin_count_changed = pyqtSignal(int)
+    bin_count_changed = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)

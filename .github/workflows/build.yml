@@ -23,12 +23,17 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller PyQt6 opencv-python scikit-image scipy numpy openpyxl Pillow torch torchvision segment-anything
+          pip install pyinstaller PySide6 opencv-python scikit-image scipy numpy openpyxl xlsxwriter python-pptx qtawesome Pillow segment-anything
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
       - name: Download SAM model
         run: |
           New-Item -ItemType Directory -Force -Path models
           Invoke-WebRequest -Uri "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth" -OutFile "models/sam_vit_b_01ec64.pth"
+          if (-not (Test-Path "models/sam_vit_b_01ec64.pth")) {
+            Write-Error "SAM checkpoint missing after download step"
+            exit 1
+          }
 
       - name: Generate icon
         run: |
@@ -88,12 +93,17 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller PyQt6 opencv-python scikit-image scipy numpy openpyxl Pillow torch torchvision segment-anything
+          pip install pyinstaller PySide6 opencv-python scikit-image scipy numpy openpyxl xlsxwriter python-pptx qtawesome Pillow segment-anything
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
       - name: Download SAM model
         run: |
           mkdir -p models
           curl -L -o models/sam_vit_b_01ec64.pth https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth
+          if [ ! -f models/sam_vit_b_01ec64.pth ]; then
+            echo "SAM checkpoint missing after download step" >&2
+            exit 1
+          fi
 
       - name: Generate icon
         run: |

@@ -1,9 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for Grain Analyzer v2.3
+# PyInstaller spec for Grain Analyzer v3
 # Build: pyinstaller grain_analyzer.spec
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(SPEC)))
+from version import __version__
 
 block_cipher = None
 
@@ -17,6 +21,12 @@ sam_hidden = collect_submodules('segment_anything')
 sam_model = [('models/sam_vit_b_01ec64.pth', 'models')] \
     if os.path.isfile('models/sam_vit_b_01ec64.pth') else []
 
+# Third-party licence notices bundled into the installed app so the
+# offline install carries its own attribution (HARD CONSTRAINT: no
+# network access, so we can't link out to licence pages at runtime).
+license_datas = [(p, '.') for p in ('LICENSE.txt', 'THIRD_PARTY_LICENSES.txt')
+                  if os.path.isfile(p)]
+
 a = Analysis(
     ['main.py'],
     pathex=['.'],
@@ -25,8 +35,11 @@ a = Analysis(
         *collect_data_files('skimage'),
         *collect_data_files('scipy'),
         *collect_data_files('cv2'),
+        *collect_data_files('qtawesome'),
+        *collect_data_files('pptx'),
         *torch_datas,
         *sam_model,
+        *license_datas,
     ],
     hiddenimports=[
         'skimage.filters._gaussian','skimage.filters.rank',
@@ -35,8 +48,9 @@ a = Analysis(
         'scipy.ndimage','scipy.ndimage._morphology',
         'scipy.special._ufuncs','scipy._lib.messagestream',
         'cv2','openpyxl','openpyxl.chart','openpyxl.styles',
-        'PyQt6.QtCore','PyQt6.QtGui','PyQt6.QtWidgets',
-        'core.grain_detector','core.scale_bar',
+        'xlsxwriter','pptx','qtawesome',
+        'PySide6.QtCore','PySide6.QtGui','PySide6.QtWidgets',
+        'core.grain_detector','core.scale_bar','core.offline_guard',
         'ui.main_window','ui.image_canvas','ui.settings_panel',
         'ui.results_panel','ui.calibration_dialog','ui.theme',
         'ui.scan_area_dialog','ui.analysis_progress_dialog',
@@ -48,8 +62,18 @@ a = Analysis(
     ],
     hookspath=[],
     runtime_hooks=[],
+    # PyQt5/PyQt6/PySide2 are excluded: this app is PySide6-only (LGPL, no
+    # licence to buy — HARD CONSTRAINT). QtNetwork/QtWebEngine are excluded
+    # because nothing in this codebase imports them and bundling them would
+    # be a large, pointless attack surface for an app that must never touch
+    # the network (HARD CONSTRAINT: offline & private).
     excludes=['napari','matplotlib','IPython','tkinter','_tkinter',
-              'wx','PySide2','PySide6','PyQt5','pandas'],
+              'wx','PySide2','PyQt5','PyQt6','pandas',
+              'PySide6.QtWebEngineCore','PySide6.QtWebEngineWidgets',
+              'PySide6.QtWebEngineQuick','PySide6.QtNetwork',
+              'PySide6.QtNetworkAuth','PySide6.QtPositioning',
+              'PySide6.QtLocation','PySide6.QtBluetooth',
+              'PySide6.QtNfc','PySide6.QtSerialPort'],
     cipher=block_cipher,
 )
 
@@ -69,12 +93,11 @@ coll = COLLECT(
     strip=False, upx=True, name='GrainAnalyzer',
 )
 
-import sys
 if sys.platform == 'darwin':
     app = BUNDLE(
         coll,
         name='GrainAnalyzer.app',
         icon='resources/icon.icns',
         bundle_identifier='com.jacksamaniego.grainanalyzer',
-        info_plist={'NSHighResolutionCapable': True, 'CFBundleShortVersionString': '2.3'},
+        info_plist={'NSHighResolutionCapable': True, 'CFBundleShortVersionString': __version__},
     )

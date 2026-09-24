@@ -1,5 +1,5 @@
 """Dark theme for SEM Grain Analyzer."""
-from PyQt6.QtGui import QPalette, QColor
+from PySide6.QtGui import QPalette, QColor
 
 def apply_dark_theme(app):
     palette = QPalette()

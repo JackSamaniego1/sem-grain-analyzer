@@ -41,9 +41,18 @@ echo.
 echo [2/7] Installing dependencies (this may take a few minutes)...
 call build_env\Scripts\activate.bat
 pip install --upgrade pip --quiet
-pip install pyinstaller PyQt6 opencv-python scikit-image scipy numpy openpyxl Pillow torch torchvision segment-anything
+pip install pyinstaller PySide6 opencv-python scikit-image scipy numpy openpyxl xlsxwriter python-pptx qtawesome Pillow segment-anything
 if errorlevel 1 (
     echo ERROR: Failed to install packages. Check your internet connection.
+    pause
+    exit /b 1
+)
+:: CPU-only torch wheel keeps the installer smaller than the default CUDA
+:: build; this app never needs a GPU at runtime (SAM inference on a single
+:: SEM image is fine on CPU).
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+if errorlevel 1 (
+    echo ERROR: Failed to install torch (CPU wheel). Check your internet connection.
     pause
     exit /b 1
 )
@@ -64,6 +73,12 @@ if not exist models\sam_vit_b_01ec64.pth (
     echo [OK] SAM model downloaded.
 ) else (
     echo [OK] SAM model already exists, skipping download.
+)
+if not exist models\sam_vit_b_01ec64.pth (
+    echo ERROR: models\sam_vit_b_01ec64.pth is missing after the download step.
+    echo The installer must not ship without the bundled SAM checkpoint.
+    pause
+    exit /b 1
 )
 
 :: Generate icon
@@ -114,12 +129,12 @@ if not errorlevel 1 (
     echo NSIS found - building installer...
     python create_nsis_script.py
     makensis installer.nsi
-    echo [OK] Installer created: SEMGrainAnalyzer_Setup.exe
+    echo [OK] Installer created: GrainAnalyzer_Setup.exe
 ) else (
     echo NSIS not found - creating zip package instead...
     echo (Optional: Install NSIS from https://nsis.sourceforge.io for a proper installer)
-    powershell -Command "Compress-Archive -Path 'dist\SEMGrainAnalyzer' -DestinationPath 'SEMGrainAnalyzer_Windows.zip' -Force"
-    echo [OK] Package created: SEMGrainAnalyzer_Windows.zip
+    powershell -Command "Compress-Archive -Path 'dist\GrainAnalyzer' -DestinationPath 'GrainAnalyzer_Windows.zip' -Force"
+    echo [OK] Package created: GrainAnalyzer_Windows.zip
 )
 
 echo.
@@ -127,9 +142,9 @@ echo ============================================================
 echo  BUILD COMPLETE!
 echo ============================================================
 echo.
-echo The application is in: dist\SEMGrainAnalyzer\
-echo Executable: dist\SEMGrainAnalyzer\SEMGrainAnalyzer.exe
-if exist SEMGrainAnalyzer_Windows.zip echo Zip package: SEMGrainAnalyzer_Windows.zip
-if exist SEMGrainAnalyzer_Setup.exe echo Installer: SEMGrainAnalyzer_Setup.exe
+echo The application is in: dist\GrainAnalyzer\
+echo Executable: dist\GrainAnalyzer\GrainAnalyzer.exe
+if exist GrainAnalyzer_Windows.zip echo Zip package: GrainAnalyzer_Windows.zip
+if exist GrainAnalyzer_Setup.exe echo Installer: GrainAnalyzer_Setup.exe
 echo.
 pause

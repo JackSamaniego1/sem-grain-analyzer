@@ -5,13 +5,13 @@ Calibration Dialog - with zoom/pan for accurate 2-point clicking
 import cv2
 import numpy as np
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QDoubleSpinBox, QComboBox, QGroupBox, QSizePolicy,
     QWidget, QMessageBox, QScrollBar
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QPointF
-from PyQt6.QtGui import (
+from PySide6.QtCore import Qt, Signal, QPoint, QPointF
+from PySide6.QtGui import (
     QPixmap, QPainter, QPen, QColor, QImage, QCursor, QWheelEvent
 )
 
@@ -29,7 +29,7 @@ class ZoomableCalibCanvas(QWidget):
     Scroll wheel to zoom, middle-click or Alt+drag to pan.
     Left-click to place points (max 2).
     """
-    point_placed = pyqtSignal()
+    point_placed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -195,7 +195,7 @@ class ZoomableCalibCanvas(QWidget):
 
 
 class CalibrationDialog(QDialog):
-    calibration_set = pyqtSignal(float)   # px_per_um
+    calibration_set = Signal(float)   # px_per_um
 
     def __init__(self, image_bgr: np.ndarray, auto_bar_px=None, parent=None):
         super().__init__(parent)

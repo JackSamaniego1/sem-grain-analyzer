@@ -7,17 +7,18 @@ import sys
 import numpy as np
 import cv2
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QStatusBar, QProgressBar, QLabel, QFileDialog, QMessageBox,
     QTabWidget, QFrame, QPushButton
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QTimer
-from PyQt6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import Qt, QThread, Signal, QObject, QTimer
+from PySide6.QtGui import QAction, QKeySequence
 
 from ui.image_canvas import ImageCanvas
 from ui.settings_panel import SettingsPanel
 from ui.results_panel import ResultsPanel
+from version import __version__, APP_NAME
 from ui.calibration_dialog import CalibrationDialog
 from ui.scan_area_dialog import ScanAreaDialog
 from ui.analysis_progress_dialog import AnalysisProgressDialog
@@ -25,9 +26,9 @@ from core.grain_detector import GrainDetector, DetectionParams, AnalysisResult
 
 
 class AnalysisWorker(QObject):
-    progress = pyqtSignal(int, str)
-    finished = pyqtSignal(object)
-    error    = pyqtSignal(str)
+    progress = Signal(int, str)
+    finished = Signal(object)
+    error    = Signal(str)
 
     def __init__(self, image_bgr, px_per_um, params, scan_rect=None):
         super().__init__()
@@ -108,7 +109,7 @@ class AnalysisWorker(QObject):
 
 
 class ImageTab(QWidget):
-    grain_deleted = pyqtSignal(int)
+    grain_deleted = Signal(int)
 
     def __init__(self, image_bgr, image_path, parent=None):
         super().__init__(parent)
@@ -220,7 +221,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Grain Analyzer v2.3")
+        self.setWindowTitle(f"{APP_NAME} v{__version__}")
         self.setMinimumSize(1100, 700)
         self.resize(1440, 880)
 
@@ -688,8 +689,8 @@ class MainWindow(QMainWindow):
                 subprocess.run(["xdg-open", path])
 
     def _show_about(self):
-        QMessageBox.about(self, "About Grain Analyzer",
-            "<h2>Grain Analyzer v2.3</h2>"
+        QMessageBox.about(self, f"About {APP_NAME}",
+            f"<h2>{APP_NAME} v{__version__}</h2>"
             "<p>Developed by <b>Jack Samaniego</b></p>"
             "<ul>"
             "<li>Open multiple images (hold Ctrl)</li>"

@@ -24,7 +24,10 @@ source build_env/bin/activate
 
 echo "[2/5] Installing packages..."
 pip install --upgrade pip -q
-pip install pyinstaller PyQt6 opencv-python scikit-image scipy numpy openpyxl Pillow torch torchvision segment-anything
+pip install pyinstaller PySide6 opencv-python scikit-image scipy numpy openpyxl xlsxwriter python-pptx qtawesome Pillow segment-anything
+# CPU-only torch wheel keeps the installer smaller; this app never needs a
+# GPU at runtime.
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
 echo "[3/5] Downloading SAM model checkpoint (~375MB)..."
 mkdir -p models
@@ -33,6 +36,10 @@ if [ ! -f models/sam_vit_b_01ec64.pth ]; then
     echo "SAM model downloaded."
 else
     echo "SAM model already exists, skipping."
+fi
+if [ ! -f models/sam_vit_b_01ec64.pth ]; then
+    echo "ERROR: models/sam_vit_b_01ec64.pth is missing after the download step."
+    exit 1
 fi
 
 echo "[4/5] Creating icon..."
@@ -64,7 +71,7 @@ echo ""
 echo "============================================================"
 echo " BUILD COMPLETE!"
 echo "============================================================"
-echo "App bundle: dist/SEMGrainAnalyzer.app"
+echo "App bundle: dist/GrainAnalyzer.app"
 echo ""
 echo "To create a distributable DMG:"
-echo "  hdiutil create -volname 'SEM Grain Analyzer' -srcfolder dist/SEMGrainAnalyzer.app -ov -format UDZO SEMGrainAnalyzer.dmg"
+echo "  hdiutil create -volname 'Grain Analyzer' -srcfolder dist/GrainAnalyzer.app -ov -format UDZO GrainAnalyzer.dmg"
