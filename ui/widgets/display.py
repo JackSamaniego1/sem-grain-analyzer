@@ -141,6 +141,7 @@ class KeyValueList(QWidget):
         while self._grid.count():
             w = self._grid.takeAt(0).widget()
             if w is not None:
+                w.hide()  # deleteLater is deferred; never paint stale rows
                 w.deleteLater()
         self._values.clear()
         pairs = list(items.items()) if isinstance(items, Mapping) else list(items)

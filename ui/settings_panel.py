@@ -185,6 +185,7 @@ class SettingsPanel(QScrollArea):
         mode_lay.setSpacing(6)
 
         self.mode_combo = QComboBox()
+        self.mode_combo.addItem("Automatic (recommended)", "auto")
         self.mode_combo.addItem("AI-assisted  (SAM + ASTM E112)", "sam_astm")
         self.mode_combo.addItem("Threshold-based (grains on background)", "threshold")
         self.mode_combo.addItem("Boundary-first (mosaic grains)", "boundary")
@@ -415,7 +416,8 @@ class SettingsPanel(QScrollArea):
 
     def _reset_params(self):
         d = DetectionParams()
-        self.mode_combo.setCurrentIndex(0)  # "sam_astm"
+        # DET-06: reset follows DetectionParams (mode "auto"), not "sam_astm"
+        self.mode_combo.setCurrentIndex(max(0, self.mode_combo.findData(d.detection_mode)))
         self.blur_spin.setValue(d.blur_sigma)
         self.thresh_spin.setValue(d.threshold_offset)
         self.min_size_spin.setValue(d.min_grain_size_px)

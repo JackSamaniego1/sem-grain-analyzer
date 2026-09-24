@@ -314,6 +314,7 @@ class Breadcrumb(ThemeAware, QWidget):
         while self._layout.count():
             w = self._layout.takeAt(0).widget()
             if w is not None:
+                w.hide()  # deleteLater is deferred; never paint stale segments
                 w.deleteLater()
         self._segments = list(segments)
         self._buttons, self._seps = [], []

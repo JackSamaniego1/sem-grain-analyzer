@@ -95,7 +95,8 @@ class RectDrawCanvas(QWidget):
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        painter.fillRect(self.rect(), QColor(20, 20, 26))
+        from ui.design.theme import current_tokens
+        painter.fillRect(self.rect(), QColor(current_tokens().surface.bg))
 
         o = self._img_origin()
         pw = int(self._orig_pixmap.width()  * self._zoom)
@@ -132,7 +133,7 @@ class RectDrawCanvas(QWidget):
             painter.drawText(wRect.left() + 4, wRect.top() + 16,
                              f"Analysis area: {rect[2]}×{rect[3]} px")
 
-        painter.setPen(QPen(QColor(150, 150, 180), 1))
+        painter.setPen(QPen(QColor(current_tokens().text.tertiary), 1))
         painter.drawText(8, self.height() - 8,
                          f"Zoom: {self._zoom*100:.0f}%  |  Drag to draw rectangle  |  Alt+drag to pan  |  Scroll to zoom")
 
@@ -206,15 +207,15 @@ class ScanAreaDialog(QDialog):
 
     def _build_ui(self):
         lay = QVBoxLayout(self)
-        lay.setSpacing(8)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setSpacing(10)
 
         inst = QLabel(
             "Drag a rectangle over the area you want to analyze.\n"
             "Everything outside (e.g. the bottom legend bar) will be excluded.\n"
             "Scroll to zoom, Alt+drag to pan."
         )
-        inst.setStyleSheet("color: #ccccee; font-size: 12px; padding: 6px; "
-                           "background: #1e1e2e; border-radius: 4px;")
+        inst.setProperty("tone", "secondary")  # styled by the v3 theme tokens
         inst.setWordWrap(True)
         lay.addWidget(inst)
 
@@ -224,13 +225,13 @@ class ScanAreaDialog(QDialog):
         lay.addWidget(self.canvas, 1)
 
         self.lbl_rect = QLabel("No area set — drag a rectangle on the image")
-        self.lbl_rect.setStyleSheet("color: #aaaacc; font-size: 11px;")
+        self.lbl_rect.setProperty("tone", "secondary")
         self.lbl_rect.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(self.lbl_rect)
 
         btn_row = QHBoxLayout()
 
-        btn_reset = QPushButton("↺  Reset (use full image)")
+        btn_reset = QPushButton("Use full image")
         btn_reset.clicked.connect(self._reset)
         btn_row.addWidget(btn_reset)
 
@@ -240,8 +241,8 @@ class ScanAreaDialog(QDialog):
         btn_cancel.clicked.connect(self.reject)
         btn_row.addWidget(btn_cancel)
 
-        self.btn_apply = QPushButton("✓  Set Scan Area")
-        self.btn_apply.setObjectName("primary")
+        self.btn_apply = QPushButton("Set scan area")
+        self.btn_apply.setProperty("variant", "primary")
         self.btn_apply.setMinimumHeight(36)
         self.btn_apply.setEnabled(False)
         self.btn_apply.clicked.connect(self._apply)

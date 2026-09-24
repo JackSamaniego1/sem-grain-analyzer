@@ -104,7 +104,8 @@ class ZoomableCalibCanvas(QWidget):
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        painter.fillRect(self.rect(), QColor(20, 20, 26))
+        from ui.design.theme import current_tokens
+        painter.fillRect(self.rect(), QColor(current_tokens().surface.bg))
 
         o = self._img_origin()
         pw = int(self._orig_pixmap.width()  * self._zoom)
@@ -137,7 +138,7 @@ class ZoomableCalibCanvas(QWidget):
             painter.drawText(int(mid.x()) + 6, int(mid.y()) - 6, f"{d:.1f} px")
 
         # Zoom level indicator
-        painter.setPen(QPen(QColor(150, 150, 180), 1))
+        painter.setPen(QPen(QColor(current_tokens().text.tertiary), 1))
         painter.drawText(8, self.height() - 8, f"Zoom: {self._zoom*100:.0f}%  |  Scroll to zoom  |  Alt+drag to pan")
 
     # ---- interaction ----
@@ -208,16 +209,16 @@ class CalibrationDialog(QDialog):
 
     def _build_ui(self):
         lay = QVBoxLayout(self)
-        lay.setSpacing(8)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setSpacing(10)
 
         inst = QLabel(
-            "🔍  Scroll wheel to zoom in for precision.  Alt+drag to pan.\n"
+            "Scroll wheel to zoom in for precision.  Alt+drag to pan.\n"
             "① Click the LEFT end of the scale bar line.  "
             "② Click the RIGHT end.  "
             "③ Enter the real-world length shown on the label → Apply."
         )
-        inst.setStyleSheet("color: #ccccee; font-size: 12px; padding: 6px; "
-                           "background: #1e1e2e; border-radius: 4px;")
+        inst.setProperty("tone", "secondary")  # styled by the v3 theme tokens
         inst.setWordWrap(True)
         lay.addWidget(inst)
 
@@ -233,7 +234,7 @@ class CalibrationDialog(QDialog):
         ctrl_lay.setSpacing(12)
 
         self.lbl_dist = QLabel("Pixel distance:  — px")
-        self.lbl_dist.setStyleSheet("color: #aaaacc; font-size: 12px;")
+        self.lbl_dist.setProperty("tone", "secondary")
         ctrl_lay.addWidget(self.lbl_dist)
 
         ctrl_lay.addStretch()
@@ -249,11 +250,12 @@ class CalibrationDialog(QDialog):
 
         self.unit_combo = QComboBox()
         self.unit_combo.addItems(["µm", "nm", "mm"])
-        self.unit_combo.setFixedWidth(64)
+        self.unit_combo.setFixedWidth(86)
         ctrl_lay.addWidget(self.unit_combo)
 
         self.lbl_result = QLabel("px/µm:  —")
-        self.lbl_result.setStyleSheet("color: #00c8ff; font-size: 13px; font-weight: bold;")
+        self.lbl_result.setProperty("role", "body_strong")
+        self.lbl_result.setProperty("tone", "accent")
         ctrl_lay.addWidget(self.lbl_result)
 
         self.length_spin.valueChanged.connect(self._update_result)
@@ -263,7 +265,7 @@ class CalibrationDialog(QDialog):
 
         # Buttons
         btn_row = QHBoxLayout()
-        self.btn_reset = QPushButton("↺  Reset Points")
+        self.btn_reset = QPushButton("Reset points")
         self.btn_reset.clicked.connect(self._reset)
         btn_row.addWidget(self.btn_reset)
 
@@ -273,8 +275,8 @@ class CalibrationDialog(QDialog):
         btn_cancel.clicked.connect(self.reject)
         btn_row.addWidget(btn_cancel)
 
-        self.btn_apply = QPushButton("✓  Apply to ALL Images")
-        self.btn_apply.setObjectName("primary")
+        self.btn_apply = QPushButton("Apply to all images")
+        self.btn_apply.setProperty("variant", "primary")
         self.btn_apply.setMinimumHeight(36)
         self.btn_apply.setEnabled(False)
         self.btn_apply.clicked.connect(self._apply)
