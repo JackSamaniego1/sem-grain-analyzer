@@ -2,6 +2,8 @@
 
 Agent definitions live in `.claude/agents/*.md` (frontmatter pins model + tools). Spawn with the `Agent` tool, `subagent_type: <name>`. Never override a model to `fable`.
 
+**Registration quirk:** Claude Code loads `.claude/agents/` only at session start. If `subagent_type: <name>` errors with "not found", use the fallback: `subagent_type: general-purpose`, `model: <the model in the table below>`, and begin the prompt with `ROLE: First Read .claude/agents/<name>.md and adopt it as your role definition (ignore its YAML frontmatter).` (Used successfully on 2026-09-23.)
+
 | Agent | Model | Owns | Use when | Typical cost |
 |-------|-------|------|----------|--------------|
 | `scribe` | haiku | `handoff/` | After every task / decision / session end (`/save-handoff`) | tiny |
