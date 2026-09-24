@@ -15,6 +15,7 @@ from ui.widgets.loading import ProgressRing, Skeleton, Spinner
 from ui.widgets.navigation import Breadcrumb, FadeStackedWidget, NavRail
 from ui.widgets.overlay import ShortcutOverlay
 from ui.widgets.segmented import SegmentedControl
+from ui.widgets.selection_bar import SelectionBar
 from ui.widgets.toast import Toast, ToastManager
 
 __all__ = [
@@ -22,5 +23,5 @@ __all__ = [
     "Badge", "Chip", "STATUS_KINDS", "SegmentedControl", "CollapsibleSection",
     "Toast", "ToastManager", "Skeleton", "Spinner", "ProgressRing",
     "Breadcrumb", "SearchBox", "EmptyState", "NavRail", "FadeStackedWidget",
-    "Divider", "KeyValueList", "ShortcutOverlay",
+    "Divider", "KeyValueList", "ShortcutOverlay", "SelectionBar",
 ]

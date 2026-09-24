@@ -27,7 +27,7 @@ ID_KEYS = {"project": "name", "sample": "sample_id", "lot": "lot_number"}
 META_FILES = {"project": "project.json", "sample": "sample.json", "lot": "lot.json",
               "session": "manifest.json"}
 KIND_ICON = {"workspace": "database", "project": "projects", "sample": "sample",
-             "lot": "tag", "session": "images"}
+             "lot": "tag", "session": "images", "image": "image"}
 
 # v3.0 fixed fields, used when the profile defines none (legacy preset)
 LEGACY_FIELDS: Dict[str, List[FieldDef]] = {

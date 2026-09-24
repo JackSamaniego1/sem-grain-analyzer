@@ -21,12 +21,13 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from PySide6.QtCore import QModelIndex, QSize, Qt, Signal
-from PySide6.QtGui import QStandardItem, QStandardItemModel
+from PySide6.QtGui import QKeySequence, QShortcut, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QMenu,
-    QSplitter, QTreeView, QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QMenu,
+    QSizePolicy, QSplitter, QTreeView, QVBoxLayout, QWidget,
 )
 
+from data import file_ops
 from data.catalog import Catalog
 from data.hierarchy import FieldDef
 from data.models import read_json
@@ -42,8 +43,9 @@ from ui.pages.common import (
 )
 from ui.widgets import (
     AnimatedButton, Badge, Card, Divider, EmptyState, FadeStackedWidget, IconButton,
-    KeyValueList, SearchBox, Skeleton, label,
+    KeyValueList, SearchBox, SelectionBar, Skeleton, label,
 )
+from ui.widgets.selection_bar import MOVE_ICON
 from ui.widgets.field_editors import editor_value, make_editor, mark_invalid
 from ui.workers import IMAGE_EXTS, load_thumb_file, run_task
 
@@ -59,6 +61,8 @@ def _id_field(profile, kind: str) -> FieldDef:
 
 def form_fields(profile, kind: str) -> List[FieldDef]:
     """Identifier + the level's metadata fields (sessions: label, operator …)."""
+    if kind == "image":
+        return []
     if kind == "session":
         return hui.level_fields(profile, "session")
     return [_id_field(profile, kind)] + hui.level_fields(profile, kind)
@@ -160,6 +164,30 @@ def session_summary(sdir: Path, n_thumbs: int = 3) -> dict:
             "created": m.get("created_utc", ""), "operator": m.get("operator", "")}
 
 
+def image_items(sdir: Path) -> List[dict]:
+    """One card item per image of a lot record (UI-09; worker thread)."""
+    m = _safe_json(sdir / "manifest.json")
+    out = []
+    for i in m.get("images", []) or []:
+        fn = i.get("filename", "")
+        if not fn:
+            continue
+        stem = Path(fn).stem
+        s = _safe_json(sdir / "results" / f"{stem}.summary.json") if i.get("has_result") else {}
+        px = i.get("px_per_um") or m.get("px_per_um") or 0
+        out.append({"kind": "image", "path": sdir / "images" / fn, "session": sdir,
+                    "filename": fn, "entry": i,
+                    "meta": {"filename": fn, "original_name": i.get("original_name", ""),
+                             "notes": i.get("notes", ""), "created_utc": m.get("created_utc", "")},
+                    "thumbs": [load_thumb_file(sdir / "thumbs" / f"{stem}.jpg")],
+                    "has_result": bool(i.get("has_result")),
+                    "n_grains": int(i.get("grain_count", 0) or 0),
+                    "mean_ecd_um": s.get("mean_diameter_um") if s.get("has_calibration") else None,
+                    "astm_g": s.get("astm_g"), "px_per_um": float(px or 0),
+                    "created": m.get("created_utc", ""), "operator": m.get("operator", "")})
+    return out
+
+
 def load_contents(kind: str, path: str, root: str) -> dict:
     """Children of ``path`` with light summaries (runs on the thread pool)."""
     ws = Workspace(root)
@@ -210,6 +238,7 @@ def load_contents(kind: str, path: str, root: str) -> dict:
     elif kind == "lot":
         if lot_mode and _lot_record(p):
             items.append(session_summary(p))
+            items += image_items(p)
         for sd in _session_dirs(p):
             items.append(session_summary(sd))
     meta_file = hui.META_FILES.get(kind)
@@ -248,33 +277,78 @@ def _reconnect(signal, slot) -> None:
 # widgets
 # ======================================================================
 
+class ElidedLabel(QLabel):
+    """Single-line label that elides (middle) instead of forcing its width."""
+
+    def __init__(self, text: str, role: Optional[str] = None, parent=None) -> None:
+        super().__init__(parent)
+        self._full = text
+        if role:
+            self.setProperty("role", role)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setMinimumWidth(48)
+        self.setText(text)
+
+    def full_text(self) -> str:
+        return self._full
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        self.setText(self.fontMetrics().elidedText(self._full, Qt.ElideMiddle,
+                                                    max(20, self.width())))
+
+
 class NodeCard(SelectableCard):
-    """Card for a project / sample / lot / session (labels from the profile)."""
+    """Card for a project / sample / lot / session / image (labels from the
+    profile). Selectable cards carry a checkbox (multi-select) and an
+    always-visible trash button; right-click opens the item's menu."""
+
+    check_toggled = Signal(bool)
+    trash_clicked = Signal()
+    menu_requested = Signal(object)      # global QPoint
 
     def __init__(self, item: dict, profile=None, parent=None) -> None:
         super().__init__(parent=parent)
         self.item = item
         self.profile = profile
+        self.last_modifiers = Qt.NoModifier
         kind = item["kind"]
+        # the lot's own record ("Images in this lot") is the folder you are in
+        self.selectable = not (kind == "session" and item.get("record"))
         body = self.body_layout()
         body.setSpacing(SPACE.sm)
-        if kind in ("session", "lot"):
-            self.thumbs = ThumbStrip(3, 84 if kind == "session" else 64)
+        if kind in ("session", "lot", "image"):
+            n = 1 if kind == "image" else 3
+            self.thumbs = ThumbStrip(n, 84 if kind in ("session", "image") else 64)
             self.thumbs.set_images(item.get("thumbs", []),
                                    item.get("n_images", 0) if kind == "session" else 0)
             body.addWidget(self.thumbs)
         top = QHBoxLayout()
         top.setSpacing(SPACE.sm)
+        self.check: Optional[QCheckBox] = None
+        if self.selectable:
+            self.check = QCheckBox()
+            self.check.setToolTip("Select this item - Ctrl+click and Shift+click select several")
+            self.check.setAccessibleName(f"Select {self.title_text()}")
+            self.check.toggled.connect(self.check_toggled)
+            top.addWidget(self.check, 0, Qt.AlignVCenter)
         ic = label()
         ic.setPixmap(icons.pixmap(_KIND_ICON[kind], 16))
         top.addWidget(ic, 0, Qt.AlignVCenter)
-        self.title_lbl = label(self.title_text(), "h3")
-        self.title_lbl.setWordWrap(False)
+        # long names elide instead of widening the card past its grid column
+        self.title_lbl = ElidedLabel(self.title_text(), "h3")
+        self.title_lbl.setToolTip(self.title_text())
         top.addWidget(self.title_lbl, 1)
         if kind == "session" or (kind == "lot" and item.get("lot_mode") and item.get("n_images")):
             st, sk = item.get("status", ("", "neutral")) if kind == "session" else \
                 self._lot_status()
             top.addWidget(Badge(st, sk, dot=True), 0, Qt.AlignVCenter)
+        self.trash_btn: Optional[IconButton] = None
+        if self.selectable:
+            self.trash_btn = IconButton(
+                "delete", f"Delete this {self.kind_label(kind).lower()} (move to trash)", 28)
+            self.trash_btn.clicked.connect(self.trash_clicked)
+            top.addWidget(self.trash_btn, 0, Qt.AlignVCenter)
         body.addLayout(top)
         sub = self.subtitle_text()
         if sub:
@@ -283,15 +357,42 @@ class NodeCard(SelectableCard):
             body.addWidget(s)
         row = QHBoxLayout()
         row.setSpacing(SPACE.xs)
+        if kind == "image":          # status in the badge row: the title row stays readable
+            row.addWidget(Badge(*(("Analysed", "success") if item.get("has_result")
+                                  else ("Not analysed", "neutral")), dot=True))
         for text, k, icn in self._badges():
             row.addWidget(Badge(text, k, icon=icn))
         row.addStretch(1)
         body.addLayout(row)
         metric = self._metric()
         if metric:
-            body.addWidget(label(metric, "caption"))
+            ml = label(metric, "caption")
+            ml.setWordWrap(True)
+            body.addWidget(ml)
         self.setToolTip(self._tooltip())
         self.setAccessibleName(f"{self.kind_label(kind)} {self.title_text()}")
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(
+            lambda pos: self.menu_requested.emit(self.mapToGlobal(pos)))
+
+    # -- selection (UI-09) -------------------------------------------------
+    def is_checked(self) -> bool:
+        return self.check is not None and self.check.isChecked()
+
+    def set_checked(self, on: bool) -> None:
+        if self.check is not None and self.check.isChecked() != on:
+            self.check.blockSignals(True)
+            self.check.setChecked(on)
+            self.check.blockSignals(False)
+        self.set_selected(on)
+
+    def mouseReleaseEvent(self, e) -> None:
+        self.last_modifiers = e.modifiers()
+        super().mouseReleaseEvent(e)
+
+    def take_modifiers(self):
+        m, self.last_modifiers = self.last_modifiers, Qt.NoModifier
+        return m
 
     def kind_label(self, kind: str) -> str:
         if kind == "session" and self.item.get("record"):
@@ -311,11 +412,16 @@ class NodeCard(SelectableCard):
         k = it["kind"]
         if k == "session" and it.get("record"):
             return "Images in this " + hui.kind_label(self.profile, "lot").lower()
+        if k == "image":
+            return it.get("filename") or Path(it["path"]).name
         return hui.node_caption(self.profile, k, m, it["path"])
 
     def subtitle_text(self) -> str:
         it, m = self.item, self.item.get("meta", {})
         k = it["kind"]
+        if k == "image":
+            orig = m.get("original_name", "")
+            return f"from {orig}" if orig and orig != it.get("filename") else ""
         if k in hui.LEVELS:
             parts = []
             for fd in hui.level_fields(self.profile, k):
@@ -330,6 +436,10 @@ class NodeCard(SelectableCard):
     def _badges(self):
         it, p = self.item, self.profile
         k = it["kind"]
+        if k == "image":
+            if it.get("has_result"):
+                return [(f"{fmt_int(it.get('n_grains', 0))} grains", "accent", "grains")]
+            return []
         lot_mode = hui.lot_mode(p)
         runs = lambda n: (f"{n} session{'s' if n != 1 else ''}", "neutral", "images")  # noqa: E731
         imgs = lambda n: (f"{n} image{'s' if n != 1 else ''}", "neutral", "images")  # noqa: E731
@@ -357,6 +467,14 @@ class NodeCard(SelectableCard):
 
     def _metric(self) -> str:
         it = self.item
+        if it["kind"] == "image":
+            parts = [f"{it['px_per_um']:.4g} px/µm" if it.get("px_per_um")
+                     else "uncalibrated (px units)"]
+            if it.get("mean_ecd_um"):
+                parts.append(f"Mean ECD {smart_format(it['mean_ecd_um'])} µm")
+            if it.get("astm_g") is not None:
+                parts.append(f"ASTM G {fmt_opt(it['astm_g'], 1)}")
+            return "  ·  ".join(parts)
         if it["kind"] == "session" and it.get("n_analysed"):
             parts = []
             if it.get("mean_diam_um"):
@@ -373,6 +491,9 @@ class NodeCard(SelectableCard):
 
     def _tooltip(self) -> str:
         k = self.item["kind"]
+        if k == "image":
+            return (f"Double-click to open this {hui.kind_label(self.profile, 'lot')} in Analyze / "
+                    "Review. Right-click to rename, move or delete the image.")
         if k == "session":
             if self.item.get("record"):
                 return "Double-click (or Enter) to open the images and results of this " + \
@@ -517,7 +638,8 @@ class DetailsPanel(Panel):
         v.addWidget(self.edit_row)
         self.open_btn = AnimatedButton("Open session", "open", "primary")
         self.open_btn.setToolTip("Load all images and results of this session (Enter)")
-        self.open_btn.clicked.connect(lambda: self.node and self.open_session.emit(self.node.path))
+        self.open_btn.clicked.connect(
+            lambda: self.node and self.open_session.emit(self.open_target(self.node)))
         self.open_btn.hide()
         v.addWidget(self.open_btn)
         v.addStretch(1)
@@ -535,7 +657,13 @@ class DetailsPanel(Panel):
         return node is not None and node.kind in ("project", "sample", "lot", "session")
 
     def _opens(self, node: NodeRef) -> bool:
-        return node.kind == "session" or (node.kind == "lot" and hui.lot_mode(self.profile))
+        return node.kind in ("session", "image") or (node.kind == "lot" and
+                                                     hui.lot_mode(self.profile))
+
+    @staticmethod
+    def open_target(node: NodeRef) -> Path:
+        """What opening ``node`` loads (an image opens its lot / session)."""
+        return node.path.parent.parent if node.kind == "image" else node.path
 
     def show_node(self, node: Optional[NodeRef], meta: dict, extra: Optional[dict] = None,
                   acquisition: Optional[dict] = None) -> None:
@@ -569,7 +697,7 @@ class DetailsPanel(Panel):
         opens = self._opens(node)
         self.open_btn.setVisible(opens)
         if opens:
-            what = hui.kind_label(p, "lot") if node.kind == "lot" else "session"
+            what = hui.kind_label(p, "lot") if node.kind in ("lot", "image") else "session"
             self.open_btn.setText(f"Open {what}")
             self.open_btn.setToolTip(f"Load all images and results of this {what} (Enter)")
         try:
@@ -654,6 +782,10 @@ class ProjectsPage(QWidget):
         self._node: Optional[NodeRef] = None
         self._pending_select: Optional[Path] = None
         self._selected_card: Optional[NodeCard] = None
+        self._sel: List[str] = []              # UI-09: selected card paths, in click order
+        self._anchor: Optional[str] = None     # Shift+click range anchor
+        self.move_dialog = None
+        self.rename_dialog = None
         self._loading = False
         self._build()
         state.workspace_changed.connect(self.reload)
@@ -785,6 +917,12 @@ class ProjectsPage(QWidget):
         fb.addWidget(self.sort)
         fb.addWidget(self.count_lbl)
         cv.addLayout(fb)
+        self.selbar = SelectionBar()
+        self.selbar.delete_requested.connect(lambda: self.ask_delete_items(self.selected_items()))
+        self.selbar.move_requested.connect(lambda: self.start_move(self.selected_items()))
+        self.selbar.clear_requested.connect(self.clear_selection)
+        self.selbar.select_all_requested.connect(self.select_all)
+        cv.addWidget(self.selbar)
 
         self.stack = FadeStackedWidget()
         # loading
@@ -804,7 +942,14 @@ class ProjectsPage(QWidget):
         gwl.addWidget(self.grid)
         gwl.addStretch(1)
         self.grid_scroll = scroll(gw)
+        self.grid_scroll.setToolTip("Click selects · Ctrl+click adds · Shift+click selects a "
+                                    "range · right-click for Open / Rename / Move / Delete")
         self.stack.addWidget(self.grid_scroll)
+        for seq, fn in ((QKeySequence.SelectAll, self.select_all),
+                        (QKeySequence(Qt.Key_Escape), self.clear_selection)):
+            sc = QShortcut(seq, self.grid_scroll)
+            sc.setContext(Qt.WidgetWithChildrenShortcut)
+            sc.activated.connect(fn)
         # empty
         self.empty = EmptyState("projects", "", "", "Create", "add")
         self.empty.action_triggered.connect(self._primary_action)
@@ -990,11 +1135,14 @@ class ProjectsPage(QWidget):
         node = NodeRef(idx.data(KIND_ROLE), Path(idx.data(PATH_ROLE)))
         self._node_menu(node, self.tree.viewport(), pos)
 
-    def menu_actions(self, node: NodeRef) -> List[tuple]:
+    def menu_actions(self, node: NodeRef, from_card: bool = False) -> List[tuple]:
         """(text, icon, callback) for the node's context menu (None = separator)."""
         acts: List[Optional[tuple]] = []
         child = hui.child_kind(self.profile, node.kind)
         lot_mode = hui.lot_mode(self.profile)
+        if node.kind in ("project", "sample") or (node.kind == "lot" and not lot_mode):
+            acts.append((f"Open {self.lbl(node.kind)}", "open",
+                         lambda: self.state.set_node(node)))
         if child and child != "session":
             acts.append((f"New {self.lbl(child)}…", "add",
                          lambda: self._create_under(node, child)))
@@ -1013,25 +1161,68 @@ class ProjectsPage(QWidget):
             acts.append(("Open session", "open", lambda: self.open_session_requested.emit(node.path)))
         if node.kind in ("project", "sample", "lot", "session"):
             acts.append(("Edit metadata", "edit", lambda: self._edit(node)))
-        if node.kind in hui.LEVELS:
+        if node.kind in hui.LEVELS and not from_card:
             acts.append(("Rename  (F2)", "edit", lambda: self._start_rename(node)))
+        elif node.kind in hui.LEVELS or node.kind == "session":
+            acts.append(("Rename…", "mdi6.rename-box",
+                         lambda: self.start_rename_item(self._item_for(node))))
+        dest = file_ops.PARENT_KIND.get(node.kind)
+        if dest and node.kind != "image":
+            acts.append((f"Move to another {self.lbl(dest)}…", MOVE_ICON,
+                         lambda: self.start_move([self._item_for(node)])))
         acts.append(("Show in File Explorer", "open", lambda: self._reveal(node.path)))
         if node.kind != "workspace":
             acts.append(None)
-            acts.append(("Move to trash…", "delete", lambda: self.ask_delete(node)))
+            acts.append(("Delete  (move to trash)…", "delete", lambda: self.ask_delete(node)))
         return acts
 
-    def _node_menu(self, node: Optional[NodeRef], anchor: QWidget, pos=None) -> None:
-        if node is None:
-            return
+    def card_menu_actions(self, card: "NodeCard") -> List[Optional[tuple]]:
+        """Right-click menu of a card; acts on the whole selection when the
+        card is part of a multi-selection."""
+        it = card.item
+        sel = self.selected_items()
+        if len(sel) > 1 and str(it["path"]) in self._sel:
+            n, noun = len(sel), self._noun(sel)
+            acts: List[Optional[tuple]] = []
+            if self._move_kind(sel)[0]:
+                acts.append((f"Move {n} {noun} to…", MOVE_ICON, lambda: self.start_move(sel)))
+            acts += [("Clear selection", "close", self.clear_selection), None,
+                     (f"Delete {n} {noun}  (move to trash)…", "delete",
+                      lambda: self.ask_delete_items(sel))]
+            return acts
+        if it["kind"] == "image":
+            lot = self.lbl("lot")
+            return [(f"Open {lot}", "open",
+                     lambda: self.open_session_requested.emit(it["session"])),
+                    ("Rename…", "mdi6.rename-box", lambda: self.start_rename_item(it)),
+                    (f"Move to another {lot}…", MOVE_ICON, lambda: self.start_move([it])),
+                    ("Show in File Explorer", "open", lambda: self._reveal(Path(it["path"]).parent)),
+                    None,
+                    ("Delete image  (move to trash)…", "delete",
+                     lambda: self.ask_delete_items([it]))]
+        if it["kind"] == "session" and it.get("record"):
+            return self.menu_actions(NodeRef("lot", it["path"]))
+        return self.menu_actions(NodeRef(it["kind"], it["path"]), from_card=True)
+
+    def _card_menu(self, card: "NodeCard", gpos) -> None:
+        if card.selectable and str(card.item["path"]) not in self._sel:
+            self._set_selection([card.item["path"]])
+        self._show_menu(self.card_menu_actions(card), gpos)
+
+    def _show_menu(self, acts, gpos) -> None:
         m = QMenu(self)
-        for a in self.menu_actions(node):
+        for a in acts:
             if a is None:
                 m.addSeparator()
             else:
                 m.addAction(icons.icon(a[1]), a[0], a[2])
+        m.exec(gpos)
+
+    def _node_menu(self, node: Optional[NodeRef], anchor: QWidget, pos=None) -> None:
+        if node is None:
+            return
         gp = anchor.mapToGlobal(pos) if pos is not None else anchor.mapToGlobal(anchor.rect().bottomLeft())
-        m.exec(gp)
+        self._show_menu(self.menu_actions(node), gp)
 
     def _start_rename(self, node: NodeRef) -> None:
         it = self._find_item(node.path)
@@ -1107,7 +1298,8 @@ class ProjectsPage(QWidget):
         self._update_metrics(data)
         extra = None
         if self._node.kind != "session":
-            extra = {"Contains": self._contains_text(self._node.kind, len(data["items"]))}
+            n = sum(1 for it in data["items"] if it["kind"] != "image")
+            extra = {"Contains": self._contains_text(self._node.kind, n)}
         self.details.show_node(self._node, data.get("meta", {}), extra,
                                acquisition=data.get("acquisition") or None)
         if self._pending_card is not None:
@@ -1217,7 +1409,7 @@ class ProjectsPage(QWidget):
         elif mode == 3:
             items.sort(key=lambda it: (it.get("operator") or "~").lower())
         elif mode == 4:
-            items.sort(key=lambda it: it.get("grains", 0), reverse=True)
+            items.sort(key=lambda it: it.get("grains", it.get("n_grains", 0)), reverse=True)
         items.sort(key=lambda it: not it.get("record"))       # the lot's own record first
         return items
 
@@ -1227,10 +1419,14 @@ class ProjectsPage(QWidget):
         items = self._filtered_items()
         total = len(self._contents["items"])
         kind = self._node.kind
+        n_img = sum(1 for it in self._contents["items"] if it["kind"] == "image")
         self.count_lbl.setText(f"{len(items)} of {total}" if len(items) != total else
-                               self._contains_text(kind, total))
+                               (f"{n_img} image{'s' if n_img != 1 else ''}" if n_img else
+                                self._contains_text(kind, total)))
         self._selected_card = None
         if not items:
+            self._sel = []
+            self._selection_changed()
             self._set_empty(kind, filtered=total > 0)
             self.stack.set_current_index(2)
             return
@@ -1239,8 +1435,14 @@ class ProjectsPage(QWidget):
             c = NodeCard(it, self.profile)
             c.clicked.connect(lambda c=c: self._card_clicked(c))
             c.double_clicked.connect(lambda c=c: self._card_open(c))
+            c.check_toggled.connect(lambda on, c=c: self._card_checked(c, on))
+            c.trash_clicked.connect(lambda c=c: self._card_trash(c))
+            c.menu_requested.connect(lambda gp, c=c: self._card_menu(c, gp))
             cards.append(c)
         self.grid.set_widgets(cards)
+        visible = {str(c.item["path"]) for c in cards if c.selectable}
+        self._sel = [k for k in self._sel if k in visible]
+        self._selection_changed()
         self.stack.set_current_index(1)
 
     def _set_empty(self, kind: str, filtered: bool) -> None:
@@ -1290,16 +1492,44 @@ class ProjectsPage(QWidget):
         return [w for w in self.grid.widgets() if isinstance(w, NodeCard)]
 
     def _card_clicked(self, card: NodeCard) -> None:
-        if self._selected_card is not None and self._selected_card is not card:
-            try:
-                self._selected_card.set_selected(False)
-            except RuntimeError:
-                pass
+        mods = card.take_modifiers()
+        key = str(card.item["path"])
+        if not card.selectable:
+            self._set_selection([])
+            card.set_selected(True)
+        elif mods & Qt.ShiftModifier and self._anchor is not None:
+            order = [str(c.item["path"]) for c in self.cards() if c.selectable]
+            if self._anchor in order:
+                a, b = order.index(self._anchor), order.index(key)
+                rng = order[min(a, b):max(a, b) + 1]
+                base = self._sel if mods & Qt.ControlModifier else []
+                self._set_selection(base + [k for k in rng if k not in base], anchor=False)
+            else:
+                self._set_selection([key])
+        elif mods & Qt.ControlModifier:
+            self._toggle(key)
+        else:
+            self._set_selection([key])
         self._selected_card = card
-        card.set_selected(True)
+        self._show_card_details(card)
+
+    def _show_card_details(self, card: NodeCard) -> None:
         it = card.item
         node = NodeRef(it["kind"], it["path"])
         extra = None
+        if it["kind"] == "image":
+            e = it.get("entry", {})
+            extra = {"Original name": e.get("original_name") or "—",
+                     "Size": f"{e.get('width', 0)} × {e.get('height', 0)} px"
+                     if e.get("width") else "—",
+                     "Analysis": (f"Analysed · {fmt_int(it.get('n_grains', 0))} grains"
+                                  if it.get("has_result") else "Not analysed"),
+                     "Calibration": (f"{it['px_per_um']:.4g} px/µm" if it.get("px_per_um")
+                                     else "Not set")}
+            if e.get("notes"):
+                extra["Notes"] = e["notes"]
+            self.details.show_node(node, it.get("meta", {}), extra)
+            return
         if it["kind"] == "session":
             if it.get("record"):
                 node = NodeRef("lot", it["path"])
@@ -1317,13 +1547,105 @@ class ProjectsPage(QWidget):
     def _select_card_path(self, path: Path) -> None:
         for c in self.cards():
             if Path(c.item["path"]) == Path(path):
+                c.last_modifiers = Qt.NoModifier
                 self._card_clicked(c)
                 self.grid_scroll.ensureWidgetVisible(c)
                 return
 
+    # ------------------------------------------------------------------ selection (UI-09)
+    def selected_items(self) -> List[dict]:
+        by = {str(c.item["path"]): c.item for c in self.cards()}
+        return [by[k] for k in self._sel if k in by]
+
+    def selected_cards(self) -> List[NodeCard]:
+        by = {str(c.item["path"]): c for c in self.cards()}
+        return [by[k] for k in self._sel if k in by]
+
+    def _set_selection(self, paths, anchor: bool = True) -> None:
+        self._sel = [str(p) for p in paths]
+        if anchor:
+            self._anchor = self._sel[-1] if self._sel else None
+        self._selection_changed()
+
+    def _toggle(self, key: str) -> None:
+        if key in self._sel:
+            self._sel.remove(key)
+        else:
+            self._sel.append(key)
+        self._anchor = key
+        self._selection_changed()
+
+    def _card_checked(self, card: NodeCard, on: bool) -> None:
+        key = str(card.item["path"])
+        if on and key not in self._sel:
+            self._sel.append(key)
+        elif not on and key in self._sel:
+            self._sel.remove(key)
+        self._anchor = key
+        self._selection_changed()
+
+    def select_all(self) -> None:
+        self._set_selection([c.item["path"] for c in self.cards() if c.selectable])
+
+    def clear_selection(self) -> None:
+        self._selected_card = None
+        self._set_selection([])
+
+    def _item_for(self, node: NodeRef) -> dict:
+        for c in self.cards():
+            if Path(c.item["path"]) == Path(node.path):
+                return c.item
+        return {"kind": node.kind, "path": Path(node.path)}
+
+    def _item_label(self, it: dict, n: int = 1) -> str:
+        k = it["kind"]
+        word = {"image": "image", "session": "session"}.get(k) or self.lbl(k)
+        return word if n == 1 else hui.plural(word)
+
+    def _noun(self, items: List[dict]) -> str:
+        kinds = {it["kind"] for it in items}
+        if len(kinds) == 1:
+            return self._item_label(items[0], len(items))
+        return "item" if len(items) == 1 else "items"
+
+    def _move_kind(self, items: List[dict]):
+        """(kind, reason): the common movable kind of ``items`` or None + why not."""
+        kinds = {it["kind"] for it in items}
+        if not items:
+            return None, "Nothing selected"
+        if len(kinds) != 1:
+            return None, "Select items of one kind to move them together"
+        k = kinds.pop()
+        if k not in file_ops.PARENT_KIND:
+            return None, (f"A {self.lbl(k)} is the top level and cannot be moved"
+                          if k == "project" else "These items cannot be moved")
+        return k, ""
+
+    def _selection_changed(self) -> None:
+        sel = set(self._sel)
+        for c in self.cards():
+            try:
+                c.set_checked(str(c.item["path"]) in sel)
+            except RuntimeError:
+                pass
+        items = self.selected_items()
+        n = len(items)
+        self.selbar.set_count(n, self._noun(items) if n else "")
+        k, why = self._move_kind(items)
+        self.selbar.set_move_enabled(k is not None, why)
+
+    def _card_trash(self, card: NodeCard) -> None:
+        key = str(card.item["path"])
+        if key in self._sel and len(self._sel) > 1:
+            self.ask_delete_items(self.selected_items())
+        else:
+            self.ask_delete_items([card.item])
+
     def _card_open(self, card: NodeCard) -> None:
         it = card.item
-        if it["kind"] == "session" or (it["kind"] == "lot" and hui.lot_mode(self.profile)):
+        if it["kind"] == "image":
+            self.open_session_requested.emit(it["session"])
+        elif it["kind"] == "session" or (it["kind"] == "lot" and hui.lot_mode(self.profile)):
             self.open_session_requested.emit(it["path"])
         else:
             self.state.set_node(NodeRef(it["kind"], it["path"]))
@@ -1384,64 +1706,287 @@ class ProjectsPage(QWidget):
             return {}
         return {"project_path": lot.parent.parent, "sample_path": lot.parent, "lot_path": lot}
 
+    # ------------------------------------------------------------------ delete (UI-09)
     def ask_delete(self, node: Optional[NodeRef] = None) -> None:
+        """Delete (move to trash) ``node`` -- or the whole selection when
+        ``node`` is one of several selected cards."""
         node = node or self._node
         if node is None or node.kind == "workspace":
             return
-        name = node_display_name(node, self.profile)
+        sel = self.selected_items()
+        if len(sel) > 1 and str(node.path) in self._sel:
+            self.ask_delete_items(sel)
+            return
+        self.ask_delete_items([self._item_for(node)])
+
+    def ask_delete_items(self, items: List[dict]) -> None:
+        items = [({"kind": "lot", "path": Path(it["path"])} if it.get("record") else it)
+                 for it in items if it and it.get("kind") not in (None, "workspace")]
+        if not items:
+            return
         L = self.lbl
-        inner = "its images and results" if hui.lot_mode(self.profile) else "every session in it"
-        what = {"session": "this session with all its images and results",
-                "lot": f"this {L('lot')} and {inner}",
-                "sample": f"this {L('sample')} and everything inside it",
-                "project": f"this {L('project')} and everything inside it"}[node.kind]
-        self.confirm.ask(f"Move “{name}” to the trash?",
+        if len(items) == 1:
+            it = items[0]
+            k = it["kind"]
+            if k == "image":
+                name = it.get("filename") or Path(it["path"]).name
+                what = "this image with its results"
+            else:
+                name = node_display_name(NodeRef(k, Path(it["path"])), self.profile)
+                inner = ("its images and results" if hui.lot_mode(self.profile)
+                         else "every session in it")
+                what = {"session": "this session with all its images and results",
+                        "lot": f"this {L('lot')} and {inner}",
+                        "sample": f"this {L('sample')} and everything inside it",
+                        "project": f"this {L('project')} and everything inside it"}[k]
+            title = f"Delete “{name}”?"
+        else:
+            noun = self._noun(items)
+            title = f"Delete {len(items)} {noun}?"
+            what = (f"these {len(items)} {noun} with their results"
+                    if all(it["kind"] == "image" for it in items)
+                    else f"these {len(items)} {noun} and everything inside them")
+        self.confirm.ask(title,
                          f"This moves {what} into the workspace’s .trash folder. Nothing is "
                          "permanently deleted — Undo on the next message restores it.",
-                         "Move to trash", lambda: self._delete(node))
+                         "Move to trash", lambda: self._delete_items(items))
 
     def _delete(self, node: NodeRef) -> None:
-        self._release_open_session(node.path)
+        self._delete_items([self._item_for(node)])
+
+    @staticmethod
+    def _item_home(it: dict) -> Path:
+        """The folder an item's data lives in (an image: its lot / session)."""
+        return Path(it["session"]) if it["kind"] == "image" else Path(it["path"])
+
+    def _delete_items(self, items: List[dict]) -> None:
+        for it in items:
+            self._release_open_session(self._item_home(it))
         ws = self.state.workspace
         root = self.state.root
+        folders = [(it["kind"], Path(it["path"])) for it in items if it["kind"] != "image"]
+        images: Dict[Path, List[str]] = {}
+        for it in items:
+            if it["kind"] == "image":
+                images.setdefault(Path(it["session"]), []).append(it["filename"])
 
         def work():
-            return trash_node(ws, root, node.kind, node.path)
+            cat = Catalog(root)
+            dests = [file_ops.trash_images(ws, sd, fns, catalog=cat) for sd, fns in images.items()]
+            for kind, path in folders:
+                dests.append(trash_node(ws, root, kind, path))
+            return dests
 
-        def done(dest):
-            can_undo = node.kind in ("project", "sample", "lot", "session")
-            self._toast("Moved to trash", node.path.name, "success",
-                        "Undo" if can_undo else None,
-                        (lambda: self.restore_from_trash(dest)) if can_undo else None)
-            parent = node_for_path(root, node.path.parent)
-            self._node = parent
-            self._pending_select = parent.path
-            self.state.set_node(parent)
+        def done(dests):
+            self._sel = []
+            body = (Path(items[0]["path"]).name if len(items) == 1
+                    else f"{len(items)} {self._noun(items)}")
+            self._toast("Moved to trash", body, "success", "Undo",
+                        lambda: self.restore_many(dests))
+            gone = {p for _k, p in folders}
+            cur = self._node
+            if cur is not None and any(cur.path == g or self._within(cur.path, g) for g in gone):
+                parent = node_for_path(root, min(gone, key=lambda g: len(g.parts)).parent)
+                self._node = parent
+                self._pending_select = parent.path
+                self.state.set_node(parent)
             self.reload()
 
         run_task(work, on_done=done,
-                 on_error=lambda m: self._toast("Could not move to trash", m.splitlines()[0], "danger"))
+                 on_error=lambda m: (self._toast("Could not move to trash", m.splitlines()[0],
+                                                 "danger"), self.reload()))
+
+    @staticmethod
+    def _within(path: Path, parent: Path) -> bool:
+        try:
+            Path(path).relative_to(parent)
+            return True
+        except ValueError:
+            return False
 
     def restore_from_trash(self, trash_path) -> None:
+        self.restore_many([trash_path])
+
+    def restore_many(self, trash_paths) -> None:
+        """Undo: put trashed folders / images back where they came from."""
+        ws = self.state.workspace
+        root = self.state.root
+        paths = [Path(p) for p in trash_paths]
+
+        def work():
+            cat = Catalog(root)
+            out, errors = [], []
+            for tp in paths:
+                try:
+                    out.append(file_ops.restore_any(ws, tp, catalog=cat))
+                except FileExistsError:
+                    errors.append("Something with the same name now exists in its original "
+                                  "place. Rename it, then restore from the .trash folder.")
+                except (OSError, ValueError) as e:
+                    errors.append(str(e))
+            return out, errors
+
+        def done(res):
+            out, errors = res
+            if out:
+                self._toast("Restored", Path(out[0]).name if len(out) == 1
+                            else f"{len(out)} items", "success")
+                self._pending_select = Path(out[0])
+            if errors:
+                self._toast("Could not restore", errors[0], "danger")
+            self.reload()
+
+        run_task(work, on_done=done,
+                 on_error=lambda m: self._toast("Could not restore", m.splitlines()[0], "danger"))
+
+    # ------------------------------------------------------------------ move (UI-09)
+    def move_destinations(self, items: List[dict]) -> List[Path]:
+        kind, _why = self._move_kind(items)
+        if kind is None:
+            return []
+        srcs = {self._item_home(it) if kind == "image" else Path(it["path"]) for it in items}
+        return file_ops.move_destinations(self.state.workspace, kind, sorted(srcs))
+
+    def start_move(self, items: List[dict]) -> None:
+        """Open the "Move to…" picker (same-level destinations only)."""
+        items = [it for it in items if it]
+        kind, why = self._move_kind(items)
+        if kind is None:
+            self._toast("Cannot move", why, "warning")
+            return
+        from ui.dialogs.move_to_dialog import MoveToDialog
+        n = len(items)
+        what = (f"“{Path(items[0]['path']).name}”" if n == 1
+                else f"{n} {self._noun(items)}")
+        dlg = MoveToDialog(self.move_destinations(items), file_ops.PARENT_KIND[kind], what,
+                           self.state.root, self.profile, self)
+        dlg.destination_chosen.connect(lambda dest: self._move_items(items, Path(dest)))
+        dlg.finished.connect(lambda _r: setattr(self, "move_dialog", None))
+        self.move_dialog = dlg
+        dlg.open()
+
+    def _move_items(self, items: List[dict], dest: Path) -> None:
+        for it in items:
+            self._release_open_session(self._item_home(it))
         ws = self.state.workspace
         root = self.state.root
 
         def work():
-            return ws.restore_from_trash(trash_path, catalog=Catalog(root))
+            cat = Catalog(root)
+            done_moves = []
+            groups: Dict[Path, List[str]] = {}
+            for it in items:
+                if it["kind"] == "image":
+                    groups.setdefault(Path(it["session"]), []).append(it["filename"])
+                else:
+                    old = Path(it["path"])
+                    new = file_ops.move_node(ws, old, dest, catalog=cat)
+                    done_moves.append(("folder", old, new))
+            for sd, fns in groups.items():
+                pairs = file_ops.move_images(ws, sd, fns, dest, catalog=cat)
+                done_moves.append(("images", sd, pairs))
+            return done_moves
 
-        def done(target):
-            self._toast("Restored", Path(target).name, "success")
-            self._pending_select = Path(target)
+        def done(moves):
+            self._sel = []
+            where = node_display_name(NodeRef(file_ops.classify(dest) or "lot", dest),
+                                      self.profile, crumb=True)
+            n = len(items)
+            body = (f"{Path(items[0]['path']).name} → {where}" if n == 1
+                    else f"{n} {self._noun(items)} → {where}")
+            self._toast("Moved", body, "success", "Undo", lambda: self._undo_move(moves, dest))
+            self._follow_moves(moves)
             self.reload()
 
-        def failed(msg):
-            first = msg.splitlines()[0]
-            if first.startswith("FileExistsError"):
-                first = ("Something with the same name now exists in its original place. "
-                         "Rename it, then undo again from the .trash folder.")
-            self._toast("Could not restore", first, "danger")
+        run_task(work, on_done=done,
+                 on_error=lambda m: (self._toast("Could not move", m.splitlines()[0], "danger"),
+                                     self.reload()))
 
-        run_task(work, on_done=done, on_error=failed)
+    def _follow_moves(self, moves) -> None:
+        cur = self._node
+        if cur is None:
+            return
+        for kind, old, new in moves:
+            if kind == "folder" and (cur.path == old or self._within(cur.path, old)):
+                np_ = Path(new) / cur.path.relative_to(old)
+                self._node = NodeRef(cur.kind, np_)
+                self._pending_select = np_
+                self.state.set_node(self._node)
+                return
+
+    def _undo_move(self, moves, dest: Path) -> None:
+        ws = self.state.workspace
+        root = self.state.root
+        for kind, a, b in moves:
+            self._release_open_session(Path(b) if kind == "folder" else Path(a))
+        self._release_open_session(dest)
+
+        def work():
+            cat = Catalog(root)
+            back = []
+            for kind, a, b in reversed(moves):
+                if kind == "folder":
+                    back.append(("folder", b, file_ops.move_node(ws, b, Path(a).parent,
+                                                                  catalog=cat)))
+                else:
+                    file_ops.move_images(ws, dest, [new for _old, new in b], a, catalog=cat,
+                                         target_names=[old for old, _new in b])
+            return back
+
+        def done(back):
+            self._toast("Move undone", "Everything is back where it was.", "success")
+            self._follow_moves(back)
+            self.reload()
+
+        run_task(work, on_done=done,
+                 on_error=lambda m: self._toast("Could not undo the move", m.splitlines()[0],
+                                                "danger"))
+
+    # ------------------------------------------------------------------ rename (UI-09)
+    def start_rename_item(self, it: Optional[dict]) -> None:
+        if not it:
+            return
+        from ui.dialogs.rename_dialog import RenameDialog
+        k = it["kind"]
+        if k == "image":
+            cur = Path(it["filename"]).stem
+            hint = "The file extension, results and thumbnail keep matching automatically."
+        elif k == "session":
+            cur = hui.node_caption(self.profile, "session", it.get("meta") or
+                                   hui.read_meta("session", Path(it["path"])), Path(it["path"]))
+            hint = "Changes the session's label; its folder keeps its date stamp."
+        else:
+            cur = hui.id_value(k, hui.read_meta(k, Path(it["path"])), Path(it["path"]))
+            hint = f"Renames the folder and the {hui.id_label(self.profile, k).lower()}."
+        dlg = RenameDialog(self._item_label(it).lower() if k in ("image", "session")
+                           else self.lbl(k), cur, hint, self)
+        dlg.submitted.connect(lambda new: self.rename_item(it, new))
+        dlg.finished.connect(lambda _r: setattr(self, "rename_dialog", None))
+        self.rename_dialog = dlg
+        dlg.open()
+
+    def rename_item(self, it: dict, new: str) -> None:
+        k = it["kind"]
+        if k in hui.LEVELS:
+            self._rename(NodeRef(k, Path(it["path"])), new)
+            return
+        ws = self.state.workspace
+        try:
+            if k == "image":
+                sd = Path(it["session"])
+                self._release_open_session(sd)
+                final = file_ops.rename_image(ws, sd, it["filename"], new,
+                                              catalog=Catalog(self.state.root))
+                self._toast("Renamed", f"Image renamed to “{final}”.", "success")
+            elif k == "session":
+                ws.rename_session(Path(it["path"]), new)
+                root, sp = self.state.root, Path(it["path"])
+                run_task(lambda: Catalog(root).index_session(sp))
+                self._toast("Renamed", f"Session renamed to “{new}”.", "success")
+        except Exception as e:
+            self._toast("Rename failed", str(e), "danger")
+        if self._node is not None:
+            self.show_node(self._node)
 
     def _save_meta(self, node: NodeRef, vals: dict) -> None:
         ws = self.state.workspace

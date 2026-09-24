@@ -38,9 +38,10 @@ def _gray(image):
 
 def _longest_line(ink: np.ndarray, max_h: int, max_w: int):
     """Longest solid horizontal run (x, y, w, h) in a binary ink mask.
-    Opening with a 20x1 kernel keeps horizontal strokes >= 20 px and removes
+    Opening with a 21x1 kernel keeps horizontal strokes >= 21 px and removes
     text glyphs and the 1-px vertical end ticks of the bar."""
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (20, 1))
+    # 21 (odd): an even-width kernel shifts the opened stroke 1 px right
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (21, 1))
     horiz = cv2.morphologyEx(ink, cv2.MORPH_OPEN, kernel)
     contours, _ = cv2.findContours(horiz, cv2.RETR_EXTERNAL,
                                    cv2.CHAIN_APPROX_SIMPLE)
