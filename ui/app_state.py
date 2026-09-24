@@ -154,11 +154,16 @@ class ImageDoc:
     path: Optional[Path] = None
     image_bgr: Optional[np.ndarray] = None
     thumb: Optional[QImage] = None
-    raw: Optional[AnalysisResult] = None       # detector output (never edited)
+    raw: Optional[AnalysisResult] = None       # detector output (+ hand merges/splits)
     result: Optional[AnalysisResult] = None    # filtered result: stats, export, reports
     excluded: Dict[int, List[str]] = field(default_factory=dict)   # grain id -> reasons
     counts: Dict[str, int] = field(default_factory=dict)           # reason -> n
     manual: set = field(default_factory=set)                       # hand-removed grain ids
+    # UI-05/INN-04: hand merges/splits (core.grain_edit op dicts, in order)
+    # and the detector's original labels they were applied to (None while
+    # there are no edits: raw.label_image IS the detector output then).
+    edits: List[dict] = field(default_factory=list)
+    detector_labels: Optional[np.ndarray] = None
     filter_override: Optional[PostFilterOptions] = None            # None -> session filters
     filter_gen: int = 0
     scan_rect: Optional[tuple] = None     # per-image override (None -> session)
@@ -293,8 +298,12 @@ def _image_dict(si, bgr, legacy: Optional[dict] = None, opts: Optional[PostFilte
             import copy as _copy
             res = _copy.copy(res)
             res.label_image = kept_labels(res.label_image, list(excluded))
+    edits = [dict(op) for op in (getattr(entry, "grain_edits", None) or [])
+             if isinstance(op, dict)]
+    base = getattr(si.result, "detector_label_image", None) if edits else None
     return dict(filename=si.filename, path=si.path, bgr=bgr, result=res, raw=raw,
                 excluded=excluded, manual=manual, override=override,
+                edits=edits, detector_labels=base,
                 thumb=thumb_qimage(bgr), scan_rect=entry.scan_rect,
                 px=float(entry.px_per_um or 0.0), notes=entry.notes)
 
@@ -487,6 +496,46 @@ class RestoreGrainsCommand(QUndoCommand):
         self.state._manual_changed(doc)
 
 
+class GrainGeometryCommand(QUndoCommand):
+    """Merge / split grains (UI-05 / INN-04): swaps the image's raw result
+    (edited labels, re-measured grains) and its persisted edit list; undo
+    restores the previous raw result.  The filtered result, statistics and
+    ASTM G are then recomputed by the post-filter like after any other edit."""
+
+    def __init__(self, state: "AppState", uid: int, new_raw: AnalysisResult,
+                 outcome, text: str) -> None:
+        super().__init__(text)
+        self.state = state
+        self.uid = uid
+        doc = self._doc()
+        self.before = (doc.raw, list(doc.edits), doc.detector_labels)
+        base = doc.detector_labels
+        if base is None and doc.raw is not None:
+            base = doc.raw.label_image          # the detector's own labels
+        self.after = (new_raw, list(doc.edits) + [dict(outcome.op)], base)
+        self.op = dict(outcome.op)
+
+    def _doc(self) -> Optional[ImageDoc]:
+        return self.state.session.image(self.uid) if self.state.session else None
+
+    def _apply(self, raw, edits, base) -> None:
+        doc = self._doc()
+        if doc is None:
+            return
+        doc.raw, doc.edits = raw, list(edits)
+        doc.detector_labels = base if edits else None
+        ids = {int(g.grain_id) for g in (raw.grains if raw else [])}
+        doc.manual &= ids
+        doc.excluded = {k: v for k, v in doc.excluded.items() if k in ids}
+        self.state._geometry_changed(doc)
+
+    def redo(self) -> None:
+        self._apply(*self.after)
+
+    def undo(self) -> None:
+        self._apply(*self.before)
+
+
 # ======================================================================
 # AppState
 # ======================================================================
@@ -671,6 +720,8 @@ class AppState(QObject):
                       thumb=d.get("thumb"), result=res, raw=d.get("raw") or res,
                       excluded=excluded, counts=_counts_from(excluded),
                       manual=set(d.get("manual") or []),
+                      edits=list(d.get("edits") or []),
+                      detector_labels=d.get("detector_labels"),
                       filter_override=options_from_dict(d["override"]) if d.get("override") else None,
                       scan_rect=tuple(d["scan_rect"]) if d.get("scan_rect") else None,
                       px_override=override,
@@ -918,6 +969,7 @@ class AppState(QObject):
             return
         im.raw = raw
         im.manual = set()
+        im.edits, im.detector_labels = [], None     # a new detection: hand edits start over
         im.excluded, im.counts = {}, {}
         im.status, im.progress, im.message = "running", 99, "Applying grain filters"
         self.image_updated.emit(uid)
@@ -1050,6 +1102,63 @@ class AppState(QObject):
         self.undo_stack.push(cmd)
         return True
 
+    # -- UI-05 / INN-04: merge / split (label-image edits) ---------------
+    def _edit_target(self, uid):
+        from core.grain_edit import GrainEditError, label_offset
+        im = self.session.image(uid) if (self.session and uid is not None) else None
+        if im is None or im.raw is None or im.raw.label_image is None:
+            raise GrainEditError("Analyse this image before editing its grains.")
+        lab = im.raw.label_image
+        shape = im.image_bgr.shape[:2] if im.image_bgr is not None else lab.shape[:2]
+        off = label_offset(lab.shape, shape, getattr(im.raw, "auto_crop_rect", None))
+        return im, off
+
+    def kept_ids(self, uid) -> set:
+        """Grains currently counted (not excluded by a filter or by hand)."""
+        im = self.session.image(uid) if (self.session and uid is not None) else None
+        if im is None or im.raw is None:
+            return set()
+        return {int(g.grain_id) for g in im.raw.grains} - {int(k) for k in im.excluded}
+
+    def merge_grains(self, uid, grain_ids: List[int]) -> int:
+        """Merge 2+ touching kept grains into one (undoable).  Returns the
+        merged grain's id; raises ``core.grain_edit.GrainEditError`` with a
+        user-facing message when the grains cannot be merged."""
+        from core.grain_edit import GrainEditError, merge_grains, remeasure_after_edit
+        im, _off = self._edit_target(uid)
+        kept = self.kept_ids(uid)
+        ids = sorted({int(i) for i in grain_ids if int(i) in kept})
+        if len(ids) < 2:
+            raise GrainEditError("Select at least two grains to merge.")
+        out = merge_grains(im.raw.label_image, ids, valid_mask=im.raw.valid_mask)
+        raw = remeasure_after_edit(im.raw, out, self._frame_shape(im))
+        self.undo_stack.push(GrainGeometryCommand(self, uid, raw, out,
+                                                  f"Merge {len(ids)} grains"))
+        return int(out.op["into"])
+
+    def split_grain(self, uid, line_xy, grain_id: Optional[int] = None) -> List[int]:
+        """Split one kept grain along a cut line given in IMAGE (canvas)
+        coordinates (undoable).  Returns the ids of the pieces."""
+        from core.grain_edit import remeasure_after_edit, split_grain, to_label_coords
+        im, off = self._edit_target(uid)
+        line = to_label_coords(line_xy, off)
+        out = split_grain(im.raw.label_image, line, grain_id, candidates=self.kept_ids(uid))
+        raw = remeasure_after_edit(im.raw, out, self._frame_shape(im))
+        self.undo_stack.push(GrainGeometryCommand(self, uid, raw, out,
+                                                  f"Split grain #{out.op['id']}"))
+        return [int(i) for i in out.changed]
+
+    @staticmethod
+    def _frame_shape(im: ImageDoc):
+        return im.image_bgr.shape[:2] if im.image_bgr is not None else None
+
+    def _geometry_changed(self, doc: ImageDoc) -> None:
+        # Not marked dirty here: the refilter pass below saves labels, grains
+        # and the edit list together, so the files on disk never disagree.
+        doc.counts = _counts_from(doc.excluded)
+        self.result_edited.emit(doc.uid)   # canvas shows the new outlines at once
+        self.refilter(doc.uid, preview=True)
+
     def _manual_changed(self, doc: ImageDoc) -> None:
         doc.counts = _counts_from(doc.excluded)
         self.result_edited.emit(doc.uid)   # optimistic: canvas greys them at once
@@ -1073,7 +1182,8 @@ class AppState(QObject):
                     px_per_um=float(im.px_override) if im.px_override > 0 else CLEAR,
                     filters_override=(options_to_dict(im.filter_override)
                                       if im.filter_override is not None else CLEAR),
-                    manual_excluded=sorted(int(i) for i in im.manual))
+                    manual_excluded=sorted(int(i) for i in im.manual),
+                    grain_edits=[dict(op) for op in im.edits] if im.edits else CLEAR)
 
     def save_now(self) -> None:
         """Flush pending changes to disk off-thread (Ctrl+S / autosave)."""
@@ -1097,8 +1207,11 @@ class AppState(QObject):
                 # overlay.png hold the filtered (reported) result.
                 if im.raw is not None and im.raw.label_image is not None:
                     snap.label_image = im.raw.label_image.copy()
+                base = (im.detector_labels.copy()
+                        if im.edits and im.detector_labels is not None else None)
                 entries.append(ImageEntry(filename=im.filename, image_bgr=im.image_bgr,
-                                          result=snap, **self._image_fields(im)))
+                                          result=snap, detector_label_image=base,
+                                          **self._image_fields(im)))
             elif all_fields:
                 # manifest-only update: overrides, filter override, manual ids
                 entries.append(ImageEntry(filename=im.filename, **self._image_fields(im)))

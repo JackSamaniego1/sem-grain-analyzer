@@ -145,6 +145,96 @@ def sample_statistics_arg(state, inputs: Sequence[ReportImageInput]):
     return out
 
 
+# ======================================================================
+# Optional INN-02 verdict / INN-29 calibration stamp
+# ======================================================================
+
+def report_extras_arg(state, inputs: Sequence[ReportImageInput]) -> Optional[dict]:
+    """GUI-thread snapshot of what :func:`compute_report_extras` needs (plain
+    values only), or None without an open session."""
+    s = getattr(state, "session", None)
+    if s is None or getattr(s, "path", None) is None:
+        return None
+    settings = getattr(state, "settings", None)
+    meta = getattr(s, "meta", None)
+    ppu = next((float(getattr(i.result, "px_per_um", 0.0) or 0.0) for i in inputs or []
+                if getattr(i.result, "has_calibration", False)), 0.0)
+    return {
+        "root": str(getattr(state, "root", "") or ""),
+        "session": str(s.path),
+        "cfg": {"required_fields": int(getattr(settings, "required_fields", 5) or 5),
+                "target_RA_pct": float(getattr(settings, "target_RA_pct", 10.0) or 10.0)},
+        "cal_enabled": bool(getattr(settings, "calibration_verification_enabled", False)),
+        "instruments": list(getattr(settings, "instruments", None) or []),
+        "instrument": str(getattr(meta, "instrument", "") or ""),
+        "magnification": getattr(meta, "magnification", "") or "",
+        "px_per_um": ppu,
+    }
+
+
+def lot_verdict_for_session(session_path, cfg: Optional[dict] = None) -> Optional[dict]:
+    """Pool thread: the lot's INN-02 verdict dict, or None when no spec
+    applies (spec limits are optional -- the report is then unchanged)."""
+    from core.metrics import sample_statistics
+    from data.catalog import _level_meta_dirs, fields_for_lot
+    from data.specs import SpecError, evaluate
+    from ui.pages.lot_results import lot_spec
+    lot = _level_meta_dirs(Path(session_path))["lot"]
+    spec = lot_spec(lot)
+    if spec is None:
+        return None
+    try:
+        v = evaluate(spec, sample_statistics(fields_for_lot(lot), cfg or {}))
+    except SpecError:
+        return None
+    return v.to_dict() if v.overall in ("pass", "fail", "inconclusive") else None
+
+
+def calibration_for_report(extras: dict) -> Optional[dict]:
+    """Pool thread: ``report_calibration()`` payload, or None when the
+    optional calibration verification is not in use (status "off")."""
+    from data.cal_records import CalibrationStore, report_calibration
+    root = extras.get("root")
+    if not root:
+        return None
+    store = CalibrationStore(root, enabled=bool(extras.get("cal_enabled")))
+    lookup = store.find_applicable_check(extras.get("instrument", ""),
+                                         extras.get("magnification", ""),
+                                         instruments=extras.get("instruments"))
+    if lookup.status == "off":
+        return None
+    return report_calibration(lookup, px_per_um=float(extras.get("px_per_um") or 0.0))
+
+
+def compute_report_extras(extras: Optional[dict]) -> Tuple[Optional[dict], Optional[dict]]:
+    """(verdict, calibration) -- each None when its optional feature is unused.
+    Never raises: a problem here must not stop a report."""
+    if not extras:
+        return None, None
+    try:
+        verdict = lot_verdict_for_session(extras["session"], extras.get("cfg"))
+    except Exception:          # noqa: BLE001 -- optional block, never fatal
+        verdict = None
+    try:
+        cal = calibration_for_report(extras)
+    except Exception:          # noqa: BLE001
+        cal = None
+    return verdict, cal
+
+
+def apply_calibration(model: ReportModel, cal: Optional[dict]) -> None:
+    """Attach the INN-29 payload (``ReportModel.calibration`` when the model
+    has it, and ``metadata["calibration"]``); remove it when unused."""
+    if cal is None:
+        model.metadata.pop("calibration", None)
+        if hasattr(model, "calibration"):
+            model.calibration = None
+        return
+    model.metadata["calibration"] = dict(cal)
+    if hasattr(model, "calibration"):
+        model.calibration = dict(cal)
+
+
 def analysed_count(state) -> int:
     return sum(1 for im in state.images() if im.result is not None)
 
@@ -277,9 +367,16 @@ def build_model(inputs: Sequence[ReportImageInput], *, title: str, operator: str
                 organization: str = "", logo_path: Optional[str] = None,
                 metadata: Optional[dict] = None, asset_dir: Optional[str] = None,
                 fingerprint: str = "", hierarchy: Optional[list] = None,
-                export_basename: str = "", sample_statistics=None) -> ReportModel:
+                export_basename: str = "", sample_statistics=None,
+                verdict=None, calibration=None, extras: Optional[dict] = None) -> ReportModel:
     """Pool-thread: ReportModel from snapshots (writes overlay PNGs).
-    ``sample_statistics``: see :func:`sample_statistics_arg` (INN-27)."""
+    ``sample_statistics``: see :func:`sample_statistics_arg` (INN-27).
+    ``extras`` (:func:`report_extras_arg`): compute the optional INN-02
+    verdict and INN-29 calibration payload here, off the GUI thread."""
+    if extras:
+        v, c = compute_report_extras(extras)
+        verdict = verdict if verdict is not None else v
+        calibration = calibration if calibration is not None else c
     if asset_dir:
         os.makedirs(asset_dir, exist_ok=True)
     meta = dict(metadata or {})
@@ -292,7 +389,9 @@ def build_model(inputs: Sequence[ReportImageInput], *, title: str, operator: str
                                      organization=organization, logo_path=logo_path,
                                      metadata=meta, asset_dir=asset_dir,
                                      hierarchy=hierarchy, export_basename=export_basename,
-                                     sample_statistics=sample_statistics)
+                                     sample_statistics=sample_statistics,
+                                     verdict=verdict)
+    apply_calibration(model, calibration)
     normalize(model)
     return model
 
@@ -417,6 +516,10 @@ def merge_refresh(old: ReportModel, new: ReportModel) -> ReportModel:
               "project", "results_fingerprint"):
         if k in new.metadata:
             meta[k] = new.metadata[k]
+    if "calibration" in new.metadata:
+        meta["calibration"] = new.metadata["calibration"]
+    else:
+        meta.pop("calibration", None)
     out.metadata = meta
     apply_profile(out, defaults)
 
@@ -486,7 +589,8 @@ def prepare_render_model(model: ReportModel) -> ReportModel:
     return rm
 
 
-def render_outputs(model_dict: dict, jobs: Sequence[Tuple[str, str]]) -> List[str]:
+def render_outputs(model_dict: dict, jobs: Sequence[Tuple[str, str]],
+                   extras: Optional[dict] = None) -> List[str]:
     """Pool-thread: render ``[(kind, path), ...]`` (kind = xlsx | pptx).
 
     ``reports.excel_renderer``/``reports.pptx_renderer`` render everything
@@ -497,6 +601,11 @@ def render_outputs(model_dict: dict, jobs: Sequence[Tuple[str, str]]) -> List[st
     from reports.excel_renderer import render_excel
     from reports.pptx_renderer import render_pptx
     rm = prepare_render_model(ReportModel.from_dict(model_dict))
+    if extras:      # optional INN-02 / INN-29 blocks, fresh at export time
+        from reports.model import normalize_verdict
+        verdict, cal = compute_report_extras(extras)
+        rm.verdict = normalize_verdict(verdict)
+        apply_calibration(rm, cal)
     done: List[str] = []
     for kind, path in jobs:
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)

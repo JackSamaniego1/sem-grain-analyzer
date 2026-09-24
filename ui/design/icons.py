@@ -50,6 +50,8 @@ ICONS: Dict[str, str] = {
     "show": "mdi6.eye-outline",
     "hide": "mdi6.eye-off-outline",
     "lock": "mdi6.lock-outline",
+    "shield": "mdi6.shield-lock-outline",
+    "copy": "mdi6.content-copy",
     "history": "mdi6.history",
     # canvas / measurement
     "calibrate": "mdi6.ruler",

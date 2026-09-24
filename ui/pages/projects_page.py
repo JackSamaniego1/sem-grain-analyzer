@@ -796,6 +796,7 @@ class ProjectsPage(QWidget):
         state.workspace_changed.connect(self.reload)
         state.node_changed.connect(self._on_state_node)
         state.profile_changed.connect(self._on_profile_changed)
+        state.settings_changed.connect(self._on_settings_changed)
         self._apply_profile_labels()
 
     # ------------------------------------------------------------------ profile
@@ -1172,6 +1173,11 @@ class ProjectsPage(QWidget):
             acts.append(("Open session", "open", lambda: self.open_session_requested.emit(node.path)))
         if node.kind in ("project", "sample", "lot", "session"):
             acts.append(("Edit metadata", "edit", lambda: self._edit(node)))
+        if node.kind == "project":
+            acts.append(("Spec limits (optional)…", "tune", lambda: self.open_spec_editor(node)))
+        elif node.kind == "sample":
+            acts.append((f"Spec limits for this {self.lbl('sample')} (optional)…", "tune",
+                         lambda: self.open_spec_editor(node)))
         if node.kind in hui.LEVELS and not from_card:
             acts.append(("Rename  (F2)", "edit", lambda: self._start_rename(node)))
         elif node.kind in hui.LEVELS or node.kind == "session":
@@ -1302,6 +1308,52 @@ class ProjectsPage(QWidget):
 
         run_task(load_lot_result, str(self.state.root), str(node.path),
                  on_done=done, on_error=failed)
+
+    def _on_settings_changed(self) -> None:
+        """Required fields / target %RA changed in Settings: recompute."""
+        if self.lot_panel.data is not None and self.lot_panel.isVisible():
+            self.lot_panel._refresh(animate=False)
+
+    # ------------------------------------------------------------------ spec limits (INN-02)
+    def open_spec_editor(self, node: NodeRef):
+        """Optional spec limits of the project (from a sample: pre-focused on
+        that sample's override)."""
+        from ui.dialogs.spec_editor_dialog import SpecEditorDialog
+        focus = None
+        if node.kind == "sample":
+            proj = node.path.parent
+            try:
+                focus = str(read_json(node.path / "sample.json").get("sample_id")
+                            or node.path.name)
+            except (OSError, ValueError):
+                focus = node.path.name
+        else:
+            proj = node.path
+        try:
+            pname = str(read_json(proj / "project.json").get("name") or proj.name)
+        except (OSError, ValueError):
+            pname = proj.name
+        dlg = SpecEditorDialog(proj, pname, focus_sample=focus, parent=self)
+        dlg.saved.connect(lambda specs: self._specs_saved(proj, specs))
+        self._spec_dlg = dlg
+        dlg.open()
+        return dlg
+
+    def _specs_saved(self, project_dir: Path, specs) -> None:
+        n = len(specs)
+        self._toast("Spec limits saved",
+                    f"{n} spec{'s' if n != 1 else ''} — lots show a PASS / FAIL verdict."
+                    if n else "No spec limits — lots show no verdict.", "success")
+        self.load_lot_result()
+        root = self.state.root
+
+        def reindex():          # refresh the cached lot verdicts (catalog)
+            from data.catalog import _lot_dirs
+            cat = Catalog(root)
+            for lot in _lot_dirs(Path(root)):
+                if Path(project_dir) in lot.parents:
+                    cat.index_lot_verdict(lot)
+        run_task(reindex, on_done=lambda _r: None, on_error=lambda _m: None)
 
     def is_lot_loading(self) -> bool:
         return self.lot_panel.isVisible() and self.lot_panel.card.skeleton.isVisible()

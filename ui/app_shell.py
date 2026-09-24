@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from ui.app_state import AppState, NodeRef, node_display_name, session_title
 from ui.design import icons
+from ui.design.branding import install_app_icon
 from ui.design.theme import apply_theme, current_mode, set_reduced_motion
 from ui.design.tokens import SPACE
 from ui.dialogs.new_session_wizard import NewSessionWizard
@@ -54,10 +55,15 @@ SHORTCUTS = {
                  ("Ctrl+F", "Search all sessions")],
     "Analysis": [("F5", "Analyze all images"), ("Ctrl+F5", "Analyze current image"),
                  ("Ctrl+K", "Set scale bar"), ("Ctrl+R", "Set scan area")],
-    "Review": [("Click / Ctrl+click", "Select grains"), ("Delete", "Remove selected grains"),
-               ("Ctrl+Z", "Undo"), ("Ctrl+Y", "Redo"), ("F  /  1", "Fit  /  actual pixels"),
-               ("Wheel", "Zoom about the cursor")],
+    "Review": [("Click / Ctrl+click", "Select grains"),
+               ("L", "Lasso select (hold Ctrl to add)"),
+               ("M", "Merge selected touching grains"),
+               ("C", "Cut a grain with a line"),
+               ("V / Esc", "Back to the select tool"),
+               ("Delete", "Remove selected grains"),
+               ("Ctrl+Z", "Undo"), ("Ctrl+Y", "Redo")],
     "Navigation": [("Ctrl+1 … Ctrl+5", "Projects … Settings"), ("Up / Down", "Previous / next image"),
+                   ("F  /  1", "Fit  /  actual pixels"), ("Wheel", "Zoom about the cursor"),
                    ("?", "Show this sheet")],
 }
 
@@ -126,7 +132,8 @@ class AppShell(QMainWindow):
         self._tour_checked = False
         self.state = state or AppState()
         self.setWindowTitle(f"{APP_NAME}")
-        self.setMinimumSize(1180, 720)
+        self.setWindowIcon(install_app_icon())    # UI-08: window + taskbar icon
+        self.setMinimumSize(1180, 640)   # UI-08: fits 1080p at 150 % (1280x~690 usable)
         self.resize(1600, 960)
         self._search_gen = 0
         self._meta_cal: list = []                 # INN-05 toasts, batched
@@ -287,7 +294,9 @@ class AppShell(QMainWindow):
         self.act_tour = self._act(hm, "Show &tour", self.start_tour, None, "help",
                                   "Replay the guided tour of a basic analysis")
         self._act(hm, "&Keyboard shortcuts", self.overlay.toggle, None, "keyboard")
-        self._act(hm, "&About", lambda: self.go("settings"), None, "info")
+        hm.addSeparator()
+        self.act_about = self._act(hm, f"&About {APP_NAME}", self.show_about, None, "info",
+                                   "Version, privacy statement and third-party licences")
 
     def _wire(self) -> None:
         st = self.state
@@ -786,6 +795,14 @@ class AppShell(QMainWindow):
         self.state.ui_state["last_page"] = self.current_page()
         self.state.persist_ui_state()
         super().closeEvent(e)
+
+    def show_about(self) -> None:
+        """Help › About (UI-08) — window-modal, non-blocking."""
+        from ui.dialogs.about_dialog import AboutDialog
+        dlg = AboutDialog(self)
+        dlg.setAttribute(Qt.WA_DeleteOnClose)
+        self.about_dialog = dlg
+        dlg.open()
 
     # ------------------------------------------------------------------ tour (UI-10)
     def start_tour(self, index: int = 0) -> None:

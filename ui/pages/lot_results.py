@@ -35,8 +35,12 @@ from data.catalog import Catalog
 from data.models import read_json
 from ui.design.tokens import MOTION, SPACE
 from ui.widgets import AnimatedButton, Badge, Card, Divider, Skeleton, label
-from ui.widgets._base import animate_value, qcolor, repolish, stop, tokens
+from ui.widgets._base import animate_value, lerp_color, qcolor, repolish, stop, tokens
 from ui.workers import load_thumb_file
+
+# INN-02 verdict badge (only when a spec applies to the lot)
+VERDICT_KIND = {"pass": "success", "fail": "danger", "inconclusive": "warning"}
+VERDICT_TEXT = {"pass": "PASS", "fail": "FAIL", "inconclusive": "INCONCLUSIVE"}
 
 STATUS_KIND = {"green": "success", "amber": "warning", "grey": "neutral"}
 FIELD_ROLE = Qt.UserRole + 11
@@ -100,7 +104,29 @@ def load_lot_result(root: str, lot_path: str) -> dict:
                                   Path(f.session_path).name)
         sessions.append((f.session_id, name))
     thumbs = {f.field_id: load_thumb_file(f.thumb_path) for f in fields if f.thumb_path}
-    return {"lot": lot, "fields": fields, "sessions": sessions, "thumbs": thumbs}
+    return {"lot": lot, "fields": fields, "sessions": sessions, "thumbs": thumbs,
+            "spec": lot_spec(lot)}
+
+
+def lot_spec(lot_path):
+    """The INN-02 spec that applies to the lot (sample override beats the
+    project spec), or None -- the common case: spec limits are optional."""
+    from data.catalog import _project_meta_for_lot, _sample_id_for_lot
+    from data.specs import select_spec, specs_from_project_dict
+    lot = Path(lot_path)
+    specs = specs_from_project_dict(_project_meta_for_lot(lot))
+    return select_spec(specs, _sample_id_for_lot(lot)) if specs else None
+
+
+def verdict_tooltip(v) -> str:
+    """Hover text: spec, each rule result, decision rule statement."""
+    head = v.spec_name + (f" ({v.spec_revision})" if v.spec_revision else "")
+    lines = [f"{VERDICT_TEXT.get(v.overall, v.overall.upper())} against {head}"
+             if head else VERDICT_TEXT.get(v.overall, v.overall.upper())]
+    lines += [r.text for r in v.rules if r.text]
+    if v.statement:
+        lines.append(v.statement)
+    return "\n".join(lines)
 
 
 def stats_config(settings, scope_sid: Optional[str] = None) -> dict:
@@ -152,6 +178,38 @@ class _Figure(QWidget):
         self.setAccessibleName(f"{self.title.text()}: {value}. {caption}")
 
 
+class VerdictBadge(Badge):
+    """PASS / FAIL / INCONCLUSIVE pill; colour change cross-fades (200 ms)."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__("", "neutral", dot=True, parent=parent)
+        self._from = None
+        self._t = 1.0
+        self._anim = None
+
+    def set_verdict_kind(self, kind: str, animate: bool = True) -> None:
+        if kind == self._kind:
+            return
+        self._from = self._colors() if (animate and self.isVisible()) else None
+        self.set_kind(kind)
+        stop(self._anim)
+        if self._from is not None:
+            self._t = 0.0
+            self._anim = animate_value(self, 0.0, 1.0, MOTION.base, self._set_t)
+        else:
+            self._t = 1.0
+
+    def _set_t(self, t) -> None:
+        self._t = float(t)
+        self.update()
+
+    def _colors(self):
+        to = super()._colors()
+        if self._from is None or self._t >= 1.0:
+            return to
+        return tuple(lerp_color(a, b, self._t) for a, b in zip(self._from, to))
+
+
 class LotResultCard(Card):
     """The lot's one-line answer: mean G ± 95 % CI, %RA, fields, ECD, status."""
 
@@ -173,6 +231,10 @@ class LotResultCard(Card):
         self.chip.setToolTip("Green: enough fields and %RA within target. Amber: image more "
                              "fields. Grey: the images are not calibrated.")
         self.add_action(self.chip)
+        self.verdict = None
+        self.verdict_badge = VerdictBadge()
+        self.verdict_badge.hide()          # optional feature: absent without a spec
+        self.add_action(self.verdict_badge)
 
         # hero
         hero = QHBoxLayout()
@@ -210,6 +272,10 @@ class LotResultCard(Card):
             row.addWidget(f, 1)
         self.figures = self._wrap(row)
         self.add_widget(self.figures)
+        self.spec_line = label("", "caption")
+        self.spec_line.setWordWrap(True)
+        self.spec_line.hide()
+        self.add_widget(self.spec_line)
         self.summary = label("", "caption")
         self.summary.setWordWrap(True)
         self.summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -309,6 +375,39 @@ class LotResultCard(Card):
             self.f_ecd.set("n/a", "Calibrate the images to measure in µm")
         self.summary.setText(st.summary_text())
         self.setAccessibleDescription(st.summary_text())
+
+    def set_verdict(self, verdict, animate: bool = True) -> None:
+        """INN-02: show the conformity badge, or hide it (no spec -- the
+        card then looks exactly as without the feature)."""
+        self.verdict = verdict
+        b = self.verdict_badge
+        if verdict is None or verdict.overall not in VERDICT_KIND:
+            b.hide()
+            self.spec_line.hide()
+            return
+        b.set_text(VERDICT_TEXT[verdict.overall])
+        b.set_verdict_kind(VERDICT_KIND[verdict.overall], animate=animate)
+        tip = verdict_tooltip(verdict)
+        b.setToolTip(tip)
+        b.setAccessibleName(f"Spec verdict: {VERDICT_TEXT[verdict.overall]}")
+        b.setAccessibleDescription(tip)
+        name = verdict.spec_name + (f" {verdict.spec_revision}" if verdict.spec_revision else "")
+        reasons = [r.text for r in verdict.rules if r.status != "pass" and r.text]
+        rule = "guarded acceptance" if verdict.decision_rule == "guarded" else "simple acceptance"
+        self.spec_line.setText(f"Spec {name} · {rule}" + (" · " + "; ".join(reasons[:2])
+                                                          if reasons else ""))
+        self.spec_line.setToolTip(tip)
+        self.spec_line.show()
+        b.show()
+
+    def set_spec_error(self, msg: str) -> None:
+        self.verdict = None
+        b = self.verdict_badge
+        b.set_text("SPEC ERROR")
+        b.set_verdict_kind("neutral", animate=False)
+        b.setToolTip(f"The project's spec limits could not be evaluated: {msg}")
+        self.spec_line.hide()
+        b.show()
 
 
 class ExclusionBar(Card):
@@ -527,12 +626,30 @@ class LotResultPanel(QWidget):
         fields = d["fields"]
         st = sample_statistics(fields, stats_config(self._settings(), self.scope_sid))
         self.card.set_stats(st, animate=animate)
+        self._refresh_verdict(st, animate)
         shown = [f for f in fields if self.scope_sid is None or f.session_id == self.scope_sid]
         self.table.set_fields(shown, d.get("thumbs", {}), dict(d["sessions"]),
                               set(st.outlier_field_ids))
         n_ex = sum(1 for f in shown if not f.included)
         self.table_title.setText(f"FIELDS · {len(shown)} ANALYSED"
                                  + (f" · {n_ex} EXCLUDED" if n_ex else ""))
+
+    def verdict(self):
+        return self.card.verdict
+
+    def _refresh_verdict(self, st: SampleStatistics, animate: bool) -> None:
+        """The verdict is always for the whole lot (not the session scope)."""
+        spec = (self.data or {}).get("spec")
+        if spec is None:
+            self.card.set_verdict(None)
+            return
+        from data.specs import SpecError, evaluate
+        if self.scope_sid is not None:
+            st = sample_statistics(self.data["fields"], stats_config(self._settings()))
+        try:
+            self.card.set_verdict(evaluate(spec, st), animate=animate)
+        except SpecError as e:
+            self.card.set_spec_error(str(e))
 
     def _on_toggle(self, field: FieldResult, include: bool) -> None:
         if include:

@@ -172,15 +172,20 @@ def _save_one_image(images_dir: Path, entry: ImageEntry, index: int, *,
 
 
 def _save_result_files(results_dir: Path, thumbs_dir: Path, stem: str,
-                        result: AnalysisResult, fallback_image: Optional[np.ndarray]) -> None:
+                        result: AnalysisResult, fallback_image: Optional[np.ndarray],
+                        detector_labels: Optional[np.ndarray] = None) -> None:
     npz_path = results_dir / f"{stem}.labels.npz"
     tmp = npz_path.with_name(f".{npz_path.name}.tmp{os.getpid()}")
     # np.savez_compressed appends ".npz" to a bare filename string that
     # lacks it, which would silently write to the wrong path; pass an open
     # file object instead so the temp name is used exactly as given.
+    extra = {}
+    if detector_labels is not None:
+        extra["detector_label_image"] = detector_labels
     with open(tmp, "wb") as fh:
         np.savez_compressed(
             fh,
+            **extra,
             label_image=result.label_image if result.label_image is not None
             else np.zeros((0, 0), dtype=np.int32),
             valid_mask=result.valid_mask if result.valid_mask is not None
@@ -242,20 +247,21 @@ def _load_result_for_stem(session_dir: Path, stem: str) -> Optional[AnalysisResu
             logger.warning("Corrupt grains.json (%s, stem=%s): %s — grain list unavailable",
                             session_dir, stem, exc)
 
-    label_image = valid_mask = binary_image = None
+    label_image = valid_mask = binary_image = detector_labels = None
     if npz_path.exists():
         try:
             with np.load(npz_path) as npz:
                 label_image = _clean_array(npz, "label_image")
                 valid_mask = _clean_array(npz, "valid_mask")
                 binary_image = _clean_array(npz, "binary_image")
+                detector_labels = _clean_array(npz, "detector_label_image")
         except Exception as exc:
             # A truncated/non-npz file can raise anything from zipfile
             # (BadZipFile), OSError, EOFError, or ValueError depending on
             # exactly how it's broken — all of them mean "no arrays".
             logger.warning("Corrupt labels.npz (%s, stem=%s): %s — arrays unavailable",
                             session_dir, stem, exc)
-            label_image = valid_mask = binary_image = None
+            label_image = valid_mask = binary_image = detector_labels = None
 
     overlay_image = None
     if overlay_path.exists():
@@ -271,6 +277,9 @@ def _load_result_for_stem(session_dir: Path, stem: str) -> Optional[AnalysisResu
     result.valid_mask = valid_mask
     result.binary_image = binary_image
     result.overlay_image = overlay_image
+    if detector_labels is not None:
+        # UI-05/INN-04: original detector labels behind hand merges/splits
+        result.detector_label_image = detector_labels
     return result
 
 
@@ -359,7 +368,8 @@ def _build_manifest_images(images_dir: Path, results_dir: Path, thumbs_dir: Path
         has_result = entry.result is not None
         try:
             if has_result:
-                _save_result_files(results_dir, thumbs_dir, stem, entry.result, image_bgr)
+                _save_result_files(results_dir, thumbs_dir, stem, entry.result, image_bgr,
+                                   _detector_labels(entry))
             elif image_bgr is not None:
                 _write_bytes_atomic(thumbs_dir / f"{stem}.jpg", _make_thumbnail_bytes(image_bgr))
         except Exception as exc:
@@ -385,6 +395,8 @@ def _build_manifest_images(images_dir: Path, results_dir: Path, thumbs_dir: Path
                                if isinstance(entry.filters_override, dict) else None),
             manual_excluded=(list(entry.manual_excluded)
                               if isinstance(entry.manual_excluded, (list, set, tuple)) else []),
+            grain_edits=(list(entry.grain_edits)
+                         if isinstance(entry.grain_edits, (list, tuple)) else []),
         ))
     return manifest_images
 
@@ -435,7 +447,7 @@ def _merge_image_entry(existing: ImageManifestEntry, entry: ImageEntry, session_
             image_bgr = cv2.imread(str(session_dir / "images" / existing.filename),
                                     cv2.IMREAD_COLOR)
         _save_result_files(session_dir / "results", session_dir / "thumbs",
-                            stem, entry.result, image_bgr)
+                            stem, entry.result, image_bgr, _detector_labels(entry))
         existing.has_result = True
         existing.grain_count = len(entry.result.grains)
         existing.has_calibration = bool(entry.result.has_calibration)
@@ -471,6 +483,21 @@ def _merge_image_entry(existing: ImageManifestEntry, entry: ImageEntry, session_
         existing.manual_excluded = []
     elif entry.manual_excluded is not None:
         existing.manual_excluded = list(entry.manual_excluded)
+
+    if entry.grain_edits is CLEAR:
+        existing.grain_edits = []
+    elif entry.grain_edits is not None:
+        existing.grain_edits = [dict(op) for op in entry.grain_edits]
+
+
+def _detector_labels(entry: ImageEntry) -> Optional[np.ndarray]:
+    """Original detector labels to keep next to hand-edited ones (only
+    while the image has grain edits)."""
+    edits = entry.grain_edits
+    if edits is CLEAR or not edits:
+        return None
+    lab = entry.detector_label_image
+    return lab if isinstance(lab, np.ndarray) else None
 
 
 def _match_existing_image(by_filename: Dict[str, ImageManifestEntry],

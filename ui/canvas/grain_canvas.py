@@ -8,6 +8,12 @@ GrainCanvas — the v3 image viewer used by the Analyze and Review pages.
 * hover tooltip with grain id / area / ECD / circularity
 * click to select (animated highlight), Ctrl+click multi-select,
   Delete emits ``delete_requested`` (the page pushes an undo command)
+* edit tools (UI-05 / INN-04): **Lasso** (L) - draw a loop, every kept grain
+  at least half inside is selected (Ctrl adds to the selection); **Cut** (C)
+  - draw a line across a grain, emits ``split_requested`` with the line in
+  image coordinates; **Merge** (M) emits ``merge_requested`` for a
+  selection of 2+ grains.  V / Esc returns to the select tool.  The page
+  turns the requests into undoable ``AppState`` edits.
 """
 from __future__ import annotations
 
@@ -35,6 +41,9 @@ from ui.workers import bgr_to_qimage
 VIEWS = ("original", "overlay", "mask", "excluded")
 VIEW_LABELS = {"original": "Original", "overlay": "Overlay", "mask": "Mask",
                "excluded": "Excluded"}
+TOOLS = ("select", "lasso", "split")
+TOOL_HINTS = {"lasso": "Lasso  ·  draw a loop around grains  (Ctrl adds)",
+              "split": "Cut  ·  draw a line across one grain"}
 
 
 class GrainCanvas(ThemeAware, QWidget):
@@ -43,6 +52,9 @@ class GrainCanvas(ThemeAware, QWidget):
     hovered = Signal(int)              # grain id or 0
     zoom_changed = Signal(float)       # scale (1.0 = 100 %)
     view_changed = Signal(str)
+    tool_changed = Signal(str)         # select | lasso | split
+    merge_requested = Signal(list)     # grain ids (2+)
+    split_requested = Signal(list)     # [(x, y), ...] cut line, image coordinates
 
     MIN_SCALE = 0.02
     MAX_SCALE = 32.0
@@ -79,6 +91,10 @@ class GrainCanvas(ThemeAware, QWidget):
         self._mouse = QPointF(-1, -1)
         self._pulse = 1.0
         self._anims = {}
+        self._tool = "select"
+        self._stroke: List[QPointF] = []   # lasso loop / cut line (image coords)
+        self._drawing = False
+        self._dash = 0.0
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -147,6 +163,89 @@ class GrainCanvas(ThemeAware, QWidget):
 
     def result(self):
         return self._result
+
+    def raw(self):
+        return self._raw
+
+    # ------------------------------------------------------------------ edit tools
+    def tool(self) -> str:
+        return self._tool
+
+    def set_tool(self, tool: str) -> None:
+        if tool not in TOOLS or tool == self._tool:
+            return
+        self._cancel_stroke()
+        self._tool = tool
+        self.setCursor(self._tool_cursor())
+        self.tool_changed.emit(tool)
+        self.update()
+
+    def request_merge(self) -> bool:
+        if not self._interactive or len(self._selected) < 2:
+            return False
+        self.merge_requested.emit(list(self._selected))
+        return True
+
+    def lasso_select(self, polygon, add: bool = False) -> List[int]:
+        """Select every kept grain at least half inside ``polygon`` (image
+        coordinates).  Returns the new selection."""
+        from core.grain_edit import (
+            GrainEditError, grains_in_polygon, label_offset, to_label_coords,
+        )
+        if self._labels is None or self._bgr is None:
+            return []
+        try:
+            off = label_offset(self._labels.shape, self._bgr.shape,
+                               getattr(self._raw or self._result, "auto_crop_rect", None))
+        except GrainEditError:
+            return []
+        kept = [g for g in self._grains if g not in self._excluded]
+        ids = grains_in_polygon(self._labels, to_label_coords(polygon, off), kept)
+        if add:
+            ids = list(self._selected) + [i for i in ids if i not in self._selected]
+        self.select(ids)
+        return list(self._selected)
+
+    def stroke(self) -> List[tuple]:
+        return [(q.x(), q.y()) for q in self._stroke]
+
+    def _tool_cursor(self):
+        return Qt.CrossCursor if self._tool in ("lasso", "split") else Qt.ArrowCursor
+
+    def _cancel_stroke(self) -> None:
+        self._stroke, self._drawing = [], False
+        stop(self._anims.pop("ants", None))
+        self.update()
+
+    def _image_point(self, p: QPointF) -> QPointF:
+        return QPointF((p.x() - self._offset.x()) / self._scale,
+                       (p.y() - self._offset.y()) / self._scale)
+
+    def _start_ants(self) -> None:
+        stop(self._anims.get("ants"))
+        a = animate_value(self, 0.0, 16.0, 900, self._set_dash, curve=MOTION.linear)
+        if a is not None:
+            a.setLoopCount(-1)
+        self._anims["ants"] = a
+
+    def _set_dash(self, v) -> None:
+        self._dash = float(v)
+        self.update()
+
+    def _finish_stroke(self, modifiers) -> None:
+        pts = [(q.x(), q.y()) for q in self._stroke]
+        tool = self._tool
+        self._cancel_stroke()
+        if len(pts) < 2:
+            return
+        span = max(max(x for x, _ in pts) - min(x for x, _ in pts),
+                   max(y for _, y in pts) - min(y for _, y in pts)) * self._scale
+        if tool == "lasso":
+            if len(pts) < 3 or span < 6:
+                return
+            self.lasso_select(pts, add=bool(modifiers & (Qt.ControlModifier | Qt.ShiftModifier)))
+        elif tool == "split" and span >= 4:
+            self.split_requested.emit(pts)
 
     def view(self) -> str:
         return self._view
@@ -470,10 +569,40 @@ class GrainCanvas(ThemeAware, QWidget):
                 p.setPen(spen)
                 p.setBrush(fill)
                 p.drawPath(path)
+        self._paint_stroke(p, t)
         p.restore()
         self._paint_hud(p, t)
         self._paint_minimap(p, t)
         self._paint_tooltip(p, t)
+
+    def _paint_stroke(self, p: QPainter, t) -> None:
+        """Lasso loop (accent, marching ants, light fill) or cut line."""
+        if len(self._stroke) < 2:
+            return
+        path = QPainterPath(self._stroke[0])
+        for q in self._stroke[1:]:
+            path.lineTo(q)
+        if self._tool == "lasso":
+            path.closeSubpath()
+            fill = QColor(qcolor(t.accent.text))
+            fill.setAlphaF(0.14)
+            p.setPen(Qt.NoPen)
+            p.setBrush(fill)
+            p.drawPath(path)
+            color = qcolor(t.accent.text)
+        else:
+            color = qcolor(t.warning.fg)
+        p.setBrush(Qt.NoBrush)
+        under = QPen(QColor(0, 0, 0, 170), 3.2)
+        under.setCosmetic(True)
+        p.setPen(under)
+        p.drawPath(path)
+        pen = QPen(color, 1.8, Qt.DashLine)
+        pen.setCosmetic(True)
+        pen.setDashOffset(-self._dash)
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        p.drawPath(path)
 
     def _paint_placeholder(self, p: QPainter, t) -> None:
         r = QRectF(self.rect())
@@ -506,6 +635,13 @@ class GrainCanvas(ThemeAware, QWidget):
         self._pill(p, t, r)
         p.setPen(qcolor(t.text.secondary))
         p.drawText(r, Qt.AlignCenter, txt)
+        hint = TOOL_HINTS.get(self._tool) if self._interactive else None
+        if hint:
+            hw = fm.horizontalAdvance(hint) + 20
+            hr = QRectF(r.right() + 8, 12, hw, 24)
+            self._pill(p, t, hr)
+            p.setPen(qcolor(t.warning.fg if self._tool == "split" else t.accent.text))
+            p.drawText(hr, Qt.AlignCenter, hint)
 
     def _paint_minimap(self, p: QPainter, t) -> None:
         mr = self._minimap_rect()
@@ -602,6 +738,13 @@ class GrainCanvas(ThemeAware, QWidget):
             self._mini_drag = True
             self._minimap_jump(pos)
             return
+        if (e.button() == Qt.LeftButton and self._tool != "select" and self._interactive
+                and self._bgr is not None):
+            self._stroke = [self._image_point(pos)]
+            self._drawing = True
+            self._start_ants()
+            self.update()
+            return
         if e.button() in (Qt.LeftButton, Qt.MiddleButton):
             self._press_pos = QPointF(pos)
             self._press_offset = QPointF(self._offset)
@@ -614,6 +757,13 @@ class GrainCanvas(ThemeAware, QWidget):
         self._mouse = QPointF(pos)
         if self._mini_drag:
             self._minimap_jump(pos)
+            return
+        if self._drawing:
+            q = self._image_point(pos)
+            last = self._stroke[-1]
+            if (abs(q.x() - last.x()) + abs(q.y() - last.y())) * self._scale >= 2.0:
+                self._stroke.append(q)
+                self.update()
             return
         if self._press_pos is not None:
             d = pos - self._press_pos
@@ -632,7 +782,8 @@ class GrainCanvas(ThemeAware, QWidget):
                 g = self._grains.get(gid)
                 self._hover_path = (self._contour_path(self._labels, g)
                                     if g is not None else None)
-                self.setCursor(Qt.PointingHandCursor if gid else Qt.ArrowCursor)
+                self.setCursor(Qt.PointingHandCursor if (gid and self._tool == "select")
+                               else self._tool_cursor())
                 self.hovered.emit(gid)
             self.update()
 
@@ -640,10 +791,15 @@ class GrainCanvas(ThemeAware, QWidget):
         if self._mini_drag:
             self._mini_drag = False
             return
+        if self._drawing and e.button() == Qt.LeftButton:
+            self._stroke.append(self._image_point(e.position()))
+            self._finish_stroke(e.modifiers())
+            return
         was_pan = self._panning
         self._panning = False
         self._press_pos = None
-        self.setCursor(Qt.PointingHandCursor if self._hover_id else Qt.ArrowCursor)
+        self.setCursor(Qt.PointingHandCursor if (self._hover_id and self._tool == "select")
+                       else self._tool_cursor())
         if was_pan or e.button() != Qt.LeftButton or not self._interactive:
             self.update()
             return
@@ -661,7 +817,7 @@ class GrainCanvas(ThemeAware, QWidget):
             self.clear_selection()
 
     def mouseDoubleClickEvent(self, e) -> None:
-        if self.grain_at(e.position()) == 0:
+        if self._tool == "select" and self.grain_at(e.position()) == 0:
             self.fit()
 
     def leaveEvent(self, e) -> None:
@@ -676,8 +832,20 @@ class GrainCanvas(ThemeAware, QWidget):
         k = e.key()
         if k in (Qt.Key_Delete, Qt.Key_Backspace) and self._selected and self._interactive:
             self.delete_requested.emit(list(self._selected))
+        elif k == Qt.Key_Escape and self._drawing:
+            self._cancel_stroke()
+        elif k == Qt.Key_Escape and self._tool != "select":
+            self.set_tool("select")
         elif k == Qt.Key_Escape and self._selected:
             self.clear_selection()
+        elif k == Qt.Key_L and self._interactive and not e.modifiers():
+            self.set_tool("select" if self._tool == "lasso" else "lasso")
+        elif k == Qt.Key_C and self._interactive and not e.modifiers():
+            self.set_tool("select" if self._tool == "split" else "split")
+        elif k == Qt.Key_V and not e.modifiers():
+            self.set_tool("select")
+        elif k == Qt.Key_M and self._interactive and not e.modifiers():
+            self.request_merge()
         elif k == Qt.Key_F:
             self.fit()
         elif k == Qt.Key_1:
@@ -706,4 +874,4 @@ class GrainCanvas(ThemeAware, QWidget):
         self.update()
 
 
-__all__ = ["GrainCanvas", "VIEWS", "VIEW_LABELS"]
+__all__ = ["GrainCanvas", "VIEWS", "VIEW_LABELS", "TOOLS"]

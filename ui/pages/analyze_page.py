@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from core.grain_detector import DetectionParams
 from ui.app_state import params_from_dict, params_to_dict
 from ui.canvas import GrainCanvas
+from ui.canvas.edit_actions import GrainEditController
 from ui.design import icons
 from ui.design.tokens import SPACE
 from ui.format import astm_g, fmt_int, fmt_px_per_um, smart_format
@@ -510,6 +511,8 @@ class AnalyzePage(QWidget):
         self.canvas.view_changed.connect(self._sync_view_seg)
         self.canvas.delete_requested.connect(
             lambda ids: st.delete_grains(st.current_uid, ids))
+        # lasso (L) / merge (M) / cut (C) work here too (UI-05 / INN-04)
+        self.edits = GrainEditController(self.canvas, st, self.toasts, self)
         self.btn_zo.clicked.connect(lambda: self.canvas.zoom_by(0.8))
         self.btn_zi.clicked.connect(lambda: self.canvas.zoom_by(1.25))
         self.btn_fit.clicked.connect(self.canvas.fit)
@@ -566,6 +569,7 @@ class AnalyzePage(QWidget):
         if uid == self.state.current_uid:
             im = self.state.current_image()
             if im is not None and (self.canvas.result() is not im.result
+                                   or self.canvas.raw() is not im.raw
                                    or self.canvas.excluded() != im.excluded):
                 self._show_result()
             elif im is not None:
@@ -575,7 +579,8 @@ class AnalyzePage(QWidget):
     def _on_result_edited(self, uid) -> None:
         im = self.state.current_image()
         if uid == self.state.current_uid and im is not None and (
-                self.canvas.result() is not im.result or self.canvas.excluded() != im.excluded):
+                self.canvas.result() is not im.result or self.canvas.raw() is not im.raw
+                or self.canvas.excluded() != im.excluded):
             self._show_result()
 
     def _on_current(self, uid) -> None:

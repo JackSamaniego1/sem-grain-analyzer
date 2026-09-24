@@ -330,6 +330,7 @@ QLabel[tone="success"] {{ color: {t.success.fg}; }}
 QLabel[tone="warning"] {{ color: {t.warning.fg}; }}
 QLabel[tone="danger"] {{ color: {t.danger.fg}; }}
 QLabel[role="mono"] {{ font-family: {mono}; font-size: {TYPE.mono.size}px; }}
+QPlainTextEdit[role="mono"], QTextEdit[role="mono"] {{ font-family: {mono}; font-size: 12px; }}
 QLabel[role="kbd"] {{ font-family: {mono}; font-size: 11px; color: {x.primary};
     background: {s.surface2}; border: 1px solid {b.strong}; border-bottom-width: 2px;
     border-radius: {r.sm}px; padding: 1px 6px; }}

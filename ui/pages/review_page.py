@@ -3,12 +3,15 @@ Review page (UI-05-lite, DET-03 UI).
 
 Layout
   left   : compact filmstrip
-  centre : toolbar (Original / Overlay / Mask / Excluded, undo/redo, remove,
-           zoom) · canvas · "All images in this session" comparison table
+  centre : toolbar (Original / Overlay / Mask / Excluded, undo/redo, edit tools
+           Select / Lasso / Cut + Merge, remove, zoom) · canvas · "All images in this session" comparison table
   right  : StatCards · grain filters · tabs (area / diameter histograms,
            grain table, full statistics)
 Selection is two-way: click a grain on the canvas ↔ its row in the table.
 Delete removes the selection (undoable; non-destructive manual exclusion).
+Lasso (L) selects every grain inside a drawn loop; Merge (M) joins 2+
+touching selected grains; Cut (C) splits a grain along a drawn line - all
+undoable, re-measured and saved with the session (UI-05 / INN-04).
 """
 from __future__ import annotations
 
@@ -20,11 +23,12 @@ from PySide6.QtCore import (
     Qt, Signal,
 )
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QGridLayout, QHBoxLayout, QHeaderView, QSpinBox, QSplitter,
+    QAbstractItemView, QButtonGroup, QCheckBox, QGridLayout, QHBoxLayout, QHeaderView, QSpinBox, QSplitter,
     QTableView, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from ui.canvas import GrainCanvas
+from ui.canvas.edit_actions import GrainEditController
 from ui.design.tokens import SPACE
 from ui.filtering import REASON_LABELS
 from ui.format import (
@@ -186,6 +190,26 @@ class ReviewPage(QWidget):
         self.btn_del.setEnabled(False)
         tb.addWidget(self.btn_undo)
         tb.addWidget(self.btn_redo)
+        # edit tools (UI-05 / INN-04): exclusive Select / Lasso / Cut + Merge
+        self.btn_tool_select = IconButton("pointer", "Select grains (V) - click, Ctrl+click adds",
+                                          checkable=True)
+        self.btn_tool_lasso = IconButton("lasso", "Lasso select (L) - draw a loop around "
+                                         "grains; Ctrl adds to the selection", checkable=True)
+        self.btn_tool_split = IconButton("split", "Cut a grain in two (C) - draw a line "
+                                         "across the grain", checkable=True)
+        self.tool_group = QButtonGroup(self)
+        self.tool_group.setExclusive(True)
+        for b, key in ((self.btn_tool_select, "select"), (self.btn_tool_lasso, "lasso"),
+                       (self.btn_tool_split, "split")):
+            b.setProperty("tool", key)
+            self.tool_group.addButton(b)
+            tb.addWidget(b)
+        self.btn_tool_select.setChecked(True)
+        self.btn_merge = AnimatedButton("Merge", "merge", "ghost", "sm")
+        self.btn_merge.setToolTip("Merge the selected touching grains into one grain (M). "
+                                  "Undo with Ctrl+Z.")
+        self.btn_merge.setEnabled(False)
+        tb.addWidget(self.btn_merge)
         tb.addWidget(self.btn_del)
         self.btn_zo = IconButton("zoom_out", "Zoom out (−)")
         self.btn_zi = IconButton("zoom_in", "Zoom in (+)")
@@ -196,8 +220,9 @@ class ReviewPage(QWidget):
         tv.addLayout(tb)
         self.canvas = GrainCanvas(placeholder="Select an analysed image")
         tv.addWidget(self.canvas, 1)
-        hint = label("Click a grain to select · Ctrl+click adds · Delete removes · "
-                     "drag to pan · wheel zooms about the cursor · minimap bottom-right", "caption")
+        hint = label("Click a grain to select · Ctrl+click adds · L lasso · M merge · "
+                     "C cut · Delete removes · drag to pan · wheel zooms about the cursor",
+                     "caption")
         tv.addWidget(hint)
         split.addWidget(top)
 
@@ -371,6 +396,11 @@ class ReviewPage(QWidget):
         self.canvas.selection_changed.connect(self._on_canvas_selection)
         self.canvas.delete_requested.connect(self.delete_selected)
         self.btn_del.clicked.connect(self.delete_selected)
+        self.edits = GrainEditController(self.canvas, st, self.toasts, self)
+        self.btn_merge.clicked.connect(lambda: self.edits.merge())
+        self.tool_group.buttonClicked.connect(
+            lambda b: self.canvas.set_tool(b.property("tool")))
+        self.canvas.tool_changed.connect(self._sync_tool)
         self.btn_undo.clicked.connect(st.undo_stack.undo)
         self.btn_redo.clicked.connect(st.undo_stack.redo)
         st.undo_stack.canUndoChanged.connect(self.btn_undo.setEnabled)
@@ -407,15 +437,22 @@ class ReviewPage(QWidget):
         self._fill_comparison()
         im = self.state.current_image()
         if uid == self.state.current_uid and im is not None and (
-                self.canvas.result() is not im.result or self.canvas.excluded() != im.excluded):
+                self.canvas.result() is not im.result or self.canvas.raw() is not im.raw
+                or self.canvas.excluded() != im.excluded):
             self._show_current(keep_view=True)
 
     def _on_result_edited(self, uid) -> None:
         self._fill_comparison()
         im = self.state.current_image()
         if uid == self.state.current_uid and im is not None and (
-                self.canvas.result() is not im.result or self.canvas.excluded() != im.excluded):
+                self.canvas.result() is not im.result or self.canvas.raw() is not im.raw
+                or self.canvas.excluded() != im.excluded):
             self._show_current(keep_view=True)
+
+    def _sync_tool(self, tool: str) -> None:
+        for b in self.tool_group.buttons():
+            if b.property("tool") == tool and not b.isChecked():
+                b.setChecked(True)
 
     def _on_current(self, uid) -> None:
         self.film.set_current(uid)
@@ -583,6 +620,8 @@ class ReviewPage(QWidget):
     # ------------------------------------------------------------------ selection
     def _on_canvas_selection(self, ids: List[int]) -> None:
         self.btn_del.setEnabled(bool(ids))
+        self.btn_merge.setEnabled(len(ids) >= 2)
+        self.btn_merge.setText(f"Merge {len(ids)}" if len(ids) >= 2 else "Merge")
         self.btn_del.setText(f"Remove {len(ids)}" if len(ids) > 1 else "Remove")
         if self._syncing:
             return
@@ -612,6 +651,7 @@ class ReviewPage(QWidget):
         self.canvas.select(ids, center=len(ids) == 1)
         self._syncing = False
         self.btn_del.setEnabled(bool(self.canvas.selected()))
+        self.btn_merge.setEnabled(len(self.canvas.selected()) >= 2)
 
     def delete_selected(self, ids=None) -> None:
         ids = list(ids) if ids else self.canvas.selected()

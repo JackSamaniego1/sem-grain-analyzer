@@ -455,6 +455,7 @@ class ReportsPage(QWidget):
         gen = self._gen
         kw = self._build_args()
         kw["sample_statistics"] = rb.sample_statistics_arg(self.state, inputs)
+        kw["extras"] = rb.report_extras_arg(self.state, inputs)
         self._set_model(None)
         self.skeleton_caption.setText(f"Building the report from {len(inputs)} image"
                                       f"{'s' if len(inputs) != 1 else ''}…")
@@ -524,6 +525,7 @@ class ReportsPage(QWidget):
         gen = self._gen
         kw = self._build_args()
         kw["sample_statistics"] = rb.sample_statistics_arg(self.state, inputs)
+        kw["extras"] = rb.report_extras_arg(self.state, inputs)
         old = ReportModel.from_dict(self.model.to_dict())
         self._set_busy("refresh", "Refreshing the numbers…")
 
@@ -931,9 +933,14 @@ class ReportsPage(QWidget):
                 p = Path(chosen)
             jobs.append((k, str(p)))
         self.save_now()
-        self._run_export(model.to_dict(), jobs)
+        extras = rb.report_extras_arg(self.state, [])
+        if extras is not None:
+            extras["px_per_um"] = next((i.px_per_um for i in model.images
+                                        if i.has_calibration and i.px_per_um), 0.0)
+        self._run_export(model.to_dict(), jobs, extras)
 
-    def _run_export(self, model_dict: dict, jobs: List[Tuple[str, str]]) -> None:
+    def _run_export(self, model_dict: dict, jobs: List[Tuple[str, str]],
+                    extras: Optional[dict] = None) -> None:
         total = len(jobs)
         written: List[str] = []
         btns = {"xlsx": self.btn_xlsx, "pptx": self.btn_pptx}
@@ -962,7 +969,8 @@ class ReportsPage(QWidget):
                              "PowerPoint). Close it and export again, or use Save as.")
                 self._toast("Export failed", first, "danger")
 
-            run_task(rb.render_outputs, model_dict, [jobs[i]], on_done=done, on_error=failed)
+            run_task(rb.render_outputs, model_dict, [jobs[i]], extras=extras,
+                     on_done=done, on_error=failed)
 
         def finish() -> None:
             for x in (self.btn_both, self.btn_xlsx, self.btn_pptx):

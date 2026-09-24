@@ -302,6 +302,10 @@ class ImageManifestEntry:
     source_path: str = ""  # informational: where it was copied from
     filters_override: Optional[dict] = None  # None -> use session-level filters
     manual_excluded: List[int] = field(default_factory=list)  # hand-removed grain ids
+    # UI-05/INN-04: hand merges/splits, in order (core.grain_edit op dicts).
+    # The saved labels.npz holds the edited labels (so every reader sees the
+    # edits) plus ``detector_label_image`` = the detector's original labels.
+    grain_edits: List[dict] = field(default_factory=list)
     # INN-27: whether this field counts toward the lot statistics. Old
     # manifests lack both keys and load as included / no reason.
     included: bool = True
@@ -398,6 +402,10 @@ class ImageEntry:
     filename: Optional[str] = None  # override the destination filename
     filters_override: Optional[Any] = None  # dict, None (leave), or CLEAR
     manual_excluded: Optional[Any] = None  # list[int], None (leave), or CLEAR
+    grain_edits: Optional[Any] = None      # list[dict], None (leave), or CLEAR
+    # detector's original label image when grain_edits is non-empty (saved
+    # next to the edited labels so edits stay reversible)
+    detector_label_image: Optional[Any] = None
 
 
 # ======================================================================
