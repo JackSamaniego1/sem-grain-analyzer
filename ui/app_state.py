@@ -26,7 +26,7 @@ from data.catalog import Catalog
 from data.models import (
     CLEAR, AppSettings, ImageEntry, SessionMeta, read_json, write_json_atomic,
 )
-from data.session_io import load_session, update_session
+from data.session_io import load_session, save_session, update_session
 from data.workspace import Workspace
 from ui.filtering import (
     PostFilterOptions, default_options, filter_image, options_from_dict, options_to_dict,
@@ -121,25 +121,19 @@ def node_chain(root: Path, node: Optional[NodeRef]) -> List[NodeRef]:
     return chain
 
 
-def node_display_name(node: NodeRef) -> str:
-    """Human label from the node's metadata file (cheap: one small json)."""
+def node_display_name(node: NodeRef, profile=None, crumb: bool = False) -> str:
+    """Human label from the node's metadata file (cheap: one small json).
+
+    ``profile`` (HIER-01) supplies the level labels ("Lot" → the user's
+    word); ``crumb=True`` prefixes every level with its label
+    ("Job # 24-117")."""
+    from ui import hierarchy_ui as hui
     if node.kind == "workspace":
         return "Workspace"
-    mf = META_FILES.get(node.kind)
-    try:
-        d = read_json(node.path / mf) if mf else {}
-    except Exception:
-        d = {}
-    if node.kind == "project":
-        return d.get("name") or node.name
-    if node.kind == "sample":
-        return d.get("sample_id") or node.name
-    if node.kind == "lot":
-        n = d.get("lot_number") or node.name
-        return f"Lot {n}"
-    if node.kind == "session":
-        return d.get("label") or session_title(d.get("created_local", ""), node.name)
-    return node.name
+    d = hui.read_meta(node.kind, node.path)
+    if crumb:
+        return hui.crumb_caption(profile, node.kind, d, node.path)
+    return hui.node_caption(profile, node.kind, d, node.path)
 
 
 def session_title(created_local: str, fallback: str) -> str:
@@ -172,10 +166,23 @@ class ImageDoc:
     status: str = "pending"               # pending|queued|running|done|error
     progress: int = 0
     message: str = ""
+    original_name: str = ""               # source file name before template renaming
+    sem_meta: Optional[dict] = None       # INN-05: read_sem_metadata(path).to_dict()
+    cal_suggestion: Optional[tuple] = None  # (px_per_um, source, confidence)
     uid: int = field(default_factory=lambda: next(_uid_counter))
 
     @property
     def name(self) -> str:
+        return self.filename
+
+    @property
+    def display_name(self) -> str:
+        return Path(self.filename).stem
+
+    def tooltip(self) -> str:
+        orig = self.original_name
+        if orig and orig != self.filename:
+            return f"{self.filename}\nOriginal file: {orig}"
         return self.filename
 
 
@@ -189,6 +196,7 @@ class SessionDoc:
     params: dict = field(default_factory=dict)
     filters: PostFilterOptions = field(default_factory=PostFilterOptions)
     filters_touched: bool = False
+    acquisition_dirty: bool = False
     project_meta: dict = field(default_factory=dict)
     sample_meta: dict = field(default_factory=dict)
     lot_meta: dict = field(default_factory=dict)
@@ -206,7 +214,15 @@ class SessionDoc:
         return -1
 
     @property
+    def is_lot(self) -> bool:
+        """HIER-01: the lot folder itself is the record (images in the lot)."""
+        return (self.path / "lot.json").exists()
+
+    @property
     def title(self) -> str:
+        if self.is_lot:
+            lot = self.meta.lot_number or (self.lot_meta or {}).get("lot_number") or self.path.name
+            return self.meta.label or str(lot)
         return self.meta.label or session_title(self.meta.created_local, self.path.name)
 
 
@@ -283,7 +299,13 @@ def _image_dict(si, bgr, legacy: Optional[dict] = None, opts: Optional[PostFilte
 
 
 def _load_session_bundle(path: Path) -> dict:
-    """Worker-thread: read manifest, every image, every saved result."""
+    """Worker-thread: read manifest, every image, every saved result.
+
+    A lot used as the record (images stored in the lot) that has no
+    manifest yet is opened as an empty record (manifest created in place)."""
+    path = Path(path)
+    if (path / "lot.json").exists() and not (path / "manifest.json").exists():
+        save_session(path, {}, [], in_place=True)
     ls = load_session(path)
     m = ls.manifest
     legacy = ((m.detection_params or {}).get("post_filters", {}) or {}).get("images", {}) or {}
@@ -311,10 +333,48 @@ def _load_new_images(session_path: Path, known: set) -> List[dict]:
 
 def _persist(session_path: Path, root: Path, entries: List[ImageEntry],
              meta_updates: dict) -> str:
-    """Worker-thread autosave (DATA-08)."""
+    """Worker-thread autosave (DATA-08).
+
+    HIER-01: a lot used as the session (images stored in the lot) is saved
+    in place, so a re-analysis archives the previous results to
+    ``results/_history`` instead of silently overwriting them."""
+    session_path = Path(session_path)
+    if entries and (session_path / "lot.json").exists():
+        save_session(session_path, {}, entries, in_place=True)
+        entries = []
     update_session(session_path, images=entries or None,
                    meta_updates=meta_updates or None, catalog=Catalog(root))
     return datetime.now().strftime("%H:%M")
+
+
+def _add_images_worker(session_path: Path, root: Path, paths: List[str], known: set) -> List[dict]:
+    """Worker-thread: copy images into the open session and load them.
+    Lot records append in place, named by the profile's image template."""
+    session_path = Path(session_path)
+    entries = [ImageEntry(source_path=str(p)) for p in paths]
+    if (session_path / "lot.json").exists():
+        from data.hierarchy import context_for_session
+        ws = Workspace(root)
+        profile = ws.profile
+        save_session(session_path, {}, entries, in_place=True, catalog=Catalog(root),
+                     image_name_template=profile.image_name_template,
+                     name_context=context_for_session(session_path, profile))
+    else:
+        update_session(session_path, images=entries, catalog=Catalog(root))
+    return _load_new_images(session_path, known)
+
+
+def probe_sem_metadata(path) -> Optional[dict]:
+    """Worker-thread (INN-05): SEM acquisition metadata + calibration."""
+    from core.sem_metadata import calibration_from_metadata, read_sem_metadata
+    if not path:
+        return None
+    md = read_sem_metadata(path)
+    cal = calibration_from_metadata(path)
+    if md is None and cal is None:
+        return None
+    return {"meta": md.to_dict() if md is not None else {},
+            "cal": tuple(cal) if cal else None}
 
 
 # ======================================================================
@@ -435,6 +495,9 @@ class AppState(QObject):
     save_state_changed = Signal(str, str)        # state, detail
     message = Signal(str, str, str)              # title, body, severity (toasts)
     about_to_flush = Signal()                    # pages persist their own pending edits
+    profile_changed = Signal()                   # HIER-01: labels / fields / templates edited
+    sem_metadata_ready = Signal(object)          # uid: SEM metadata / calibration read
+    metadata_calibration = Signal(object, float, str, str, float)  # uid, px, src, conf, prev
 
     def __init__(self, settings_path: Optional[Path] = None,
                  parent: Optional[QObject] = None) -> None:
@@ -495,7 +558,22 @@ class AppState(QObject):
         self._workspace = None
         self.save_settings()
         self.set_node(None)
+        self.profile_changed.emit()
         self.workspace_changed.emit()
+
+    # ------------------------------------------------------------------ hierarchy profile
+    @property
+    def profile(self):
+        """The workspace's HierarchyProfile (HIER-01)."""
+        return self.workspace.profile
+
+    def lot_mode(self) -> bool:
+        return self.profile.images_location == "lot"
+
+    def set_profile(self, profile) -> None:
+        """Persist a new profile and let every page relabel itself."""
+        self.workspace.set_profile(profile)
+        self.profile_changed.emit()
 
     def operator(self) -> str:
         from data.models import default_operator
@@ -559,7 +637,7 @@ class AppState(QObject):
         self.settings = data_settings.add_recent_session(
             self.settings, str(path), self.settings_path, save=False)
         self.save_settings()
-        self.current_node = NodeRef("session", path)
+        self.current_node = NodeRef("lot" if doc.is_lot else "session", path)
         self._set_save_state("saved", "")
         self.node_changed.emit(self.current_node)
         self.session_opened.emit()
@@ -582,6 +660,7 @@ class AppState(QObject):
                       filter_override=options_from_dict(d["override"]) if d.get("override") else None,
                       scan_rect=tuple(d["scan_rect"]) if d.get("scan_rect") else None,
                       px_override=override,
+                      original_name=d.get("original_name") or "",
                       status="done" if res is not None else "pending")
         if im.image_bgr is None:
             im.status, im.message = "error", "Image file is missing or unreadable"
@@ -607,30 +686,83 @@ class AppState(QObject):
             return
         doc = self.session
         known = {im.filename for im in doc.images}
-        entries = [ImageEntry(source_path=str(p)) for p in paths]
         root = self.root
-
-        def work():
-            update_session(doc.path, images=entries, catalog=Catalog(root))
-            return _load_new_images(doc.path, known)
+        self.flush()
 
         def done(new):
             if self.session is not doc:
                 return
+            added = []
             for d in new:
-                doc.images.append(self._make_image(doc, d))
+                im = self._make_image(doc, d)
+                doc.images.append(im)
+                added.append(im.uid)
             if self.current_uid is None and doc.images:
                 self.current_uid = doc.images[0].uid
                 self.current_image_changed.emit(self.current_uid)
             self.images_changed.emit()
-            self.message.emit("Images added", f"{len(new)} image(s) copied into the session.",
+            where = "the lot" if doc.is_lot else "the session"
+            self.message.emit("Images added", f"{len(new)} image(s) copied into {where}.",
                               "success")
+            self.probe_metadata(added)
             if on_done:
                 on_done(len(new))
 
-        run_task(work, on_done=done, pool=serial_pool(),
+        run_task(_add_images_worker, doc.path, root, [str(p) for p in paths], known,
+                 on_done=done, pool=serial_pool(),
                  on_error=lambda m: self.message.emit("Could not add images",
                                                       m.splitlines()[0], "danger"))
+
+    # ------------------------------------------------------------------ SEM metadata (INN-05)
+    def probe_metadata(self, uids=None) -> None:
+        """Read SEM metadata of the given images (default: all) off-thread.
+
+        High-confidence vendor calibration is applied to a not-yet-analysed
+        image at once (per-image scale, undoable from the toast); medium is
+        offered; low is only remembered as a prefill.  Instrument / kV / WD /
+        magnification fill the session's acquisition fields still empty."""
+        doc = self.session
+        if doc is None:
+            return
+        wanted = None if uids is None else set(uids)
+        for im in [im for im in doc.images if (wanted is None or im.uid in wanted) and im.path]:
+            def done(info, im=im):
+                if self.session is not doc or info is None:
+                    return
+                im.sem_meta = info.get("meta") or {}
+                cal = info.get("cal")
+                im.cal_suggestion = tuple(cal) if cal else None
+                self._fill_acquisition(doc, im.sem_meta)
+                if cal and cal[2] == "high" and im.px_override <= 0 and im.result is None:
+                    prev = im.px_override
+                    self.set_calibration(float(cal[0]), im.uid)
+                    self.metadata_calibration.emit(im.uid, float(cal[0]), str(cal[1]),
+                                                   "high", float(prev))
+                elif cal:
+                    self.metadata_calibration.emit(im.uid, float(cal[0]), str(cal[1]),
+                                                   str(cal[2]), float(im.px_override))
+                self.sem_metadata_ready.emit(im.uid)
+            run_task(probe_sem_metadata, str(im.path), on_done=done)
+
+    def _fill_acquisition(self, doc: "SessionDoc", md: dict) -> None:
+        m = doc.meta
+        changed = False
+        if md.get("instrument") and not m.instrument:
+            m.instrument = str(md["instrument"])
+            changed = True
+        if md.get("accelerating_voltage_kv") and not m.accelerating_voltage_kv:
+            m.accelerating_voltage_kv = float(md["accelerating_voltage_kv"])
+            changed = True
+        if md.get("working_distance_mm") and not m.working_distance_mm:
+            m.working_distance_mm = float(md["working_distance_mm"])
+            changed = True
+        if md.get("magnification") and not m.magnification:
+            m.magnification = f"{float(md['magnification']):g}×"
+            changed = True
+        if changed:
+            doc.acquisition_dirty = True
+            self._meta_dirty = True
+            self.schedule_save()
 
     # ------------------------------------------------------------------ images
     def images(self) -> List[ImageDoc]:
@@ -925,6 +1057,12 @@ class AppState(QObject):
                         detector_mode=doc.params.get("detection_mode", ""))
             from version import __version__
             meta["software_version"] = __version__
+        if doc.acquisition_dirty:
+            doc.acquisition_dirty = False
+            m = doc.meta
+            meta.update(instrument=m.instrument, magnification=m.magnification,
+                        accelerating_voltage_kv=m.accelerating_voltage_kv,
+                        working_distance_mm=m.working_distance_mm)
         self._dirty.clear()
         self._meta_dirty = False
         self._saving = True

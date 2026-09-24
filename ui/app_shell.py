@@ -84,12 +84,16 @@ class SearchPopup(Card):
         self.add_widget(self.list, 1)
         self.hide()
 
-    def show_rows(self, rows: List[dict], text: str) -> None:
+    def show_rows(self, rows: List[dict], text: str, profile=None) -> None:
+        from ui import hierarchy_ui as hui
         self.list.clear()
+        L = lambda k: hui.kind_label(profile, k)  # noqa: E731
         for r in rows[:30]:
-            name = r.get("label") or r.get("session_id") or Path(r["path"]).name
-            where = " › ".join(x for x in (r.get("project"), r.get("sample_id"),
-                                           f"Lot {r['lot_number']}" if r.get("lot_number") else "") if x)
+            is_lot = (Path(r["path"]) / "lot.json").exists()
+            name = r.get("label") or (f"{L('lot')} {r.get('lot_number')}" if is_lot else "")                 or r.get("session_id") or Path(r["path"]).name
+            where = " › ".join(f"{L(k)} {r[key]}" for k, key in
+                               (("project", "project"), ("sample", "sample_id"),
+                                ("lot", "lot_number")) if r.get(key))
             detail = " · ".join(x for x in (fmt_date_utc(r.get("created_utc", "")), r.get("operator", ""),
                                             f"{r.get('image_count', 0)} images",
                                             f"{fmt_int(r.get('grain_count', 0))} grains") if x)
@@ -98,8 +102,9 @@ class SearchPopup(Card):
             it.setSizeHint(QSize(0, 44))
             self.list.addItem(it)
         n = len(rows)
-        self.title.setText(f"{n} SESSION{'S' if n != 1 else ''} MATCH “{text.upper()}”" if n
-                           else f"NO SESSIONS MATCH “{text.upper()}”")
+        what = "RESULT" if hui.lot_mode(profile) else "SESSION"
+        self.title.setText(f"{n} {what}{'S' if n != 1 else ''} MATCH “{text.upper()}”" if n
+                           else f"NO {what}S MATCH “{text.upper()}”")
         if rows:
             self.list.setCurrentRow(0)
         self.list.setFixedHeight(min(6, max(1, n)) * 46 + 6)
@@ -121,7 +126,7 @@ class AppShell(QMainWindow):
         self._wire()
         self._restore_window()
         self.projects.reload()
-        self._update_breadcrumb()
+        self._on_profile_changed()
         self._update_cal_chip()
         self._ensure_catalog()
         if probe_device:
@@ -277,6 +282,7 @@ class AppShell(QMainWindow):
         self.help_btn.clicked.connect(self.overlay.toggle)
         self.op_btn.clicked.connect(lambda: (self.go("settings"), self.settings_page.operator.setFocus()))
         st.node_changed.connect(lambda _n: self._update_breadcrumb())
+        st.profile_changed.connect(self._on_profile_changed)
         st.session_opened.connect(self._on_session_opened)
         st.session_closed.connect(self._on_session_closed)
         st.save_state_changed.connect(self._on_save_state)
@@ -336,7 +342,28 @@ class AppShell(QMainWindow):
     def _update_breadcrumb(self, page: Optional[str] = None) -> None:
         chain = self._chain_for(page)
         self._crumb_chain = chain
-        self.crumb.set_segments([node_display_name(n) for n in chain])
+        prof = self.state.profile
+        self.crumb.set_segments([node_display_name(n, prof, crumb=True) for n in chain])
+
+    def _on_profile_changed(self) -> None:
+        """HIER-01: relabel the chrome (breadcrumb, search, File menu)."""
+        from ui import hierarchy_ui as hui
+        p = self.state.profile
+        L = lambda k: hui.kind_label(p, k)  # noqa: E731
+        self._update_breadcrumb()
+        if hui.lot_mode(p):
+            self.search.setPlaceholderText(
+                f"Search {hui.plural(L('sample')).lower()}, {hui.plural(L('lot')).lower()}, "
+                "heat numbers, operators…")
+            self.act_new.setText(f"&New {L('lot')} / add images…")
+            self.act_new.setStatusTip(f"Create a {L('lot')} (or pick one) and add SEM images")
+        else:
+            self.search.setPlaceholderText("Search samples, lots, sessions, operators…")
+            self.act_new.setText("&New session…")
+            self.act_new.setStatusTip("Start a new analysis session")
+        s = self.state.session
+        if s is not None:
+            self.setWindowTitle(f"{s.title} — {APP_NAME}")
 
     def _on_crumb(self, idx: int, _text: str) -> None:
         chain = getattr(self, "_crumb_chain", [])
@@ -365,7 +392,7 @@ class AppShell(QMainWindow):
         def done(rows):
             if gen == self._search_gen:
                 self._place_popup()
-                self.search_popup.show_rows(rows, text)
+                self.search_popup.show_rows(rows, text, self.state.profile)
 
         run_task(work, on_done=done)
 
@@ -407,16 +434,27 @@ class AppShell(QMainWindow):
                 prefill = {"project_path": lot.parent.parent, "sample_path": lot.parent,
                            "lot_path": lot}
         dlg = NewSessionWizard(self.state, prefill=prefill or {}, images=images or [], parent=self)
-        dlg.session_created.connect(lambda p: self.open_session(p, prefer="analyze"))
+        dlg.session_created.connect(self._on_wizard_created)
         self._wizard = dlg
         dlg.open()
 
-    def open_session(self, path, prefer: Optional[str] = None) -> None:
+    def _on_wizard_created(self, path) -> None:
+        """Wizard finished: (re)open the lot / session, then read the SEM
+        metadata of its images (INN-05 auto-calibration)."""
+        path = Path(path)
+        s = self.state.session
+        if s is not None and s.path == path:
+            self.state.close_session()      # images were appended on disk: reload
+        self.open_session(path, prefer="analyze", probe=True)
+
+    def open_session(self, path, prefer: Optional[str] = None, probe: bool = False) -> None:
         path = Path(path)
 
         def done(ok):
             if not ok or self.state.session is None:
                 return
+            if probe:
+                self.state.probe_metadata()
             has = any(im.result is not None for im in self.state.images())
             self.go(prefer or ("review" if has else "analyze"))
             self.projects.reload()

@@ -86,11 +86,15 @@ def test_projects_page_lists_sessions_of_a_lot(shell, env, qtbot):
 
 
 def test_wizard_creates_hierarchy_and_remembers_values(env, qtbot, tmp_path):
+    """Legacy workspace (Project › Sample › Lot › timestamped Session)."""
+    from data.hierarchy import PRESETS, save_profile
     from ui.app_state import AppState
     from ui.dialogs.new_session_wizard import NewSessionWizard
+    save_profile(env, PRESETS["project_sample_lot_session"])
     state = AppState()
     wiz = NewSessionWizard(state)
     qtbot.addWidget(wiz)
+    assert wiz.step_titles() == ["Project", "Sample", "Lot", "Session", "Images"]
     wiz.fill(project="Alloy 718", sample="S-014", lot="2026-0917-B", label_text="Transverse",
              material="Inconel 718", supplier="Special Metals", instrument="Sigma 300",
              kv=15.0)

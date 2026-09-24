@@ -1,12 +1,16 @@
 """
-Projects page (DATA-06) — Keyence-style data browser.
+Projects page (DATA-06, HIER-01) — Keyence-style data browser.
 
 Layout
-  left   : workspace tree Project › Sample › Lot (+ New / Rename / Edit / Trash)
+  left   : workspace tree in the workspace's own hierarchy (e.g. Job # › Part
+           Number › Lot, or Project › Sample › Lot) (+ New / Rename / Edit / Trash)
   centre : header for the selected node, filter/sort bar, card grid of its
-           children (projects → samples → lots → sessions with thumbnails)
-  right  : details panel (editable metadata for the selected node / session)
+           children (with thumbnails for lots / sessions)
+  right  : details panel (editable metadata for the selected node — the
+           level's own fields from the hierarchy profile, typed editors)
 States     : first-run empty state, loading skeletons, empty folder, populated.
+With images stored in the lot (profile ``images_location == "lot"``) there is
+no Session level: a lot opens directly and adding images appends to it.
 All folder scans and thumbnail loads run on the thread pool.
 """
 from __future__ import annotations
@@ -16,18 +20,20 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QDate, QModelIndex, QSize, Qt, Signal
-from PySide6.QtGui import QAction, QStandardItem, QStandardItemModel
+from PySide6.QtCore import QModelIndex, QSize, Qt, Signal
+from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDateEdit, QFileDialog, QFormLayout, QHBoxLayout,
-    QLineEdit, QMenu, QPlainTextEdit, QSplitter, QTreeView, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QMenu,
+    QSplitter, QTreeView, QVBoxLayout, QWidget,
 )
 
 from data.catalog import Catalog
+from data.hierarchy import FieldDef
 from data.models import read_json
 from data.session_io import import_loose_images
 from data.workspace import Workspace
-from ui.app_state import NodeRef, node_display_name, node_for_path, session_title
+from ui import hierarchy_ui as hui
+from ui.app_state import NodeRef, node_display_name, node_for_path
 from ui.design import icons
 from ui.design.tokens import SPACE
 from ui.format import fmt_date_utc, fmt_int, fmt_opt, smart_format
@@ -38,30 +44,24 @@ from ui.widgets import (
     AnimatedButton, Badge, Card, Divider, EmptyState, FadeStackedWidget, IconButton,
     KeyValueList, SearchBox, Skeleton, label,
 )
+from ui.widgets.field_editors import editor_value, make_editor, mark_invalid
 from ui.workers import IMAGE_EXTS, load_thumb_file, run_task
 
 KIND_ROLE = Qt.UserRole + 1
 PATH_ROLE = Qt.UserRole + 2
 
-_CHILD = {"workspace": "project", "project": "sample", "sample": "lot", "lot": "session"}
-_KIND_LABEL = {"workspace": "Workspace", "project": "Project", "sample": "Sample",
-               "lot": "Lot", "session": "Session"}
-_KIND_ICON = {"workspace": "database", "project": "projects", "sample": "sample",
-              "lot": "tag", "session": "images"}
+_KIND_ICON = hui.KIND_ICON
 
-# editable metadata per kind: (field, label, multiline)
-_FIELDS = {
-    "project": [("name", "Project name", False), ("customer", "Customer / programme", False),
-                ("description", "Description", True)],
-    "sample": [("sample_id", "Sample ID", False), ("material", "Material", False),
-               ("alloy_grade", "Grade", False), ("heat_treatment", "Heat treatment", False),
-               ("description", "Description", True)],
-    "lot": [("lot_number", "Lot number", False), ("supplier", "Supplier", False),
-            ("received_date", "Received date", False), ("notes", "Notes", True)],
-    "session": [("label", "Session label", False), ("operator", "Operator", False),
-                ("instrument", "Instrument", False), ("magnification", "Magnification", False),
-                ("notes", "Notes", True)],
-}
+
+def _id_field(profile, kind: str) -> FieldDef:
+    return FieldDef(hui.ID_KEYS.get(kind, "label"), hui.id_label(profile, kind), required=True)
+
+
+def form_fields(profile, kind: str) -> List[FieldDef]:
+    """Identifier + the level's metadata fields (sessions: label, operator …)."""
+    if kind == "session":
+        return hui.level_fields(profile, "session")
+    return [_id_field(profile, kind)] + hui.level_fields(profile, kind)
 
 
 # ======================================================================
@@ -76,25 +76,48 @@ def _safe_json(p: Path) -> dict:
 
 
 def _session_dirs(lot: Path) -> List[Path]:
+    """Timestamped run folders of a lot (never the lot's own images/, results/ …)."""
     if not lot.exists():
         return []
-    return sorted([d for d in lot.iterdir() if d.is_dir() and (d / "manifest.json").exists()],
-                  reverse=True)
+    return sorted([d for d in lot.iterdir() if d.is_dir() and d.name not in hui_reserved()
+                   and (d / "manifest.json").exists()], reverse=True)
+
+
+def hui_reserved():
+    from data.hierarchy import RESERVED_LOT_SUBDIRS
+    return RESERVED_LOT_SUBDIRS
+
+
+def _lot_record(lot: Path) -> bool:
+    return (lot / "manifest.json").exists()
+
+
+def _lot_image_count(lot: Path) -> int:
+    n = len(_safe_json(lot / "manifest.json").get("images", []) or []) if _lot_record(lot) else 0
+    for sd in _session_dirs(lot):
+        n += len(_safe_json(sd / "manifest.json").get("images", []) or [])
+    return n
 
 
 def scan_tree(root: str) -> List[dict]:
     ws = Workspace(root)
+    lot_mode = hui.lot_mode(ws.profile)
     out = []
     for pm in ws.list_projects():
         pp = Path(pm.path)
-        pd = {"kind": "project", "path": pp, "meta": pm.to_dict(), "children": []}
+        pd = {"kind": "project", "path": pp, "meta": _safe_json(pp / "project.json"),
+              "children": []}
         for sm in ws.list_samples(pp):
             sp = Path(sm.path)
-            sd = {"kind": "sample", "path": sp, "meta": sm.to_dict(), "children": []}
+            sd = {"kind": "sample", "path": sp, "meta": _safe_json(sp / "sample.json"),
+                  "children": []}
             for lm in ws.list_lots(pp, sp):
                 lp = Path(lm.path)
-                sd["children"].append({"kind": "lot", "path": lp, "meta": lm.to_dict(),
-                                       "n_sessions": len(_session_dirs(lp)), "children": []})
+                sd["children"].append({"kind": "lot", "path": lp,
+                                       "meta": _safe_json(lp / "lot.json"),
+                                       "n_sessions": len(_session_dirs(lp)),
+                                       "n_images": _lot_image_count(lp) if lot_mode else 0,
+                                       "children": []})
             pd["children"].append(sd)
         out.append(pd)
     return out
@@ -133,52 +156,66 @@ def session_summary(sdir: Path, n_thumbs: int = 3) -> dict:
             "grains": int(sum(int(i.get("grain_count", 0)) for i in analysed)),
             "mean_diam_um": (sum(diams) / len(diams)) if diams else None,
             "g": (sum(gs) / len(gs)) if gs else None, "calibrated": cal,
-            "thumbs": thumbs, "status": status,
+            "thumbs": thumbs, "status": status, "record": (sdir / "lot.json").exists(),
             "created": m.get("created_utc", ""), "operator": m.get("operator", "")}
 
 
 def load_contents(kind: str, path: str, root: str) -> dict:
     """Children of ``path`` with light summaries (runs on the thread pool)."""
     ws = Workspace(root)
+    lot_mode = hui.lot_mode(ws.profile)
     p = Path(path)
     items: List[dict] = []
+
+    def lot_counts(lp: Path):
+        n = len(_session_dirs(lp)) + (1 if lot_mode and _lot_record(lp) else 0)
+        return n, (_lot_image_count(lp) if lot_mode else None)
+
     if kind == "workspace":
         for pm in ws.list_projects():
             pp = Path(pm.path)
             samples = ws.list_samples(pp)
-            lots = [l for s in samples for l in ws.list_lots(pp, Path(s.path))]
-            n_sess = sum(len(_session_dirs(Path(l.path))) for l in lots)
-            items.append({"kind": "project", "path": pp, "meta": pm.to_dict(),
+            lots = [Path(l.path) for s in samples for l in ws.list_lots(pp, Path(s.path))]
+            n_sess = sum(lot_counts(l)[0] for l in lots)
+            items.append({"kind": "project", "path": pp, "meta": _safe_json(pp / "project.json"),
                           "n_samples": len(samples), "n_lots": len(lots),
-                          "n_sessions": n_sess, "created": pm.created_utc})
+                          "n_sessions": n_sess, "created": pm.created_utc,
+                          "n_images": sum(_lot_image_count(l) for l in lots) if lot_mode else 0})
     elif kind == "project":
         for sm in ws.list_samples(p):
             sp = Path(sm.path)
-            lots = ws.list_lots(p, sp)
-            n_sess = sum(len(_session_dirs(Path(l.path))) for l in lots)
-            items.append({"kind": "sample", "path": sp, "meta": sm.to_dict(),
-                          "n_lots": len(lots), "n_sessions": n_sess, "created": sm.created_utc})
+            lots = [Path(l.path) for l in ws.list_lots(p, sp)]
+            n_sess = sum(lot_counts(l)[0] for l in lots)
+            items.append({"kind": "sample", "path": sp, "meta": _safe_json(sp / "sample.json"),
+                          "n_lots": len(lots), "n_sessions": n_sess, "created": sm.created_utc,
+                          "n_images": sum(_lot_image_count(l) for l in lots) if lot_mode else 0})
     elif kind == "sample":
         for lm in ws.list_lots(p.parent, p):
             lp = Path(lm.path)
             sess = _session_dirs(lp)
-            n_img, latest, thumbs = 0, "", []
-            for sd in sess:
+            n_img, latest, thumbs, analysed = 0, "", [], 0
+            recs = ([lp] if lot_mode and _lot_record(lp) else []) + sess
+            for sd in recs:
                 mm = _safe_json(sd / "manifest.json")
-                n_img += len(mm.get("images", []) or [])
+                ims = mm.get("images", []) or []
+                n_img += len(ims)
+                analysed += sum(1 for i in ims if i.get("has_result"))
                 latest = max(latest, mm.get("created_utc", ""))
-            if sess:
-                thumbs = session_summary(sess[0])["thumbs"]
-            items.append({"kind": "lot", "path": lp, "meta": lm.to_dict(),
-                          "n_sessions": len(sess), "n_images": n_img,
-                          "created": latest or lm.created_utc, "thumbs": thumbs})
+            if recs:
+                thumbs = session_summary(recs[0])["thumbs"]
+            items.append({"kind": "lot", "path": lp, "meta": _safe_json(lp / "lot.json"),
+                          "n_sessions": len(sess), "n_images": n_img, "n_analysed": analysed,
+                          "created": latest or lm.created_utc, "thumbs": thumbs,
+                          "lot_mode": lot_mode})
     elif kind == "lot":
+        if lot_mode and _lot_record(p):
+            items.append(session_summary(p))
         for sd in _session_dirs(p):
             items.append(session_summary(sd))
-    meta_file = {"project": "project.json", "sample": "sample.json", "lot": "lot.json",
-                 "session": "manifest.json"}.get(kind)
+    meta_file = hui.META_FILES.get(kind)
     meta = _safe_json(p / meta_file) if meta_file else {}
-    return {"kind": kind, "path": p, "items": items, "meta": meta}
+    acq = _safe_json(p / "manifest.json") if (kind == "lot" and lot_mode) else {}
+    return {"kind": kind, "path": p, "items": items, "meta": meta, "acquisition": acq}
 
 
 def trash_node(ws: Workspace, root: Path, kind: str, path: Path) -> Path:
@@ -212,13 +249,13 @@ def _reconnect(signal, slot) -> None:
 # ======================================================================
 
 class NodeCard(SelectableCard):
-    """Card for a project / sample / lot / session."""
+    """Card for a project / sample / lot / session (labels from the profile)."""
 
-    def __init__(self, item: dict, parent=None) -> None:
+    def __init__(self, item: dict, profile=None, parent=None) -> None:
         super().__init__(parent=parent)
         self.item = item
+        self.profile = profile
         kind = item["kind"]
-        m = item.get("meta", {})
         body = self.body_layout()
         body.setSpacing(SPACE.sm)
         if kind in ("session", "lot"):
@@ -234,8 +271,9 @@ class NodeCard(SelectableCard):
         self.title_lbl = label(self.title_text(), "h3")
         self.title_lbl.setWordWrap(False)
         top.addWidget(self.title_lbl, 1)
-        if kind == "session":
-            st, sk = item.get("status", ("", "neutral"))
+        if kind == "session" or (kind == "lot" and item.get("lot_mode") and item.get("n_images")):
+            st, sk = item.get("status", ("", "neutral")) if kind == "session" else \
+                self._lot_status()
             top.addWidget(Badge(st, sk, dot=True), 0, Qt.AlignVCenter)
         body.addLayout(top)
         sub = self.subtitle_text()
@@ -253,46 +291,66 @@ class NodeCard(SelectableCard):
         if metric:
             body.addWidget(label(metric, "caption"))
         self.setToolTip(self._tooltip())
-        self.setAccessibleName(f"{_KIND_LABEL[kind]} {self.title_text()}")
+        self.setAccessibleName(f"{self.kind_label(kind)} {self.title_text()}")
+
+    def kind_label(self, kind: str) -> str:
+        if kind == "session" and self.item.get("record"):
+            return hui.kind_label(self.profile, "lot")
+        return hui.kind_label(self.profile, kind)
+
+    def _lot_status(self):
+        n, a = self.item.get("n_images", 0), self.item.get("n_analysed", 0)
+        if a and a == n:
+            return "Analysed", "success"
+        if a:
+            return "Partly analysed", "warning"
+        return "Not analysed", "neutral"
 
     def title_text(self) -> str:
         it, m = self.item, self.item.get("meta", {})
         k = it["kind"]
-        if k == "project":
-            return m.get("name") or it["path"].name
-        if k == "sample":
-            return m.get("sample_id") or it["path"].name
-        if k == "lot":
-            return f"Lot {m.get('lot_number') or it['path'].name}"
-        return m.get("label") or session_title(m.get("created_local", ""), it["path"].name)
+        if k == "session" and it.get("record"):
+            return "Images in this " + hui.kind_label(self.profile, "lot").lower()
+        return hui.node_caption(self.profile, k, m, it["path"])
 
     def subtitle_text(self) -> str:
         it, m = self.item, self.item.get("meta", {})
         k = it["kind"]
-        if k == "project":
-            return m.get("customer") or m.get("description") or ""
-        if k == "sample":
-            parts = [m.get("material"), m.get("alloy_grade"), m.get("heat_treatment")]
-            return " · ".join(x for x in parts if x)
-        if k == "lot":
-            parts = [m.get("supplier"), f"received {m['received_date']}" if m.get("received_date") else ""]
-            return " · ".join(x for x in parts if x)
+        if k in hui.LEVELS:
+            parts = []
+            for fd in hui.level_fields(self.profile, k):
+                v = m.get(fd.key)
+                if v in (None, "") or fd.kind == "multiline":
+                    continue
+                parts.append(f"{fd.label.lower()} {v}" if fd.kind == "date" else str(v))
+            return " · ".join(parts[:3])
         parts = [fmt_date_utc(m.get("created_utc", "")), m.get("operator", "")]
         return " · ".join(x for x in parts if x)
 
     def _badges(self):
-        it = self.item
+        it, p = self.item, self.profile
         k = it["kind"]
+        lot_mode = hui.lot_mode(p)
+        runs = lambda n: (f"{n} session{'s' if n != 1 else ''}", "neutral", "images")  # noqa: E731
+        imgs = lambda n: (f"{n} image{'s' if n != 1 else ''}", "neutral", "images")  # noqa: E731
         if k == "project":
-            return [(f"{it.get('n_samples', 0)} samples", "neutral", "sample"),
-                    (f"{it.get('n_sessions', 0)} sessions", "neutral", "images")]
+            return [(hui.count_text(it.get("n_samples", 0), hui.kind_label(p, "sample")),
+                     "neutral", "sample"),
+                    imgs(it.get("n_images", 0)) if lot_mode else runs(it.get("n_sessions", 0))]
         if k == "sample":
-            return [(f"{it.get('n_lots', 0)} lots", "neutral", "tag"),
-                    (f"{it.get('n_sessions', 0)} sessions", "neutral", "images")]
+            return [(hui.count_text(it.get("n_lots", 0), hui.kind_label(p, "lot")),
+                     "neutral", "tag"),
+                    imgs(it.get("n_images", 0)) if lot_mode else runs(it.get("n_sessions", 0))]
         if k == "lot":
+            if lot_mode:
+                b = [imgs(it.get("n_images", 0))]
+                if it.get("n_sessions"):
+                    b.append((f"{it['n_sessions']} earlier run"
+                              f"{'s' if it['n_sessions'] != 1 else ''}", "neutral", "history"))
+                return b
             return [(f"{it.get('n_sessions', 0)} sessions", "neutral", "history"),
-                    (f"{it.get('n_images', 0)} images", "neutral", "images")]
-        b = [(f"{it.get('n_images', 0)} images", "neutral", "images")]
+                    imgs(it.get("n_images", 0))]
+        b = [imgs(it.get("n_images", 0))]
         if it.get("n_analysed"):
             b.append((f"{fmt_int(it.get('grains', 0))} grains", "accent", "grains"))
         return b
@@ -314,9 +372,16 @@ class NodeCard(SelectableCard):
         return ""
 
     def _tooltip(self) -> str:
-        if self.item["kind"] == "session":
+        k = self.item["kind"]
+        if k == "session":
+            if self.item.get("record"):
+                return "Double-click (or Enter) to open the images and results of this " + \
+                    hui.kind_label(self.profile, "lot").lower()
             return "Double-click (or Enter) to open this session in Analyze / Review"
-        return f"Double-click to open this {_KIND_LABEL[self.item['kind']].lower()}"
+        if k == "lot" and hui.lot_mode(self.profile):
+            return (f"Double-click to open this {hui.kind_label(self.profile, 'lot')} — its "
+                    "images and results are stored in the folder itself")
+        return f"Double-click to open this {hui.kind_label(self.profile, k)}"
 
 
 class SkeletonCard(Card):
@@ -328,7 +393,7 @@ class SkeletonCard(Card):
 
 
 class NodeForm(Card):
-    """Inline create form (no modal popups)."""
+    """Inline create form (no modal popups) — fields from the hierarchy profile."""
 
     submitted = Signal(dict)
 
@@ -351,66 +416,55 @@ class NodeForm(Card):
         row.addWidget(self.ok)
         self.body_layout().addLayout(row)
         self._edits: Dict[str, QWidget] = {}
+        self._fields: List[FieldDef] = []
         self.kind = ""
         self.hide()
 
-    def open_for(self, kind: str, where: str) -> None:
+    def open_for(self, kind: str, where: str, profile=None) -> None:
         self.kind = kind
-        self.set_title(f"New {_KIND_LABEL[kind].lower()}", where)
+        name = hui.kind_label(profile, kind)
+        self.set_title(f"New {name}", where)
         while self._form.rowCount():
             self._form.removeRow(0)
         self._edits = {}
-        for key, text, multi in _FIELDS[kind]:
-            if key == "received_date":
-                w = QDateEdit(QDate.currentDate())
-                w.setCalendarPopup(True)
-                w.setDisplayFormat("yyyy-MM-dd")
-            elif multi:
-                w = QPlainTextEdit()
-                w.setFixedHeight(56)
-            else:
-                w = QLineEdit()
-            w.setToolTip(text)
-            self._edits[key] = w
-            self._form.addRow(text + ("  *" if key == _FIELDS[kind][0][0] else ""), w)
+        self._fields = form_fields(profile, kind)
+        for fd in self._fields:
+            w = make_editor(fd, "")
+            self._edits[fd.key] = w
+            self._form.addRow(fd.label + ("  *" if fd.required else ""), w)
         self.error.hide()
-        self.ok.setText(f"Create {_KIND_LABEL[kind].lower()}")
+        self.ok.setText(f"Create {name}")
         self.show()
-        first = self._edits[_FIELDS[kind][0][0]]
+        first = self._edits[self._fields[0].key]
         first.setFocus()
-        if isinstance(first, QLineEdit):
+        if hasattr(first, "returnPressed"):
             first.returnPressed.connect(self._submit)
 
     def values(self) -> dict:
-        out = {}
-        for k, w in self._edits.items():
-            if isinstance(w, QDateEdit):
-                out[k] = w.date().toString("yyyy-MM-dd")
-            elif isinstance(w, QPlainTextEdit):
-                out[k] = w.toPlainText().strip()
-            else:
-                out[k] = w.text().strip()
-        return out
+        return {k: editor_value(w) for k, w in self._edits.items()}
 
     def set_value(self, key: str, value: str) -> None:
+        from ui.widgets.field_editors import set_editor_value
         w = self._edits.get(key)
-        if isinstance(w, QLineEdit):
-            w.setText(value)
+        if w is not None:
+            set_editor_value(w, value)
 
     def _submit(self) -> None:
         v = self.values()
-        first = _FIELDS[self.kind][0][0]
-        if not v.get(first):
-            self.error.setText(f"{_FIELDS[self.kind][0][1]} is required.")
-            self.error.show()
-            self._edits[first].setProperty("invalid", "true")
-            self._edits[first].style().polish(self._edits[first])
-            return
+        for fd in self._fields:
+            w = self._edits[fd.key]
+            missing = fd.required and not v.get(fd.key)
+            mark_invalid(w, missing)
+            if missing:
+                self.error.setText(f"{fd.label} is required.")
+                self.error.show()
+                w.setFocus()
+                return
         self.submitted.emit(v)
 
 
 class DetailsPanel(Panel):
-    """Right-hand metadata panel with in-place editing."""
+    """Right-hand metadata panel with in-place editing (typed, profile fields)."""
 
     open_session = Signal(object)
     saved = Signal(object, dict)   # NodeRef, values
@@ -419,6 +473,7 @@ class DetailsPanel(Panel):
         super().__init__("left", parent)
         self.setMinimumWidth(270)
         self.setMaximumWidth(360)
+        self.profile = None
         v = QVBoxLayout(self)
         v.setContentsMargins(SPACE.lg, SPACE.lg, SPACE.lg, SPACE.lg)
         v.setSpacing(SPACE.md)
@@ -444,6 +499,10 @@ class DetailsPanel(Panel):
         self.form.setVerticalSpacing(SPACE.sm)
         self.form_host.hide()
         v.addWidget(self.form_host)
+        self.form_error = label("", tone="danger")
+        self.form_error.setWordWrap(True)
+        self.form_error.hide()
+        v.addWidget(self.form_error)
         row = QHBoxLayout()
         self.cancel_btn = AnimatedButton("Cancel", None, "ghost")
         self.save_btn = AnimatedButton("Save", "save", "primary")
@@ -470,8 +529,16 @@ class DetailsPanel(Panel):
         self._root = ""
         self.meta: dict = {}
         self._edits: Dict[str, QWidget] = {}
+        self._fields: List[FieldDef] = []
 
-    def show_node(self, node: Optional[NodeRef], meta: dict, extra: Optional[dict] = None) -> None:
+    def _editable(self, node: Optional[NodeRef]) -> bool:
+        return node is not None and node.kind in ("project", "sample", "lot", "session")
+
+    def _opens(self, node: NodeRef) -> bool:
+        return node.kind == "session" or (node.kind == "lot" and hui.lot_mode(self.profile))
+
+    def show_node(self, node: Optional[NodeRef], meta: dict, extra: Optional[dict] = None,
+                  acquisition: Optional[dict] = None) -> None:
         self.stop_edit()
         self.node, self.meta = node, dict(meta or {})
         if node is None:
@@ -481,26 +548,30 @@ class DetailsPanel(Panel):
             self.open_btn.hide()
             self.path_lbl.setText("")
             return
-        self.kind_lbl.setText(_KIND_LABEL[node.kind].upper())
-        self.title.setText(node_display_name(node) if node.kind != "workspace" else "Workspace")
+        p = self.profile
+        self.kind_lbl.setText(hui.kind_label(p, node.kind).upper())
+        self.title.setText(node_display_name(node, p) if node.kind != "workspace" else "Workspace")
         rows = []
-        for key, text, _m in _FIELDS.get(node.kind, []):
-            val = self.meta.get(key, "")
-            rows.append((text, str(val) if val not in (None, "") else "—"))
-        if node.kind == "session":
-            m = self.meta
-            rows += [("Created", fmt_date_utc(m.get("created_utc", ""))),
-                     ("Accelerating voltage", f"{m.get('accelerating_voltage_kv') or '—'} kV"),
-                     ("Working distance", f"{m.get('working_distance_mm') or '—'} mm"),
-                     ("Calibration", f"{m['px_per_um']:.4g} px/µm" if m.get("px_per_um") else "Not set"),
-                     ("Detection mode", m.get("detector_mode") or "—")]
-        elif node.kind != "workspace":
+        for fd in form_fields(p, node.kind):
+            val = self.meta.get(fd.key, "")
+            rows.append((fd.label + (" *" if fd.required and node.kind != "session" else ""),
+                         str(val) if val not in (None, "") else "—"))
+        acq = self.meta if node.kind == "session" else (acquisition or None)
+        if acq:
+            rows += self._acquisition_rows(acq, with_basics=node.kind != "session")
+        elif node.kind not in ("workspace", "session"):
             rows.append(("Created", fmt_date_utc(self.meta.get("created_utc", ""))))
         for k, v in (extra or {}).items():
             rows.append((k, v))
         self.kv.set_items(rows)
-        self.edit_btn.setVisible(node.kind in _FIELDS)
-        self.open_btn.setVisible(node.kind == "session")
+        self.edit_btn.setVisible(self._editable(node))
+        self.edit_btn.setToolTip(f"Edit the {hui.kind_label(p, node.kind)} metadata")
+        opens = self._opens(node)
+        self.open_btn.setVisible(opens)
+        if opens:
+            what = hui.kind_label(p, "lot") if node.kind == "lot" else "session"
+            self.open_btn.setText(f"Open {what}")
+            self.open_btn.setToolTip(f"Load all images and results of this {what} (Enter)")
         try:
             rel = node.path.relative_to(Path(self._root)) if self._root else node.path
         except ValueError:
@@ -508,20 +579,36 @@ class DetailsPanel(Panel):
         self.path_lbl.setText("Folder: " + (str(rel) if str(rel) != "." else str(node.path)))
         self.path_lbl.setToolTip(str(node.path))
 
+    @staticmethod
+    def _acquisition_rows(m: dict, with_basics: bool = True) -> list:
+        """Acquisition details (INN-05 fills instrument / kV / WD / mag from
+        the SEM metadata).  A session's operator / instrument / mag are
+        already form rows, so only the rest is added for sessions."""
+        kv = m.get("accelerating_voltage_kv")
+        wd = m.get("working_distance_mm")
+        rows = [("Created", fmt_date_utc(m.get("created_utc", "")))]
+        if with_basics:
+            rows += [("Operator", m.get("operator") or "—"),
+                     ("Instrument", m.get("instrument") or "—"),
+                     ("Magnification", m.get("magnification") or "—")]
+        rows += [("Accelerating voltage", f"{kv:g} kV" if kv else "—"),
+                 ("Working distance", f"{wd:g} mm" if wd else "—"),
+                 ("Calibration", f"{m['px_per_um']:.4g} px/µm" if m.get("px_per_um") else "Not set"),
+                 ("Detection mode", m.get("detector_mode") or "—")]
+        return rows
+
     def start_edit(self) -> None:
-        if self.node is None or self.node.kind not in _FIELDS:
+        if not self._editable(self.node):
             return
         while self.form.rowCount():
             self.form.removeRow(0)
         self._edits = {}
-        for key, text, multi in _FIELDS[self.node.kind]:
-            w = QPlainTextEdit(str(self.meta.get(key, "") or "")) if multi else \
-                QLineEdit(str(self.meta.get(key, "") or ""))
-            if multi:
-                w.setFixedHeight(64)
-            w.setToolTip(text)
-            self._edits[key] = w
-            self.form.addRow(text, w)
+        self._fields = form_fields(self.profile, self.node.kind)
+        for fd in self._fields:
+            w = make_editor(fd, self.meta.get(fd.key, ""))
+            self._edits[fd.key] = w
+            self.form.addRow(fd.label + ("  *" if fd.required else ""), w)
+        self.form_error.hide()
         self.kv.hide()
         self.form_host.show()
         self.edit_row.show()
@@ -530,14 +617,20 @@ class DetailsPanel(Panel):
     def stop_edit(self) -> None:
         self.form_host.hide()
         self.edit_row.hide()
+        self.form_error.hide()
         self.kv.show()
         if self.node is not None:
-            self.edit_btn.setVisible(self.node.kind in _FIELDS)
+            self.edit_btn.setVisible(self._editable(self.node))
 
     def _save(self) -> None:
-        vals = {}
-        for k, w in self._edits.items():
-            vals[k] = w.toPlainText().strip() if isinstance(w, QPlainTextEdit) else w.text().strip()
+        vals = {k: editor_value(w) for k, w in self._edits.items()}
+        for fd in self._fields:
+            missing = fd.required and not vals.get(fd.key)
+            mark_invalid(self._edits[fd.key], missing)
+            if missing:
+                self.form_error.setText(f"{fd.label} is required.")
+                self.form_error.show()
+                return
         self.saved.emit(self.node, vals)
 
 
@@ -565,6 +658,37 @@ class ProjectsPage(QWidget):
         self._build()
         state.workspace_changed.connect(self.reload)
         state.node_changed.connect(self._on_state_node)
+        state.profile_changed.connect(self._on_profile_changed)
+        self._apply_profile_labels()
+
+    # ------------------------------------------------------------------ profile
+    @property
+    def profile(self):
+        return self.state.profile
+
+    def lbl(self, kind: str) -> str:
+        return hui.kind_label(self.profile, kind)
+
+    def _on_profile_changed(self) -> None:
+        self._apply_profile_labels()
+        self.reload()
+
+    def _apply_profile_labels(self) -> None:
+        p = self.profile
+        self.details.profile = p
+        top = self.lbl("project")
+        chain = " › ".join(self.lbl(k) for k in hui.LEVELS)
+        self.btn_new_project.setToolTip(f"New {top}…")
+        self.btn_new_project.setAccessibleName(f"New {top}")
+        self.tree.setToolTip(f"{chain}. F2 renames; right-click for more."
+                             + (f" Double-click a {self.lbl('lot')} to open it."
+                                if hui.lot_mode(p) else ""))
+        self.btn_import.setToolTip("Bring an existing folder of SEM images into the workspace "
+                                   f"(into the selected {self.lot_word()}, or a new one)")
+        self.filter.setPlaceholderText("Filter by name, operator, notes…")
+
+    def lot_word(self) -> str:
+        return self.lbl("lot")
 
     # ------------------------------------------------------------------ build
     def _build(self) -> None:
@@ -596,19 +720,17 @@ class ProjectsPage(QWidget):
         self.tree.setEditTriggers(QAbstractItemView.EditKeyPressed)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._tree_menu)
-        self.tree.setToolTip("Project › Sample › Lot. F2 renames; right-click for more.")
         self.tree.setIconSize(QSize(16, 16))
         self.model = QStandardItemModel(self)
         self.model.itemChanged.connect(self._on_item_renamed)
         self.tree.setModel(self.model)
         self.tree.selectionModel().currentChanged.connect(self._on_tree_current)
+        self.tree.doubleClicked.connect(self._on_tree_double)
         lv.addWidget(self.tree, 1)
         self.ws_path = label("", "caption")
         self.ws_path.setWordWrap(True)
         lv.addWidget(self.ws_path)
         self.btn_import = AnimatedButton("Import folder of images…", "import", "secondary")
-        self.btn_import.setToolTip("Bring an existing folder of SEM images into the workspace "
-                                   "(into the selected lot, or a new one)")
         self.btn_import.clicked.connect(self.import_folder)
         lv.addWidget(self.btn_import)
         split.addWidget(left)
@@ -618,7 +740,7 @@ class ProjectsPage(QWidget):
         cv = QVBoxLayout(centre)
         cv.setContentsMargins(SPACE.xl, SPACE.lg, SPACE.xl, SPACE.md)
         cv.setSpacing(SPACE.md)
-        self.header = PageHeader("Workspace", "All projects")
+        self.header = PageHeader("Workspace", "Workspace")
         self.btn_primary = AnimatedButton("New project", "add", "primary")
         self.btn_primary.clicked.connect(self._primary_action)
         self.btn_secondary = AnimatedButton("Import images…", "import", "secondary")
@@ -712,6 +834,7 @@ class ProjectsPage(QWidget):
         fm = self.ws_path.fontMetrics()
         self.ws_path.setText("Stored in  " + fm.elidedText(root, Qt.ElideMiddle, 210))
         self.ws_path.setToolTip(root)
+        self.details.profile = self.profile
         run_task(scan_tree, root, on_done=lambda d: self._fill_tree(gen, d),
                  on_error=lambda m: self._toast("Could not read workspace", m.splitlines()[0], "danger"))
         node = self._node or NodeRef("workspace", self.state.root)
@@ -724,22 +847,21 @@ class ProjectsPage(QWidget):
             return
         self._filling = True
         self.model.clear()
-        rootitem = self._make_item("workspace", self.state.root, "All projects")
+        p = self.profile
+        rootitem = self._make_item("workspace", self.state.root,
+                                   f"All {hui.plural(self.lbl('project')).lower()}")
         rootitem.setEditable(False)
         self.model.appendRow(rootitem)
 
         def add(parent, nodes):
             for n in nodes:
-                m = n["meta"]
-                if n["kind"] == "project":
-                    text = m.get("name") or n["path"].name
-                elif n["kind"] == "sample":
-                    text = m.get("sample_id") or n["path"].name
-                else:
-                    text = f"Lot {m.get('lot_number') or n['path'].name}"
-                    if n.get("n_sessions"):
-                        text += f"   ·  {n['n_sessions']}"
-                it = self._make_item(n["kind"], n["path"], text)
+                text = hui.node_caption(p, n["kind"], n["meta"], n["path"])
+                if n["kind"] == "lot":
+                    cnt = n.get("n_images") if hui.lot_mode(p) else n.get("n_sessions")
+                    if cnt:
+                        text += f"   ·  {cnt}"
+                it = self._make_item(n["kind"], n["path"], text,
+                                     hui.crumb_caption(p, n["kind"], n["meta"], n["path"]))
                 parent.appendRow(it)
                 add(it, n.get("children", []))
         add(rootitem, data)
@@ -750,29 +872,30 @@ class ProjectsPage(QWidget):
         if target is not None:
             self._select_tree_path(Path(target))
 
-    def _make_item(self, kind: str, path: Path, text: str) -> QStandardItem:
+    def _make_item(self, kind: str, path: Path, text: str, tip: str = "") -> QStandardItem:
         it = QStandardItem(icons.icon(_KIND_ICON[kind]), text)
         it.setData(kind, KIND_ROLE)
         it.setData(str(path), PATH_ROLE)
         it.setEditable(kind in ("project", "sample", "lot"))
-        it.setToolTip(str(path))
+        it.setToolTip(f"{tip}\n{path}" if tip else str(path))
         return it
+
+    def tree_items(self) -> List[QStandardItem]:
+        out = []
+
+        def walk(item):
+            out.append(item)
+            for r in range(item.rowCount()):
+                walk(item.child(r))
+        for r in range(self.model.rowCount()):
+            walk(self.model.item(r))
+        return out
 
     def _find_item(self, path: Path) -> Optional[QStandardItem]:
         target = str(path)
-
-        def walk(item):
-            if item.data(PATH_ROLE) == target:
-                return item
-            for r in range(item.rowCount()):
-                f = walk(item.child(r))
-                if f is not None:
-                    return f
-            return None
-        for r in range(self.model.rowCount()):
-            f = walk(self.model.item(r))
-            if f is not None:
-                return f
+        for it in self.tree_items():
+            if it.data(PATH_ROLE) == target:
+                return it
         return None
 
     def _select_tree_path(self, path: Path) -> None:
@@ -793,6 +916,10 @@ class ProjectsPage(QWidget):
         kind = cur.data(KIND_ROLE)
         path = Path(cur.data(PATH_ROLE))
         self.state.set_node(NodeRef(kind, path))
+
+    def _on_tree_double(self, idx: QModelIndex) -> None:
+        if idx.isValid() and idx.data(KIND_ROLE) == "lot" and hui.lot_mode(self.profile):
+            self.open_session_requested.emit(Path(idx.data(PATH_ROLE)))
 
     def _on_state_node(self, node: Optional[NodeRef]) -> None:
         if node is None:
@@ -819,9 +946,10 @@ class ProjectsPage(QWidget):
             return
         kind = item.data(KIND_ROLE)
         path = Path(item.data(PATH_ROLE))
-        new = item.text().strip()
-        if new.startswith("Lot "):
-            new = new[4:].split("   ·")[0].strip()
+        new = item.text().strip().split("   ·")[0].strip()
+        prefix = self.lbl("lot") + " "
+        if kind == "lot" and new.startswith(prefix):
+            new = new[len(prefix):].strip()
         if not new:
             self.reload()
             return
@@ -831,19 +959,14 @@ class ProjectsPage(QWidget):
         ws = self.state.workspace
         self._release_open_session(node.path)
         try:
-            if node.kind == "project":
-                newp = ws.rename_project(node.path, new)
-            elif node.kind == "sample":
-                newp = ws.rename_sample(node.path.parent, node.path, new)
-            elif node.kind == "lot":
-                newp = ws.rename_lot(node.path.parent.parent, node.path.parent, node.path, new)
-            else:
+            if node.kind not in hui.LEVELS:
                 return
+            newp = hui.rename_level(ws, node.kind, node.path, new)
         except Exception as e:
             self._toast("Rename failed", str(e), "danger")
             self.reload()
             return
-        self._toast("Renamed", f"{_KIND_LABEL[node.kind]} renamed to “{new}”.", "success")
+        self._toast("Renamed", f"{self.lbl(node.kind)} renamed to “{new}”.", "success")
         run_task(lambda: Catalog(self.state.root).rebuild())
         self._pending_select = newp
         self._node = NodeRef(node.kind, newp)
@@ -867,28 +990,46 @@ class ProjectsPage(QWidget):
         node = NodeRef(idx.data(KIND_ROLE), Path(idx.data(PATH_ROLE)))
         self._node_menu(node, self.tree.viewport(), pos)
 
+    def menu_actions(self, node: NodeRef) -> List[tuple]:
+        """(text, icon, callback) for the node's context menu (None = separator)."""
+        acts: List[Optional[tuple]] = []
+        child = hui.child_kind(self.profile, node.kind)
+        lot_mode = hui.lot_mode(self.profile)
+        if child and child != "session":
+            acts.append((f"New {self.lbl(child)}…", "add",
+                         lambda: self._create_under(node, child)))
+        if node.kind == "lot":
+            if lot_mode:
+                acts.append((f"Open {self.lbl('lot')}", "open",
+                             lambda: self.open_session_requested.emit(node.path)))
+                acts.append((f"Add images to this {self.lbl('lot')}…", "import",
+                             self.import_files))
+            else:
+                acts.append((f"New session in this {self.lbl('lot')}…", "add",
+                             lambda: self.new_session_requested.emit(self._prefill(node))))
+                acts.append((f"Import images into this {self.lbl('lot')}…", "import",
+                             self.import_files))
+        if node.kind == "session":
+            acts.append(("Open session", "open", lambda: self.open_session_requested.emit(node.path)))
+        if node.kind in ("project", "sample", "lot", "session"):
+            acts.append(("Edit metadata", "edit", lambda: self._edit(node)))
+        if node.kind in hui.LEVELS:
+            acts.append(("Rename  (F2)", "edit", lambda: self._start_rename(node)))
+        acts.append(("Show in File Explorer", "open", lambda: self._reveal(node.path)))
+        if node.kind != "workspace":
+            acts.append(None)
+            acts.append(("Move to trash…", "delete", lambda: self.ask_delete(node)))
+        return acts
+
     def _node_menu(self, node: Optional[NodeRef], anchor: QWidget, pos=None) -> None:
         if node is None:
             return
         m = QMenu(self)
-        child = _CHILD.get(node.kind)
-        if child and child != "session":
-            m.addAction(icons.icon("add"), f"New {_KIND_LABEL[child].lower()}…",
-                        lambda: self._create_under(node, child))
-        if node.kind == "lot":
-            m.addAction(icons.icon("add"), "New session in this lot…",
-                        lambda: self.new_session_requested.emit(self._prefill(node)))
-            m.addAction(icons.icon("import"), "Import images into this lot…", self.import_files)
-        if node.kind == "session":
-            m.addAction(icons.icon("open"), "Open session", lambda: self.open_session_requested.emit(node.path))
-        if node.kind in _FIELDS:
-            m.addAction(icons.icon("edit"), "Edit metadata", lambda: self._edit(node))
-        if node.kind in ("project", "sample", "lot"):
-            m.addAction(icons.icon("edit"), "Rename  (F2)", lambda: self._start_rename(node))
-        m.addAction(icons.icon("open"), "Show in File Explorer", lambda: self._reveal(node.path))
-        if node.kind != "workspace":
-            m.addSeparator()
-            m.addAction(icons.icon("delete"), "Move to trash…", lambda: self.ask_delete(node))
+        for a in self.menu_actions(node):
+            if a is None:
+                m.addSeparator()
+            else:
+                m.addAction(icons.icon(a[1]), a[0], a[2])
         gp = anchor.mapToGlobal(pos) if pos is not None else anchor.mapToGlobal(anchor.rect().bottomLeft())
         m.exec(gp)
 
@@ -917,6 +1058,7 @@ class ProjectsPage(QWidget):
     def show_node(self, node: NodeRef, select_session: Optional[Path] = None) -> None:
         self._node = node
         self.details._root = str(self.state.root)
+        self.details.profile = self.profile
         self._gen += 1
         gen = self._gen
         self._loading = True
@@ -940,6 +1082,13 @@ class ProjectsPage(QWidget):
         self._toast("Could not open folder", msg.splitlines()[0], "danger")
         self._render_items()
 
+    def _contains_text(self, kind: str, n: int) -> str:
+        child = hui.child_kind(self.profile, kind)
+        if child is None or child == "session":
+            return f"{n} record{'s' if n != 1 else ''}" if hui.lot_mode(self.profile) else \
+                f"{n} session{'s' if n != 1 else ''}"
+        return hui.count_text(n, self.lbl(child))
+
     def _on_contents(self, gen: int, data: dict) -> None:
         if gen != self._gen:
             return
@@ -956,11 +1105,11 @@ class ProjectsPage(QWidget):
         self.op_filter.setVisible(self._node.kind == "lot" and len(ops) > 1)
         self._render_items()
         self._update_metrics(data)
-        self.details.show_node(self._node, data.get("meta", {}),
-                               {"Contains": f"{len(data['items'])} "
-                                            f"{_KIND_LABEL.get(_CHILD.get(self._node.kind, ''), 'item').lower()}"
-                                            f"{'s' if len(data['items']) != 1 else ''}"}
-                               if self._node.kind != "session" else None)
+        extra = None
+        if self._node.kind != "session":
+            extra = {"Contains": self._contains_text(self._node.kind, len(data["items"]))}
+        self.details.show_node(self._node, data.get("meta", {}), extra,
+                               acquisition=data.get("acquisition") or None)
         if self._pending_card is not None:
             self._select_card_path(self._pending_card)
             self._pending_card = None
@@ -969,25 +1118,35 @@ class ProjectsPage(QWidget):
         items, kind = data["items"], data["kind"]
         n = len(items)
         s = lambda k: sum(int(it.get(k, 0) or 0) for it in items)  # noqa: E731
+        L = lambda k: hui.plural(self.lbl(k))  # noqa: E731
+        lot_mode = hui.lot_mode(self.profile)
         if kind == "lot":
             gs = [it["g"] for it in items if it.get("g") is not None]
-            vals = [("Sessions", n, "", 0), ("Images", s("n_images"), "", 0),
+            vals = [("Images", s("n_images"), "", 0),
+                    ("Analysed", s("n_analysed"), "", 0),
                     ("Grains measured", s("grains"), "", 0),
                     ("Mean ASTM grain size", (sum(gs) / len(gs)) if gs else None,
                      "G" if gs else "n/a", 1)]
+            if not lot_mode:
+                vals[1] = ("Sessions", n, "", 0)
         elif kind == "sample":
-            vals = [("Lots", n, "", 0), ("Sessions", s("n_sessions"), "", 0),
+            vals = [(L("lot"), n, "", 0),
+                    ("Analysed images" if lot_mode else "Sessions",
+                     s("n_analysed") if lot_mode else s("n_sessions"), "", 0),
                     ("Images", s("n_images"), "", 0), ("Latest activity",
                      fmt_date_utc(max((it.get("created", "") for it in items), default=""),
                                   with_time=False) or "—", "", 0)]
         elif kind == "project":
-            vals = [("Samples", n, "", 0), ("Lots", s("n_lots"), "", 0),
-                    ("Sessions", s("n_sessions"), "", 0), ("Created",
-                     fmt_date_utc(data.get("meta", {}).get("created_utc", ""), with_time=False)
-                     or "—", "", 0)]
+            vals = [(L("sample"), n, "", 0), (L("lot"), s("n_lots"), "", 0),
+                    ("Images" if lot_mode else "Sessions",
+                     s("n_images") if lot_mode else s("n_sessions"), "", 0),
+                    ("Created", fmt_date_utc(data.get("meta", {}).get("created_utc", ""),
+                                             with_time=False) or "—", "", 0)]
         else:
-            vals = [("Projects", n, "", 0), ("Samples", s("n_samples"), "", 0),
-                    ("Lots", s("n_lots"), "", 0), ("Sessions", s("n_sessions"), "", 0)]
+            vals = [(L("project"), n, "", 0), (L("sample"), s("n_samples"), "", 0),
+                    (L("lot"), s("n_lots"), "", 0),
+                    ("Images" if lot_mode else "Sessions",
+                     s("n_images") if lot_mode else s("n_sessions"), "", 0)]
         for card, (lab, v, unit, dec) in zip(self.metrics, vals):
             card.set_label(lab)
             if isinstance(v, str):
@@ -997,29 +1156,40 @@ class ProjectsPage(QWidget):
 
     def _update_header(self, node: NodeRef, meta: dict) -> None:
         kind = node.kind
-        title = "All projects" if kind == "workspace" else node_display_name(node)
+        p = self.profile
+        lot_mode = hui.lot_mode(p)
+        title = f"All {hui.plural(self.lbl('project')).lower()}" if kind == "workspace" \
+            else node_display_name(node, p)
         sub = ""
         if kind == "workspace":
             sub = f"Every analysis is stored locally in {self.state.root}"
-        elif kind == "project":
-            sub = " · ".join(x for x in (meta.get("customer"), meta.get("description")) if x)
-        elif kind == "sample":
-            sub = " · ".join(x for x in (meta.get("material"), meta.get("alloy_grade"),
-                                         meta.get("heat_treatment")) if x)
+        elif kind in hui.LEVELS:
+            parts = []
+            for fd in hui.level_fields(p, kind):
+                v = meta.get(fd.key)
+                if v not in (None, ""):
+                    parts.append(f"{fd.label} {v}" if fd.kind in ("date", "number") else str(v))
+            sub = " · ".join(parts)
+        self.header.set_text(self.lbl(kind), title, sub)
+        child = hui.child_kind(p, kind)
+        self.btn_primary.set_icon_name("add")
+        if kind == "lot" and lot_mode:
+            self.btn_primary.setText(f"Open {self.lbl('lot')}")
+            self.btn_primary.set_icon_name("open")
+            self.btn_primary.setToolTip(f"Open this {self.lbl('lot')}'s images and results "
+                                        "in Analyze / Review")
         elif kind == "lot":
-            sub = " · ".join(x for x in (meta.get("supplier"),
-                                         f"received {meta['received_date']}" if meta.get("received_date") else "",
-                                         meta.get("notes")) if x)
-        self.header.set_text(_KIND_LABEL[kind], title, sub)
-        child = _CHILD.get(kind)
-        if kind == "lot":
             self.btn_primary.setText("New session")
-            self.btn_primary.setToolTip("Start a new analysis session in this lot (Ctrl+N)")
+            self.btn_primary.setToolTip(f"Start a new analysis session in this {self.lbl('lot')} "
+                                        "(Ctrl+N)")
         elif child:
-            self.btn_primary.setText(f"New {_KIND_LABEL[child].lower()}")
-            self.btn_primary.setToolTip(f"Create a {_KIND_LABEL[child].lower()} here")
+            self.btn_primary.setText(f"New {self.lbl(child)}")
+            self.btn_primary.setToolTip(f"Create a {self.lbl(child)} here")
         self.btn_secondary.setVisible(kind == "lot")
-        self.btn_secondary.setToolTip("Copy SEM image files into a new session in this lot")
+        self.btn_secondary.setText("Add images…" if lot_mode else "Import images…")
+        self.btn_secondary.setToolTip(
+            f"Copy SEM image files into this {self.lbl('lot')} (added to its images)"
+            if lot_mode else f"Copy SEM image files into a new session in this {self.lbl('lot')}")
         self.btn_more.setVisible(kind != "workspace")
 
     def _filtered_items(self) -> List[dict]:
@@ -1048,6 +1218,7 @@ class ProjectsPage(QWidget):
             items.sort(key=lambda it: (it.get("operator") or "~").lower())
         elif mode == 4:
             items.sort(key=lambda it: it.get("grains", 0), reverse=True)
+        items.sort(key=lambda it: not it.get("record"))       # the lot's own record first
         return items
 
     def _render_items(self) -> None:
@@ -1056,9 +1227,8 @@ class ProjectsPage(QWidget):
         items = self._filtered_items()
         total = len(self._contents["items"])
         kind = self._node.kind
-        child = _CHILD.get(kind, "item")
         self.count_lbl.setText(f"{len(items)} of {total}" if len(items) != total else
-                               f"{total} {_KIND_LABEL.get(child, 'item').lower()}{'s' if total != 1 else ''}")
+                               self._contains_text(kind, total))
         self._selected_card = None
         if not items:
             self._set_empty(kind, filtered=total > 0)
@@ -1066,7 +1236,7 @@ class ProjectsPage(QWidget):
             return
         cards = []
         for it in items:
-            c = NodeCard(it)
+            c = NodeCard(it, self.profile)
             c.clicked.connect(lambda c=c: self._card_clicked(c))
             c.double_clicked.connect(lambda c=c: self._card_open(c))
             cards.append(c)
@@ -1075,6 +1245,7 @@ class ProjectsPage(QWidget):
 
     def _set_empty(self, kind: str, filtered: bool) -> None:
         e = self.empty
+        L = self.lbl
         if filtered:
             e.title_label.setText("Nothing matches the filter")
             e.body_label.setText("Clear the filter box to see everything in this folder.")
@@ -1086,22 +1257,31 @@ class ProjectsPage(QWidget):
         _reconnect(e.action_button.clicked, e.action_triggered)
         e.action_button.set_icon_name("add")
         self.empty_second.setVisible(kind == "workspace")
+        chain = " › ".join(L(k) for k in hui.LEVELS)
         if kind == "workspace":
             e.title_label.setText("Set up your lab workspace")
-            e.body_label.setText("Analyses are stored in labelled folders — Project › Sample › Lot — "
+            e.body_label.setText(f"Analyses are stored in labelled folders — {chain} — "
                                  f"on this computer:\n{self.state.root}\n\nStart by creating your "
-                                 "first project (for example a customer, programme or alloy study).")
-            e.action_button.setText("Create first project")
+                                 f"first {L('project')}. The folder structure and names can be "
+                                 "changed in Settings ▸ Folder structure & naming.")
+            e.action_button.setText(f"Create first {L('project')}")
         elif kind == "project":
-            e.title_label.setText("No samples in this project yet")
-            e.body_label.setText("Add a sample (sample ID, material, grade, heat treatment).")
-            e.action_button.setText("New sample")
+            e.title_label.setText(f"No {hui.plural(L('sample'))} in this {L('project')} yet")
+            e.body_label.setText(f"Add a {L('sample')} by its {hui.id_label(self.profile, 'sample')}.")
+            e.action_button.setText(f"New {L('sample')}")
         elif kind == "sample":
-            e.title_label.setText("No lots for this sample yet")
-            e.body_label.setText("Add a lot by its lot number to group analysis sessions.")
-            e.action_button.setText("New lot")
+            e.title_label.setText(f"No {hui.plural(L('lot'))} for this {L('sample')} yet")
+            e.body_label.setText(f"Add a {L('lot')} by its {hui.id_label(self.profile, 'lot')}.")
+            e.action_button.setText(f"New {L('lot')}")
+        elif hui.lot_mode(self.profile):
+            e.title_label.setText(f"No images in this {L('lot')} yet")
+            e.body_label.setText(f"The SEM images of this {L('lot')}, their calibration and "
+                                 "results are stored in the folder itself.")
+            e.action_button.setText("Add images")
+            e.action_button.set_icon_name("import")
+            _reconnect(e.action_button.clicked, self.import_files)
         else:
-            e.title_label.setText("No sessions in this lot yet")
+            e.title_label.setText(f"No sessions in this {L('lot')} yet")
             e.body_label.setText("A session holds the SEM images of one sitting at the microscope, "
                                  "their calibration and results.")
             e.action_button.setText("New session")
@@ -1121,11 +1301,18 @@ class ProjectsPage(QWidget):
         node = NodeRef(it["kind"], it["path"])
         extra = None
         if it["kind"] == "session":
+            if it.get("record"):
+                node = NodeRef("lot", it["path"])
             extra = {"Images": f"{it['n_analysed']} of {it['n_images']} analysed",
                      "Grains": fmt_int(it.get("grains", 0))}
             if it.get("g") is not None:
                 extra["ASTM grain size"] = f"G {fmt_opt(it['g'], 1)}"
-        self.details.show_node(node, it.get("meta", {}), extra)
+        meta = it.get("meta", {})
+        acq = None
+        if node.kind == "lot":
+            meta = hui.read_meta("lot", node.path)
+            acq = hui.read_meta("session", node.path) if hui.lot_mode(self.profile) else None
+        self.details.show_node(node, meta, extra, acquisition=acq)
 
     def _select_card_path(self, path: Path) -> None:
         for c in self.cards():
@@ -1136,7 +1323,7 @@ class ProjectsPage(QWidget):
 
     def _card_open(self, card: NodeCard) -> None:
         it = card.item
-        if it["kind"] == "session":
+        if it["kind"] == "session" or (it["kind"] == "lot" and hui.lot_mode(self.profile)):
             self.open_session_requested.emit(it["path"])
         else:
             self.state.set_node(NodeRef(it["kind"], it["path"]))
@@ -1145,9 +1332,12 @@ class ProjectsPage(QWidget):
     def _primary_action(self) -> None:
         node = self._node or NodeRef("workspace", self.state.root)
         if node.kind == "lot":
-            self.new_session_requested.emit(self._prefill(node))
-        elif node.kind in _CHILD:
-            self._create_under(node, _CHILD[node.kind])
+            if hui.lot_mode(self.profile):
+                self.open_session_requested.emit(node.path)
+            else:
+                self.new_session_requested.emit(self._prefill(node))
+        elif hui.child_kind(self.profile, node.kind):
+            self._create_under(node, hui.child_kind(self.profile, node.kind))
 
     def start_create(self, kind: str) -> None:
         node = self._node or NodeRef("workspace", self.state.root)
@@ -1159,31 +1349,32 @@ class ProjectsPage(QWidget):
     def _create_under(self, parent: NodeRef, kind: str) -> None:
         if self._node != parent:
             self.state.set_node(parent)
-        where = "in " + (node_display_name(parent) if parent.kind != "workspace" else "the workspace")
-        self.form.open_for(kind, where)
+        where = "in " + (node_display_name(parent, self.profile, crumb=True)
+                         if parent.kind != "workspace" else "the workspace")
+        self.form.open_for(kind, where, self.profile)
         self._create_parent = parent
 
     def _create_node(self, vals: dict) -> None:
         parent = getattr(self, "_create_parent", None) or NodeRef("workspace", self.state.root)
         ws = self.state.workspace
+        kind = self.form.kind
+        vals = dict(vals)
         try:
-            if self.form.kind == "project":
-                name = vals.pop("name")
-                newp = ws.create_project(name, **vals)
-            elif self.form.kind == "sample":
-                sid = vals.pop("sample_id")
-                newp = ws.create_sample(parent.path, sid, **vals)
+            ident = vals.pop(hui.ID_KEYS[kind])
+            if kind == "project":
+                newp = ws.create_project(ident, **vals)
+            elif kind == "sample":
+                newp = ws.create_sample(parent.path, ident, **vals)
             else:
-                ln = vals.pop("lot_number")
-                newp = ws.create_lot(parent.path.parent, parent.path, ln, **vals)
+                newp = ws.create_lot(parent.path.parent, parent.path, ident, **vals)
         except Exception as e:
             self.form.error.setText(str(e))
             self.form.error.show()
             return
         self.form.hide()
-        self._toast(f"{_KIND_LABEL[self.form.kind]} created", str(newp.name), "success")
+        self._toast(f"{self.lbl(kind)} created", str(newp.name), "success")
         self._pending_select = newp
-        self._node = NodeRef(self.form.kind, newp)
+        self._node = NodeRef(kind, newp)
         self.state.set_node(self._node)
         self.reload()
 
@@ -1197,11 +1388,13 @@ class ProjectsPage(QWidget):
         node = node or self._node
         if node is None or node.kind == "workspace":
             return
-        name = node_display_name(node)
+        name = node_display_name(node, self.profile)
+        L = self.lbl
+        inner = "its images and results" if hui.lot_mode(self.profile) else "every session in it"
         what = {"session": "this session with all its images and results",
-                "lot": "this lot and every session in it",
-                "sample": "this sample, its lots and sessions",
-                "project": "this project and everything inside it"}[node.kind]
+                "lot": f"this {L('lot')} and {inner}",
+                "sample": f"this {L('sample')} and everything inside it",
+                "project": f"this {L('project')} and everything inside it"}[node.kind]
         self.confirm.ask(f"Move “{name}” to the trash?",
                          f"This moves {what} into the workspace’s .trash folder. Nothing is "
                          "permanently deleted — Undo on the next message restores it.",
@@ -1253,23 +1446,12 @@ class ProjectsPage(QWidget):
     def _save_meta(self, node: NodeRef, vals: dict) -> None:
         ws = self.state.workspace
         try:
-            if node.kind == "project":
-                new_name = vals.get("name", "")
-                ws.update_project_meta(node.path, **{k: v for k, v in vals.items() if k != "name"})
-                if new_name and new_name != (self.details.meta.get("name") or ""):
-                    self._rename(node, new_name)
-                    return
-            elif node.kind == "sample":
-                sid = vals.get("sample_id", "")
-                ws.update_sample_meta(node.path, **{k: v for k, v in vals.items() if k != "sample_id"})
-                if sid and sid != self.details.meta.get("sample_id"):
-                    self._rename(node, sid)
-                    return
-            elif node.kind == "lot":
-                ln = vals.get("lot_number", "")
-                ws.update_lot_meta(node.path, **{k: v for k, v in vals.items() if k != "lot_number"})
-                if ln and ln != self.details.meta.get("lot_number"):
-                    self._rename(node, ln)
+            if node.kind in hui.LEVELS:
+                key = hui.ID_KEYS[node.kind]
+                new_id = vals.get(key, "")
+                hui.update_level_meta(ws, node.kind, node.path, vals)
+                if new_id and new_id != (self.details.meta.get(key) or ""):
+                    self._rename(node, new_id)
                     return
             elif node.kind == "session":
                 ws.update_session_meta(node.path, **vals)
@@ -1283,15 +1465,16 @@ class ProjectsPage(QWidget):
             self._toast("Could not save", str(e), "danger")
             return
         self.details.stop_edit()
-        self._toast("Details saved", node_display_name(node), "success")
+        self._toast("Details saved", node_display_name(node, self.profile), "success")
         self.show_node(self._node, select_session=node.path if node.kind == "session" else None)
         if node.kind != "session":
             self.reload()
 
     def import_files(self) -> None:
         """Pick image files and import them into the selected lot."""
-        paths, _ = QFileDialog.getOpenFileNames(self, "Import SEM images into this lot", "",
-                                                "SEM images (*.tif *.tiff *.png *.jpg *.jpeg *.bmp)")
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, f"Add SEM images to this {self.lbl('lot')}", "",
+            "SEM images (*.tif *.tiff *.png *.jpg *.jpeg *.bmp)")
         if paths:
             self._import(paths, label="Imported")
 
@@ -1315,25 +1498,35 @@ class ProjectsPage(QWidget):
             self.import_requested.emit(paths)
             return
         lot = node.path
+        s = self.state.session
+        if s is not None and s.path == lot:
+            # the lot is open: append through the open record (stays in sync)
+            self.state.add_images(paths)
+            return
         pm = read_json(lot.parent.parent / "project.json")
         sm = read_json(lot.parent / "sample.json")
         lm = read_json(lot / "lot.json")
         root = self.state.root
+        lot_mode = hui.lot_mode(self.profile)
+        run_label = None if lot_mode else label
 
         def work():
             ws = Workspace(root)
             return import_loose_images(ws, paths, pm.get("name") or lot.parent.parent.name,
                                        sm.get("sample_id") or lot.parent.name,
-                                       lm.get("lot_number") or lot.name, label,
+                                       lm.get("lot_number") or lot.name, run_label,
                                        catalog=Catalog(root))
 
         def done(ref):
-            self._toast("Images imported", f"{len(paths)} image(s) → new session “{label}”.",
+            where = f"{self.lbl('lot')} {lm.get('lot_number', '')}" if lot_mode \
+                else f"new session “{label}”"
+            self._toast("Images imported", f"{len(paths)} image(s) → {where}.",
                         "success", "Open", lambda: self.open_session_requested.emit(ref.path))
             self.show_node(node, select_session=ref.path)
+            self.reload()
 
-        self._toast("Importing…", f"Copying {len(paths)} image(s) into Lot {lm.get('lot_number', '')}",
-                    "info")
+        self._toast("Importing…", f"Copying {len(paths)} image(s) into "
+                                  f"{self.lbl('lot')} {lm.get('lot_number', '')}", "info")
         run_task(work, on_done=done,
                  on_error=lambda m: self._toast("Import failed", m.splitlines()[0], "danger"))
 
