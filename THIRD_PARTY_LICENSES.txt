@@ -59,6 +59,10 @@ Pillow
 Licence: HPND (Historical Permission Notice and Disclaimer)
 Upstream: https://python-pillow.org/
 --------------------------------------------------------------------------
+tifffile (installed as a scikit-image dependency)
+Licence: BSD 3-Clause
+Upstream: https://github.com/cgohlke/tifffile
+--------------------------------------------------------------------------
 PyTorch (torch, torchvision) — CPU-only build
 Licence: BSD 3-Clause
 Upstream: https://pytorch.org/

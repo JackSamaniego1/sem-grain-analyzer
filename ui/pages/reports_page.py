@@ -912,7 +912,11 @@ class ReportsPage(QWidget):
                 for x in (self.btn_both, self.btn_xlsx, self.btn_pptx):
                     x.set_loading(False)
                 self._set_busy("")
-                self._toast("Export failed", msg.splitlines()[0], "danger")
+                first = msg.splitlines()[0] if msg else "Unknown error"
+                if first.startswith("PermissionError") or "Permission denied" in first:
+                    first = ("The file is open in another program (e.g. Excel or "
+                             "PowerPoint). Close it and export again, or use Save as.")
+                self._toast("Export failed", first, "danger")
 
             run_task(rb.render_outputs, model_dict, [jobs[i]], on_done=done, on_error=failed)
 

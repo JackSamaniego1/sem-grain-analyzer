@@ -142,10 +142,22 @@ def analyze_image(image_bgr: np.ndarray, px_per_um: float = 0.0,
         ox, oy = x, y
 
     det = GrainDetector()
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    auto = det._auto_crop(gray)  # identical call to the one analyze() makes
     result = det.analyze(img, px_per_um=px_per_um, params=params,
                          progress_callback=progress)
+    # The detector reports the crop it actually applied (white borders and/or
+    # the SEM info bar), as (r0, c0, r1, c1) in scan-area coordinates.
+    auto = getattr(result, "auto_crop_rect", None)
+
+    # Info-bar rectangles are in scan-area coordinates: shift to full frame.
+    def _shift(r):
+        return (r[0] + ox, r[1] + oy, r[2], r[3]) if r else r
+    if getattr(result, "info_bar_rect", None):
+        result.info_bar_rect = _shift(tuple(result.info_bar_rect))
+    ib = getattr(result, "info_bar", None)
+    if isinstance(ib, dict):
+        for key in ("analysis_rect", "bar_rect"):
+            if ib.get(key):
+                ib[key] = list(_shift(tuple(ib[key])))
 
     if discard_border:
         discard_border_grains(result)

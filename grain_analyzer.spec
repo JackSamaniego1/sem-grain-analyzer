@@ -51,6 +51,7 @@ a = Analysis(
         'xlsxwriter','pptx','qtawesome',
         'PySide6.QtCore','PySide6.QtGui','PySide6.QtWidgets',
         'core.grain_detector','core.scale_bar','core.offline_guard',
+        'core.infobar','core.sem_metadata',
         'ui.app_shell','ui.calibration_dialog','ui.scan_area_dialog',
         'reports.excel_renderer','reports.pptx_renderer',
         'segment_anything',

@@ -36,6 +36,7 @@ import logging
 
 from core.metrics import compute_statistics
 from core.astm import update_astm
+from core.infobar import detect_info_bar
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,19 @@ class AnalysisResult:
     # primary grain-size number (None when uncalibrated).
     astm: dict = field(default_factory=dict)
     astm_g: Optional[float] = None
+    # Auto-crop / SEM data bar (DET-05).  All in the coordinates of the
+    # image passed to GrainDetector.analyze():
+    #   auto_crop_rect  (r0, c0, r1, c1) of the analysed sub-image, or None
+    #                   when the whole image was analysed; label_image,
+    #                   binary_image, valid_mask and grain coordinates are
+    #                   relative to (r0, c0).
+    #   info_bar_rect   (x, y, w, h) of the detected data bar (bottom bar
+    #                   preferred), or None.
+    #   info_bar        detect_info_bar(...).to_dict() (analysis_rect,
+    #                   bar_rect, confidence, bars) or {}.
+    auto_crop_rect: Optional[Tuple[int, int, int, int]] = None
+    info_bar_rect: Optional[Tuple[int, int, int, int]] = None
+    info_bar: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -149,6 +163,10 @@ class DetectionParams:
     # multiple of the mean ECD.
     astm_method: str = "both"
     astm_pattern_spacing_factor: float = 2.0
+    # DET-05: detect the SEM data/info bar (full-width uniform band with
+    # sparse text / scale bar, bottom or top) and exclude it from analysis
+    # even when no scan area is drawn.  See core/infobar.py.
+    auto_exclude_info_bar: bool = True
 
 
 # ======================================================================
@@ -366,6 +384,16 @@ def discard_border_grains(result, image_bgr=None, detector=None):
     return result
 
 
+def _offset_info_bar(info, dx, dy):
+    """Shift every rectangle of an InfoBarResult by (dx, dy)."""
+    x, y, w, h = info.analysis_rect
+    info.analysis_rect = (x + dx, y + dy, w, h)
+    for b in info.bars:
+        bx, by, bw, bh = b.rect
+        b.rect = (bx + dx, by + dy, bw, bh)
+    return info
+
+
 class GrainDetector:
 
     def __init__(self):
@@ -406,7 +434,11 @@ class GrainDetector:
         progress(2, "Preprocessing...")
         gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
 
-        crop_rect = self._auto_crop(gray)
+        crop_rect, info = self.auto_crop_details(gray, params)
+        result.auto_crop_rect = crop_rect
+        if info is not None:
+            result.info_bar = info.to_dict()
+            result.info_bar_rect = info.bar_rect
         if crop_rect is not None:
             r0, c0, r1, c1 = crop_rect
             gray = gray[r0:r1, c0:c1]
@@ -485,7 +517,63 @@ class GrainDetector:
     # Auto-crop
     # ==================================================================
 
-    def _auto_crop(self, gray):
+    def _auto_crop(self, gray, params=None):
+        """(r0, c0, r1, c1) of the region to analyse, or None for the whole
+        image.  ``params=None`` means default DetectionParams (info-bar
+        exclusion ON) — this is the legacy call ui/workers.py makes; prefer
+        ``AnalysisResult.auto_crop_rect`` after analyze()."""
+        return self.auto_crop_details(gray, params)[0]
+
+    def auto_crop_details(self, gray, params=None):
+        """Return ``(crop_rect, info_bar_result)``.
+
+        ``crop_rect`` is (r0, c0, r1, c1) in ``gray`` coordinates or None;
+        ``info_bar_result`` is the :class:`core.infobar.InfoBarResult`
+        (rectangles in ``gray`` coordinates) or None.
+
+        Order: the data bar is looked for on the full frame first; the
+        legacy white-border crop is then applied inside the micrograph
+        area.  If no bar is found on the full frame but a white border is
+        cropped, the bar search is repeated inside the cropped region (an
+        SEM image pasted on a white page).
+        """
+        if gray.ndim == 3:
+            gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+        h, w = gray.shape
+        use_bar = True if params is None else bool(
+            getattr(params, "auto_exclude_info_bar", True))
+        info = None
+        r0, c0, r1, c1 = 0, 0, h, w
+        if use_bar:
+            try:
+                info = detect_info_bar(gray)
+            except Exception:  # never let bar detection break analysis
+                logger.exception("info-bar detection failed")
+                info = None
+            if info is not None:
+                x, y, rw, rh = info.analysis_rect
+                r0, c0, r1, c1 = y, x, y + rh, x + rw
+        sub = gray[r0:r1, c0:c1]
+        white = self._white_border_crop(sub)
+        if white is not None:
+            wr0, wc0, wr1, wc1 = white
+            r0, c0, r1, c1 = r0 + wr0, c0 + wc0, r0 + wr1, c0 + wc1
+            if use_bar and info is None:
+                try:
+                    inner = detect_info_bar(gray[r0:r1, c0:c1])
+                except Exception:
+                    logger.exception("info-bar detection failed")
+                    inner = None
+                if inner is not None:
+                    info = _offset_info_bar(inner, c0, r0)
+                    x, y, rw, rh = info.analysis_rect
+                    r0, c0, r1, c1 = y, x, y + rh, x + rw
+        if (r0, c0, r1, c1) == (0, 0, h, w):
+            return None, info
+        return (int(r0), int(c0), int(r1), int(c1)), info
+
+    def _white_border_crop(self, gray):
+        """Legacy (v2) white-border auto-crop."""
         h, w = gray.shape
         if h < 50 or w < 50:
             return None
