@@ -69,3 +69,14 @@
 - Full suite: **544 passed / 0 failed**. Code review: APPROVE. PyInstaller local build dry run: PASS (exe 51.6 MB, dist 922 MB); NSIS untested (makensis not installed locally); SAM checkpoint absent locally (release build requires it).
 - **User decisions 2026-09-24** (recorded in 05_DECISIONS.md as D-20 through D-23): Spec limits & calibration check optional default off; INN-30 cancelled; overlay shows full original image; newer failed supersedes older pass.
 - Next: UI for INN-02/29 (spec editor, calibration dialog, Settings controls); lasso select/merge/split (INN-04); UI-08 About/DPI; journey tests; Phase 6 release.
+
+## 2026-09-24 — UI-05 grain editing, INN-02/29 UI, UI-08 About/branding done (5a1cd42)
+- **UI-05 grain editing complete (5a1cd42)**: Lasso select (L), merge touching grains (M), cut/split grains (C), undo/redo, persisted to grain_edits.json, honoured by exports/lot results. core/grain_edit.py handles replay; ui/canvas/edit_actions.py wires keybindings. Re-analysing discards edits (same as manual removals). Re-analysing has "Remove grain edits?" prompt (UX D-24).
+- **INN-02 UI complete (5a1cd42)**: Spec editor in project/part settings (project ⋮ menu "Spec limits (optional)…"). PASS/FAIL/INCONCLUSIVE verdict badge rendered only on Lot result card when a spec applies; verdict passed to Excel/PPTX exports. Settings: default off (no effect on analysis).
+- **INN-29 UI complete (5a1cd42)**: Calibration check dialog (project settings "Check calibration…"), status chip in app_shell.status_bar (CalStatusChip), Settings toggle "Calibration verification" default off. Per-instrument check records after first check. Settings required: 5 fields, 10% target %RA.
+- **UI-08 complete (5a1cd42)**: About dialog (offline statement, licence viewer), code-drawn icon (ui/design/branding.py, ORGANIZATION_NAME constant for D-11), shortcut cheat sheet (L/M/C/V grain edits), min window height 640 enforced.
+- **FIX-05 done (6bf41ff)**: Overlay export shows full original frame incl. SEM info bar, thin dashed outline around measured region.
+- Full suite: **595 passed / 0 failed**. Code review: APPROVE.
+- **Follow-ups identified**: Build resources icon generation (icon.ico via ui.design.branding), ReportModel calibration field (metadata), CalStatusChip mount in status bar + wire apply_to_session, DPI/layout (toolbar overlap <1400px, Projects card truncation, Analyze stat labels clipped at 1100px), cleanup (grain_edit.replay_edits unused, THIRD_PARTY_LICENSES.txt remove "CLAUDE.md" mention).
+- **In progress**: Demo-workspace + PowerPoint overview deck for user's boss (agent-built, scratch/demo).
+- **Next**: Finish boss deck; address follow-ups above; second innovator pass; Phase 6 (journey tests, README v3, NSIS test, merge to main, tag v3.0.0).

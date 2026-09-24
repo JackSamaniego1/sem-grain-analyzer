@@ -59,10 +59,10 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 | UI-02 | `ui/widgets/` component library with animations | ui-designer | done | 7c17b7d |
 | UI-03 | `ui/app_shell.py`: rail nav, stacked pages with transitions, breadcrumb, status bar, toasts | ui-designer | done | 04a65b7 |
 | UI-04 | Analyze page: parameter redesign, presets, mode cards, inline progress | ui-designer | done | 04a65b7 |
-| UI-05 | Review page: canvas upgrades (zoom about cursor, minimap, hover metrics, multi-select, lasso, merge/split, undo/redo) | ui-designer | doing | done except lasso select + merge/split (INN-04) |
+| UI-05 | Review page: canvas upgrades (zoom about cursor, minimap, hover metrics, multi-select, lasso, merge/split, undo/redo) | ui-designer | done | 5a1cd42: lasso (L), merge (M), split (C), undo, persisted grain_edits, exported+audit |
 | UI-06 | Results dashboard: animated stat cards, per-image comparison table, charts | ui-designer | done | 04a65b7 |
 | UI-07 | Settings page, onboarding/empty states, shortcut overlay (`?`) | ui-designer | doing | settings page + shortcut overlay done; onboarding polish remains |
-| UI-08 | Splash, About, icon/branding, DPI checks | ui-designer | todo | splash restyled; About/icon/branding + DPI 150/200% check remain |
+| UI-08 | Splash, About, icon/branding, DPI checks | ui-designer | done | 5a1cd42: About dialog, code-drawn icon (branding.py), shortcut sheet, min window height 640 |
 | UI-09 | Delete `ui/main_window.py` after parity | ui-designer | done | 173a8cf — legacy UI modules deleted |
 | HIER-02 | Fix: New Session wizard doesn't relabel when Settings "Folder structure" change | ui-designer | done | 276d579 |
 | HIER-03 | Fix: New Session wizard date-field dropdown arrow slightly clipped | ui-designer | done | 276d579 |
@@ -75,11 +75,11 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 | ID | Task | Owner | Status | Notes |
 |----|------|-------|--------|-------|
 | INN-run | Run innovator at session start; approve ≥1 idea per session | coordinator | done | 06493ff: 07_IDEAS_BACKLOG.md rewritten (40 ideas, top 25 active); INN-02, INN-26, INN-27, INN-29, INN-30 specs approved |
-| INN-02 | Spec limits PASS/FAIL/INCONCLUSIVE | data-architect + ui-designer | done | 924f47f: backend (data/specs.py, ILAC-G8 verdict, badges optional default off); UI todo |
+| INN-02 | Spec limits PASS/FAIL/INCONCLUSIVE | data-architect + ui-designer | done | 5a1cd42: spec editor in project settings, verdict badge on Lot card, optional default off |
 | INN-05 | Calibration from SEM TIFF metadata (Zeiss/FEI/JEOL/Hitachi/TESCAN) | detection-engineer | done | 1d6df50: metadata auto-calibration with undo toast |
 | INN-26 | ASTM E112/E1382 compliance engine (detection-engineer, depends DET-04) | detection-engineer | done | b45fb7f |
 | INN-27 | Lot statistics + 95% CI + fields-needed (report-engineer+data-architect, depends DATA-03, INN-26) | report-engineer + data-architect | done | 924f47f: UI Lot result card (Include checkbox + reason); backend ce833e5. 544 tests. |
-| INN-29 | Calibration verification vs reference standard | detection-engineer | done | 924f47f: backend (core/cal_verify.py FFT pitch, optional default off); UI todo |
+| INN-29 | Calibration verification vs reference standard | detection-engineer | done | 5a1cd42: check dialog, status chip, Settings toggle, required fields/target %RA |
 | INN-30 | Approval + SHA-256 sealed sign-off, local only | data-architect | cancelled | User request 2026-09-24: not needed for v3.0.0. |
 
 ## Fixes
@@ -90,6 +90,11 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 | FIX-03 | Delete key still routed via app_shell.py instead of context menu | ui-designer | done | 924f47f |
 | FIX-04 | trash_node builds a second Catalog during batched delete; could pass one through | data-architect | done | 924f47f |
 | FIX-05 | Overlay export must show full original image incl. SEM info bar | detection-engineer | done | 6bf41ff: core/overlay_compose.py compose_full_overlay; thin dashed outline around measured region |
+| FIX-06 | Build: resources/icon.ico generation via `python -m ui.design.branding resources\icon.ico` | build-engineer | todo | hookinto BUILD_WINDOWS.bat + .github/workflows/build.yml |
+| FIX-07 | ReportModel: add calibration field (from metadata["calibration"]); render in Excel/PPTX | report-engineer | todo | INN-29 payload sits in metadata only; not shown in exports |
+| FIX-08 | Mount CalStatusChip in app_shell.status_bar; wire apply_to_session; verdict badges on tree nodes | ui-designer | todo | INN-29 UI wired to dialog/Settings; chip placement + tree integration remain |
+| FIX-09 | DPI/layout review: toolbar overlaps view buttons <1400px; Projects card titles truncated ("Ses...n A"); Analyze stat labels clipped at 1100px | ui-designer | todo | D-24 layout polish |
+| FIX-10 | Cleanup: core/grain_edit.replay_edits unused (wire or remove); THIRD_PARTY_LICENSES.txt remove "CLAUDE.md" mention | code-reviewer | todo | minor tech debt |
 
 ## Code Review
 | ID | Task | Owner | Status | Notes |
