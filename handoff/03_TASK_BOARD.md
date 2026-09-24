@@ -67,6 +67,7 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 | HIER-02 | Fix: New Session wizard doesn't relabel when Settings "Folder structure" change | ui-designer | todo | Follow-up from HIER-01 UI |
 | HIER-03 | Fix: New Session wizard date-field dropdown arrow slightly clipped | ui-designer | todo | Follow-up from HIER-01 UI |
 | HIER-04 | Acceptance check: Excel/PowerPoint export hierarchy labels + export basename vs HIER-01 spec | qa-engineer | todo | Follow-up from HIER-01 UI; re-verify export format |
+| UI-09 | Projects browser file management (user request 2026-09-24): right-click menu on every folder/image (Delete → trash with undo, Move to…, Rename, Open); per-row checkbox to select items; multi-select (checkbox, Ctrl/Shift-click) with a selection action bar "N selected — Delete · Move to… · Clear"; Move to… opens a picker of valid destination folders (same level only, e.g. images → another lot). Deleting must be obvious, not hidden. | ui-designer + data-architect | todo | **Priority: next after HIER-04.** Uses existing data-layer trash/restore. Tests required. |
 
 ## Phase 5 — Innovation (populated from 07_IDEAS_BACKLOG.md)
 | ID | Task | Owner | Status | Notes |
