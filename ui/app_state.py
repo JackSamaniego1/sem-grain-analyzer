@@ -24,7 +24,7 @@ from core.metrics import compute_statistics
 from data import settings as data_settings
 from data.catalog import Catalog
 from data.models import (
-    AppSettings, ImageEntry, SessionMeta, read_json, write_json_atomic,
+    CLEAR, AppSettings, ImageEntry, SessionMeta, read_json, write_json_atomic,
 )
 from data.session_io import load_session, update_session
 from data.workspace import Workspace
@@ -218,14 +218,57 @@ def _counts_from(excluded: Dict[int, List[str]]) -> Dict[str, int]:
     return c
 
 
-def _image_dict(si, bgr, pf_images: dict) -> dict:
-    """Worker-thread: rebuild raw + filtered results for one saved image."""
+def _derive_excluded(res, bgr, manual, opts, params) -> Dict[int, List[str]]:
+    """Worker-thread: which saved grains were excluded, and why.
+
+    The saved label image keeps every raw grain while grains.json holds only
+    the kept ones, so the excluded ids are the labels that are not kept.  The
+    reasons are recomputed by running the saved filter options once more
+    (preview ASTM — only the exclusions are used); labels the filters do not
+    account for are ignored."""
+    lab = res.label_image
+    if lab is None:
+        return {}
+    kept = {int(g.grain_id) for g in res.grains}
+    ids = {int(i) for i in np.unique(lab).tolist()} - {0} - kept
+    if not ids:
+        return {}
+    manual = {int(i) for i in manual}
+    raw = remeasure_excluded(res, ids)
+    try:
+        out = filter_image(raw, bgr, opts, frozenset(manual & ids), preview_params(params))
+        reasons = out.get("excluded") or {}
+    except Exception:
+        reasons = {}
+    excluded = {}
+    for gid in sorted(ids):
+        rs = list(reasons.get(gid) or [])
+        if gid in manual and "manual" not in rs:
+            rs.append("manual")
+        if rs:
+            excluded[gid] = rs
+    return excluded
+
+
+def _image_dict(si, bgr, legacy: Optional[dict] = None, opts: Optional[PostFilterOptions] = None,
+                params: Optional[DetectionParams] = None) -> dict:
+    """Worker-thread: rebuild raw + filtered results for one saved image.
+
+    Filter state comes from the manifest's first-class fields (DATA-09):
+    ``filters_override`` / ``manual_excluded`` per image.  ``legacy`` is the
+    pre-DATA-09 ``detection_params["post_filters"]["images"][name]`` entry,
+    whose ``excluded`` map (with reasons) is used when present."""
     res = si.result if bgr is not None else None
-    if res is not None and res.label_image is not None and bgr is not None \
-            and res.label_image.shape[:2] != bgr.shape[:2]:
+    if res is not None and res.label_image is not None and bgr is not None             and res.label_image.shape[:2] != bgr.shape[:2]:
         res.label_image = None  # inconsistent file; keep the numbers only
-    info = pf_images.get(si.filename, {}) or {}
-    excluded = {int(k): list(v) for k, v in (info.get("excluded") or {}).items()}
+    entry = si.entry
+    manual = [int(i) for i in (getattr(entry, "manual_excluded", None) or [])]
+    override = getattr(entry, "filters_override", None)
+    legacy = legacy or {}
+    excluded = {int(k): list(v) for k, v in (legacy.get("excluded") or {}).items()}
+    if not excluded and res is not None and bgr is not None:
+        use = options_from_dict(override) if override else (opts or PostFilterOptions())
+        excluded = _derive_excluded(res, bgr, manual, use, params or DetectionParams())
     raw = None
     if res is not None:
         raw = remeasure_excluded(res, excluded.keys()) if excluded else res
@@ -234,22 +277,24 @@ def _image_dict(si, bgr, pf_images: dict) -> dict:
             res = _copy.copy(res)
             res.label_image = kept_labels(res.label_image, list(excluded))
     return dict(filename=si.filename, path=si.path, bgr=bgr, result=res, raw=raw,
-                excluded=excluded, manual=[int(i) for i in info.get("manual", []) or []],
-                override=info.get("options"),
-                thumb=thumb_qimage(bgr), scan_rect=si.entry.scan_rect,
-                px=float(si.entry.px_per_um or 0.0), notes=si.entry.notes)
+                excluded=excluded, manual=manual, override=override,
+                thumb=thumb_qimage(bgr), scan_rect=entry.scan_rect,
+                px=float(entry.px_per_um or 0.0), notes=entry.notes)
 
 
 def _load_session_bundle(path: Path) -> dict:
     """Worker-thread: read manifest, every image, every saved result."""
     ls = load_session(path)
-    pf = (ls.manifest.detection_params or {}).get("post_filters", {}) or {}
-    pf_images = pf.get("images", {}) or {}
+    m = ls.manifest
+    legacy = ((m.detection_params or {}).get("post_filters", {}) or {}).get("images", {}) or {}
+    params = params_from_dict({k: v for k, v in (m.detection_params or {}).items()
+                               if k != "post_filters"})
+    opts = options_from_dict(m.filters) if m.filters else default_options(m.scan_rect)
     out = []
     for si in ls.images:
         bgr = read_image(si.path) if si.path.exists() else None
-        out.append(_image_dict(si, bgr, pf_images))
-    return dict(loaded=ls, images=out, post_filters=pf)
+        out.append(_image_dict(si, bgr, legacy.get(si.filename), opts, params))
+    return dict(loaded=ls, images=out, filters=dict(m.filters or {}))
 
 
 def _load_new_images(session_path: Path, known: set) -> List[dict]:
@@ -260,7 +305,7 @@ def _load_new_images(session_path: Path, known: set) -> List[dict]:
         if si.filename in known:
             continue
         bgr = read_image(si.path) if si.path.exists() else None
-        out.append(_image_dict(si, bgr, {}))
+        out.append(_image_dict(si, bgr))
     return out
 
 
@@ -324,6 +369,51 @@ class ExcludeGrainsCommand(QUndoCommand):
 DeleteGrainsCommand = ExcludeGrainsCommand  # backwards-compatible name
 
 
+class RestoreGrainsCommand(QUndoCommand):
+    """Put hand-removed grains back (e.g. re-ticked on the Reports page);
+    undo removes them again.  Filter exclusions are not touched."""
+
+    def __init__(self, state: "AppState", uid: int, grain_ids: List[int]) -> None:
+        super().__init__()
+        self.state = state
+        self.uid = uid
+        doc = state.session.image(uid) if state.session else None
+        manual = doc.manual if doc else set()
+        self.ids = [int(g) for g in grain_ids if int(g) in manual]
+        n = len(self.ids)
+        self.setText(f"Restore {n} grain{'s' if n != 1 else ''}")
+
+    def is_empty(self) -> bool:
+        return not self.ids
+
+    def _doc(self) -> Optional[ImageDoc]:
+        return self.state.session.image(self.uid) if self.state.session else None
+
+    def redo(self) -> None:
+        doc = self._doc()
+        if doc is None:
+            return
+        doc.manual -= set(self.ids)
+        for g in self.ids:
+            rs = [r for r in doc.excluded.get(g, []) if r != "manual"]
+            if rs:
+                doc.excluded[g] = rs
+            else:
+                doc.excluded.pop(g, None)
+        self.state._manual_changed(doc)
+
+    def undo(self) -> None:
+        doc = self._doc()
+        if doc is None:
+            return
+        doc.manual |= set(self.ids)
+        for g in self.ids:
+            doc.excluded.setdefault(g, [])
+            if "manual" not in doc.excluded[g]:
+                doc.excluded[g].append("manual")
+        self.state._manual_changed(doc)
+
+
 # ======================================================================
 # AppState
 # ======================================================================
@@ -344,6 +434,7 @@ class AppState(QObject):
     calibration_changed = Signal()
     save_state_changed = Signal(str, str)        # state, detail
     message = Signal(str, str, str)              # title, body, severity (toasts)
+    about_to_flush = Signal()                    # pages persist their own pending edits
 
     def __init__(self, settings_path: Optional[Path] = None,
                  parent: Optional[QObject] = None) -> None:
@@ -451,12 +542,11 @@ class AppState(QObject):
         if not params:
             params = params_to_dict(self.default_params())
         scan = tuple(m.scan_rect) if m.scan_rect else None
-        pf = bundle.get("post_filters") or {}
+        pf = bundle.get("filters") or {}
         doc = SessionDoc(path=path, meta=m, px_per_um=float(m.px_per_um or 0.0),
                          scan_rect=scan, params=params,
-                         filters=options_from_dict(pf["options"]) if pf.get("options")
-                         else default_options(scan),
-                         filters_touched=bool(pf.get("options")),
+                         filters=options_from_dict(pf) if pf else default_options(scan),
+                         filters_touched=bool(pf),
                          project_meta=ls.project_meta or {}, sample_meta=ls.sample_meta or {},
                          lot_meta=ls.lot_meta or {})
         for d in bundle["images"]:
@@ -577,8 +667,24 @@ class AppState(QObject):
             if im is None:
                 return
             im.px_override = float(px_per_um)
-            if im.result is not None:
-                self._dirty.add(uid)
+            self._meta_dirty = True        # per-image fields travel with every save
+        self.calibration_changed.emit()
+        self.schedule_save()
+
+    def reset_image_calibration(self, uid) -> None:
+        """Drop an image's own scale: it follows the session scale again
+        (persisted as ``CLEAR``)."""
+        self.set_calibration(0.0, uid)
+
+    def reset_image_scan_rect(self, uid) -> None:
+        """Drop an image's own scan area: it follows the session's again."""
+        if self.session is None:
+            return
+        im = self.session.image(uid)
+        if im is None or im.scan_rect is None:
+            return
+        im.scan_rect = None
+        self._meta_dirty = True
         self.calibration_changed.emit()
         self.schedule_save()
 
@@ -598,7 +704,7 @@ class AppState(QObject):
             im = self.session.image(uid)
             if im is not None:
                 im.scan_rect = rect
-                self._dirty.add(uid)
+                self._meta_dirty = True
         self.calibration_changed.emit()
         self.schedule_save()
 
@@ -748,6 +854,16 @@ class AppState(QObject):
         self.undo_stack.push(cmd)  # calls redo()
         return True
 
+    def restore_grains(self, uid, grain_ids: List[int]) -> bool:
+        """Put hand-removed grains back (undoable)."""
+        if not grain_ids or self.session is None:
+            return False
+        cmd = RestoreGrainsCommand(self, uid, list(grain_ids))
+        if cmd.is_empty():
+            return False
+        self.undo_stack.push(cmd)
+        return True
+
     def _manual_changed(self, doc: ImageDoc) -> None:
         doc.counts = _counts_from(doc.excluded)
         self.result_edited.emit(doc.uid)   # optimistic: canvas greys them at once
@@ -763,17 +879,15 @@ class AppState(QObject):
     def is_dirty(self) -> bool:
         return bool(self._dirty) or self._meta_dirty
 
-    def _post_filter_meta(self, doc: SessionDoc) -> dict:
-        images = {}
-        for im in doc.images:
-            if im.raw is None and not im.manual and im.filter_override is None:
-                continue
-            images[im.filename] = {
-                "excluded": {str(k): list(v) for k, v in im.excluded.items()},
-                "manual": sorted(int(i) for i in im.manual),
-                "options": options_to_dict(im.filter_override) if im.filter_override else None,
-            }
-        return {"options": options_to_dict(doc.filters), "images": images}
+    @staticmethod
+    def _image_fields(im: ImageDoc) -> dict:
+        """Per-image overrides as stored in the manifest (DATA-09): raw
+        overrides only, ``CLEAR`` when the image follows the session."""
+        return dict(scan_rect=tuple(im.scan_rect) if im.scan_rect else CLEAR,
+                    px_per_um=float(im.px_override) if im.px_override > 0 else CLEAR,
+                    filters_override=(options_to_dict(im.filter_override)
+                                      if im.filter_override is not None else CLEAR),
+                    manual_excluded=sorted(int(i) for i in im.manual))
 
     def save_now(self) -> None:
         """Flush pending changes to disk off-thread (Ctrl+S / autosave)."""
@@ -787,26 +901,27 @@ class AppState(QObject):
             self._save_again = True
             return
         entries = []
-        for uid in list(self._dirty):
-            im = doc.image(uid)
-            if im is None or im.result is None:
-                continue
-            snap = snapshot_result(im.result)
-            # The saved label image keeps EVERY raw grain so filters can be
-            # switched off again after reload; grains.json / summary.json /
-            # overlay.png hold the filtered (reported) result.
-            if im.raw is not None and im.raw.label_image is not None:
-                snap.label_image = im.raw.label_image.copy()
-            entries.append(ImageEntry(filename=im.filename, image_bgr=im.image_bgr,
-                                      result=snap, scan_rect=self.scan_for(im),
-                                      px_per_um=self.px_for(im)))
+        with_result = set(self._dirty)
+        all_fields = self._meta_dirty or bool(with_result)
+        for im in doc.images:
+            if im.uid in with_result and im.result is not None:
+                snap = snapshot_result(im.result)
+                # The saved label image keeps EVERY raw grain so filters can be
+                # switched off again after reload; grains.json / summary.json /
+                # overlay.png hold the filtered (reported) result.
+                if im.raw is not None and im.raw.label_image is not None:
+                    snap.label_image = im.raw.label_image.copy()
+                entries.append(ImageEntry(filename=im.filename, image_bgr=im.image_bgr,
+                                          result=snap, **self._image_fields(im)))
+            elif all_fields:
+                # manifest-only update: overrides, filter override, manual ids
+                entries.append(ImageEntry(filename=im.filename, **self._image_fields(im)))
         meta = {}
-        if self._meta_dirty or entries:
-            dp = dict(doc.params)
-            dp["post_filters"] = self._post_filter_meta(doc)
+        if self._meta_dirty or with_result:
             meta = dict(px_per_um=doc.px_per_um,
-                        scan_rect=list(doc.scan_rect) if doc.scan_rect else None,
-                        detection_params=dp,
+                        scan_rect=list(doc.scan_rect) if doc.scan_rect else CLEAR,
+                        detection_params=dict(doc.params),
+                        filters=options_to_dict(doc.filters),
                         detector_mode=doc.params.get("detection_mode", ""))
             from version import __version__
             meta["software_version"] = __version__
@@ -834,6 +949,7 @@ class AppState(QObject):
 
     def flush(self, timeout_ms: int = 15000) -> None:
         """Synchronously wait for pending saves (close / session switch)."""
+        self.about_to_flush.emit()
         if self._final_pending:
             self._final_timer.stop()
             self._run_final_filters()
@@ -853,6 +969,7 @@ class AppState(QObject):
 
 __all__ = [
     "AppState", "ImageDoc", "SessionDoc", "NodeRef", "ExcludeGrainsCommand",
+    "RestoreGrainsCommand",
     "DeleteGrainsCommand", "node_for_path", "node_chain", "node_display_name",
     "session_title", "load_ui_state", "save_ui_state", "ui_state_path",
     "params_to_dict", "params_from_dict", "KIND_ORDER",

@@ -1,0 +1,318 @@
+"""
+Reports page — the in-app report designer (REP-05/06/07 UI, UI-09).
+
+Build a report from an analysed session, edit it (title, caption, disabled
+section, image order, custom text, grain annotation), export XLSX + PPTX and
+read the files back; reload report.json after recreating the window; the
+"results changed" banner + Refresh numbers merge; excluding a grain from the
+report goes through the app's manual exclusion so Review agrees.
+"""
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("pytestqt")
+
+from data.models import AppSettings  # noqa: E402
+from data.settings import save_settings  # noqa: E402
+from tests.ui_shell_helpers import make_session  # noqa: E402
+
+TIMEOUT = 90000
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch, qapp):
+    from ui.design.theme import apply_theme, set_reduced_motion
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))
+    root = tmp_path / "ws"
+    save_settings(AppSettings(workspace_root=str(root), operator="Tester", theme="dark"))
+    set_reduced_motion(True)
+    apply_theme(qapp, "dark")
+    yield root
+    set_reduced_motion(False)
+
+
+def _open_shell(qtbot, path: Path):
+    from ui.app_shell import AppShell
+    from ui.app_state import AppState
+    shell = AppShell(AppState(), probe_device=False)
+    qtbot.addWidget(shell)
+    shell.resize(1500, 950)
+    shell.show()
+    shell.open_session(path)
+    qtbot.waitUntil(lambda: shell.state.session is not None, timeout=15000)
+    qtbot.waitUntil(lambda: not shell.reports.is_busy(), timeout=15000)
+    return shell
+
+
+def _analyse_all(shell, qtbot):
+    st = shell.state
+    shell.analyze.params.set_mode("threshold")
+    with qtbot.waitSignal(shell.analyze.queue.queue_finished, timeout=TIMEOUT):
+        shell.analyze_all()
+    qtbot.waitUntil(lambda: all(im.status == "done" and im.result is not None
+                                for im in st.images()) and not st.is_filtering(),
+                    timeout=TIMEOUT)
+
+
+def _idle(shell, qtbot):
+    st, rp = shell.state, shell.reports
+    qtbot.waitUntil(lambda: not st.is_filtering() and not rp.is_busy(), timeout=TIMEOUT)
+    qtbot.wait(450)   # stale-check debounce
+    qtbot.waitUntil(lambda: not st.is_filtering() and not rp.is_busy(), timeout=TIMEOUT)
+
+
+def _build(shell, qtbot):
+    rp = shell.reports
+    shell.go("reports")
+    rp.build_from_session()
+    qtbot.waitUntil(lambda: rp.model is not None and not rp.is_busy(), timeout=TIMEOUT)
+    return rp
+
+
+def _export(rp, qtbot, kinds):
+    with qtbot.waitSignal(rp.exported, timeout=TIMEOUT) as blocker:
+        rp.export(kinds)
+    return blocker.args[0]
+
+
+@pytest.fixture
+def analysed(env, qtbot):
+    path = make_session(env, 3, label="Run", black=True)
+    shell = _open_shell(qtbot, path)
+    _analyse_all(shell, qtbot)
+    shell.state.flush()
+    yield shell, path
+    shell.close()
+
+
+# ----------------------------------------------------------------------------
+
+def test_reports_page_states(env, qtbot):
+    path = make_session(env, 2, label="Fresh")
+    shell = _open_shell(qtbot, path)
+    rp = shell.reports
+    shell.go("reports")
+    assert rp.stack.currentWidget() is rp.empty_results     # nothing analysed yet
+    _analyse_all(shell, qtbot)
+    _idle(shell, qtbot)
+    assert rp.stack.currentWidget() is rp.empty_build
+    shell.state.close_session()
+    assert rp.stack.currentWidget() is rp.empty_session
+    shell.close()
+
+
+def test_build_edit_export_roundtrip(analysed, qtbot, tmp_path):
+    import openpyxl
+    from pptx import Presentation
+    shell, path = analysed
+    rp = _build(shell, qtbot)
+    m = rp.model
+    assert len(m.images) == 3 and all(i.include for i in m.images)
+    assert m.operator == "Tester"
+    assert m.images[0].sample_id == "S-1" and m.images[0].lot_number == "L-1"
+    assert (path / "report_assets").is_dir()
+    assert rp.stack.currentWidget() is rp.designer
+
+    # overview preview = one row per included image + combined row
+    rp.select(("section", "overview_table"))
+    assert rp.current_preview().rows() == 3
+
+    # edit title (inspector), exclude an image, disable a section, reorder images
+    rp.inspector.title.setText("Alloy 718 — Lot L-1")
+    rp.inspector.title.textEdited.emit("Alloy 718 — Lot L-1")
+    names = [Path(i.image_path).name for i in sorted(m.images, key=lambda i: i.order)]
+    ids = [i.id for i in sorted(m.images, key=lambda i: i.order)]
+    rp.set_image_included(ids[1], False)
+    rp.set_section_enabled("combined_distribution", False)
+    rp.move_image(ids[2], 0)                       # third image becomes first
+    order = [i.id for i in sorted(rp.model.images, key=lambda i: i.order)]
+    assert order == [ids[2], ids[0], ids[1]]
+    assert rp.current_preview().rows() == 2        # overview follows the include flags
+
+    # caption via the image preview's editor + a grain annotation
+    rp.select(("image", ids[2]))
+    prev = rp.current_preview()
+    prev.caption.setText("Rim location, etched")
+    gm = prev.gmodel
+    row = next(r for r, x in enumerate(gm.rows) if x["kept"])
+    gm.setData(gm.index(row, 7), "twin boundary")
+    gid = gm.rows[row]["id"]
+    # custom text section
+    rp.select(("section", "overview_table"))
+    rp.add_text_section()
+    sec = next(s for s in rp.model.sections if s.type == "custom_text")
+    rp.rename_section(sec.id, "Conclusions")
+    sec.payload["body"] = "Meets ASTM E112 acceptance."
+    rp.edited("text")
+
+    xlsx, pptx = _export(rp, qtbot, ["xlsx", "pptx"])
+    assert Path(xlsx).parent == path / "exports" and Path(pptx).parent == path / "exports"
+
+    wb = openpyxl.load_workbook(xlsx)
+    sheets = wb.sheetnames
+    assert sheets[0] == "Overview" and "Summary Charts" not in sheets
+    raw = [i for i, n in enumerate(sheets) if n.startswith("Raw - ")]
+    assert raw and raw == list(range(len(sheets) - len(raw), len(sheets)))   # raw data last
+    img_sheets = [n for n in sheets if n.startswith("Img ")]
+    assert len(img_sheets) == 2
+    assert Path(names[2]).stem in img_sheets[0] and Path(names[0]).stem in img_sheets[1]
+    ov = wb["Overview"]
+    assert ov["A1"].value == "Alloy 718 — Lot L-1"
+    data_rows = [r for r in ov.iter_rows(min_row=5, values_only=True)
+                 if r[1] and r[1] != "Combined (all images)"]
+    assert len(data_rows) == 2                         # overview rows = included images
+    assert any(r[1] == "Combined (all images)" for r in ov.iter_rows(min_row=5, values_only=True))
+    first_img = wb[img_sheets[0]]
+    texts = " ".join(str(c.value) for row in first_img.iter_rows() for c in row if c.value)
+    assert "Rim location, etched" in texts and f"#{gid}: twin boundary" in texts
+
+    prs = Presentation(pptx)
+    all_text = [" ".join(sh.text_frame.text for sh in s.shapes if sh.has_text_frame)
+                for s in prs.slides]
+    assert "Alloy 718 — Lot L-1" in all_text[0]
+    assert not any("Distribution" in t and "Combined" in t for t in all_text)
+    img_slides = [i for i, t in enumerate(all_text) if "Image 1:" in t or "Image 2:" in t]
+    assert len(img_slides) == 2 and "Rim location, etched" in all_text[img_slides[0]]
+    concl = [i for i, t in enumerate(all_text) if "Conclusions" in t]
+    assert concl and "Meets ASTM E112 acceptance." in all_text[concl[0]]
+    assert concl[0] == 2          # right after the executive summary (charts disabled)
+    assert "Appendix" in all_text[-1]
+    pages = [t.split()[-1] for t in all_text]
+    assert pages == [str(i) for i in range(1, len(prs.slides) + 1)]   # footers renumbered
+
+    # export recorded in the report
+    hist = rp.model.metadata["exports"]
+    assert {h["file"] for h in hist} == {Path(xlsx).name, Path(pptx).name}
+    assert all(h["operator"] == "Tester" for h in hist)
+
+
+def test_report_persists_across_restart(analysed, qtbot):
+    from data.session_io import load_session
+    shell, path = analysed
+    rp = _build(shell, qtbot)
+    rp.inspector.org.setText("Metallography Lab")
+    rp.inspector.org.textEdited.emit("Metallography Lab")
+    first = sorted(rp.model.images, key=lambda i: i.order)
+    rp.select(("image", first[0].id))
+    rp.current_preview().caption.setText("Kept after restart")
+    rp.set_section_enabled("parameters", False)
+    rp.move_image(first[0].id, 2)
+    shell.close()                                   # flush via closeEvent
+    rep = load_session(path).report
+    assert rep["organization"] == "Metallography Lab"
+
+    shell2 = _open_shell(qtbot, path)
+    rp2 = shell2.reports
+    qtbot.waitUntil(lambda: rp2.model is not None, timeout=15000)
+    m = rp2.model
+    assert m.organization == "Metallography Lab"
+    assert not m.get_section("parameters").enabled
+    img = next(i for i in m.images if i.id == first[0].id)
+    assert img.caption == "Kept after restart"
+    assert img.order == 3
+    shell2.go("reports")
+    assert rp2.stack.currentWidget() is rp2.designer
+    assert rp2.inspector.org.text() == "Metallography Lab"
+    assert not rp2.is_stale()
+    shell2.close()
+
+
+def test_results_changed_banner_and_refresh_keeps_edits(analysed, qtbot):
+    shell, path = analysed
+    st = shell.state
+    rp = _build(shell, qtbot)
+    img0 = sorted(rp.model.images, key=lambda i: i.order)[0]
+    rp.select(("image", img0.id))
+    rp.current_preview().caption.setText("My caption")
+    rp.inspector.bins_area.setValue(7)
+    before = img0.grain_count
+    # an edit made elsewhere (Review page) changes the numbers
+    doc = rp.image_doc(img0)
+    st.set_current_image(doc.uid)
+    victims = [g.grain_id for g in doc.result.grains[:3]]
+    assert st.delete_grains(doc.uid, victims)
+    _idle(shell, qtbot)
+    assert rp.is_stale() and rp.banner.isVisible()
+    assert rp.model.images[0].grain_count == before        # not silently changed
+    rp.refresh_numbers()
+    qtbot.waitUntil(lambda: not rp.is_busy(), timeout=TIMEOUT)
+    _idle(shell, qtbot)
+    img = next(i for i in rp.model.images if i.id == img0.id)
+    assert img.grain_count == before - 3
+    assert img.caption == "My caption" and rp.model.bins["area"] == 7
+    assert not rp.is_stale() and not rp.banner.isVisible()
+
+
+def test_excluding_grain_from_report_matches_review(analysed, qtbot):
+    shell, path = analysed
+    st = shell.state
+    rp = _build(shell, qtbot)
+    img0 = sorted(rp.model.images, key=lambda i: i.order)[0]
+    doc = rp.image_doc(img0)
+    before = img0.grain_count
+    rp.select(("image", img0.id))
+    prev = rp.current_preview()
+    gm = prev.gmodel
+    row = next(r for r, x in enumerate(gm.rows) if x["kept"])
+    gid = gm.rows[row]["id"]
+    from PySide6.QtCore import Qt
+    assert gm.setData(gm.index(row, 0), Qt.Unchecked, Qt.CheckStateRole)
+    _idle(shell, qtbot)
+    qtbot.waitUntil(lambda: next(i for i in rp.model.images if i.id == img0.id).grain_count
+                    == before - 1, timeout=TIMEOUT)
+    assert not rp.is_stale()                          # own edit: followed silently
+    assert gid in doc.manual and doc.result.grain_count == before - 1
+    # Review's comparison table shows the same count
+    shell.go("review")
+    shell.review._fill_comparison()
+    r = [i for i in range(shell.review.cmp.rowCount())
+         if shell.review.cmp.item(i, 0).text() == doc.filename][0]
+    assert shell.review.cmp.item(r, 2).text() == str(before - 1)
+    # undo (Ctrl+Z) puts it back everywhere
+    st.undo_stack.undo()
+    _idle(shell, qtbot)
+    qtbot.waitUntil(lambda: next(i for i in rp.model.images if i.id == img0.id).grain_count
+                    == before, timeout=TIMEOUT)
+    # re-tick from the report restores a hand-removed grain
+    rp.set_grain_included(img0.id, gid, False)
+    _idle(shell, qtbot)
+    assert rp.set_grain_included(img0.id, gid, True)
+    _idle(shell, qtbot)
+    assert gid not in doc.manual
+
+
+def test_menu_export_uses_report_pipeline(analysed, qtbot):
+    import openpyxl
+    shell, path = analysed
+    rp = shell.reports
+    assert rp.model is None
+    with qtbot.waitSignal(rp.exported, timeout=TIMEOUT) as blocker:
+        shell.export_all_excel()                      # Ctrl+E — builds the report on demand
+    (xlsx,) = blocker.args[0]
+    assert Path(xlsx).parent == path / "exports"
+    assert openpyxl.load_workbook(xlsx).sheetnames[0] == "Overview"
+    with qtbot.waitSignal(rp.exported, timeout=TIMEOUT) as blocker:
+        shell.export_current_excel()                  # Ctrl+Shift+E — only the current image
+    wb = openpyxl.load_workbook(blocker.args[0][0])
+    assert len([n for n in wb.sheetnames if n.startswith("Img ")]) == 1
+
+
+def test_validation_shows_missing_image_with_hint(analysed, qtbot):
+    shell, path = analysed
+    rp = _build(shell, qtbot)
+    rp.model.images[0].image_path = str(path / "images" / "gone.png")
+    probs = rp.validate()
+    assert any(sev == "danger" and "missing" in text and "untick" in hint
+               for sev, text, hint in probs)
+    assert rp.issues_badge.isVisible()
+
+
+def test_legacy_ui_modules_are_gone():
+    import importlib.util
+    for mod in ("ui.main_window", "ui.settings_panel", "ui.results_panel",
+                "ui.analysis_progress_dialog"):
+        assert importlib.util.find_spec(mod) is None, mod
+    root = Path(__file__).resolve().parents[1]
+    for py in (root / "ui").rglob("*.py"):
+        assert "excel_export" not in py.read_text(encoding="utf-8"), py

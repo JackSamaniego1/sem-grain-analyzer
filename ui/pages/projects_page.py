@@ -12,7 +12,6 @@ All folder scans and thumbnail loads run on the thread pool.
 from __future__ import annotations
 
 import os
-import shutil
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -25,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from data.catalog import Catalog
-from data.models import dedupe_name, read_json, utc_now_iso
+from data.models import read_json
 from data.session_io import import_loose_images
 from data.workspace import Workspace
 from ui.app_state import NodeRef, node_display_name, node_for_path, session_title
@@ -182,17 +181,22 @@ def load_contents(kind: str, path: str, root: str) -> dict:
     return {"kind": kind, "path": p, "items": items, "meta": meta}
 
 
-def trash_folder(ws: Workspace, path: Path) -> Path:
-    """Move a project/sample/lot folder into ``<root>/.trash`` (never delete)."""
-    path = ws._require_within_root(Path(path))
-    if path.resolve() == ws.root.resolve():
-        raise ValueError("Refusing to trash the workspace root")
-    trash = ws.root / ".trash"
-    trash.mkdir(parents=True, exist_ok=True)
-    stamp = utc_now_iso().replace(":", "").replace("-", "")
-    dest = trash / dedupe_name(trash, f"{stamp}__{path.name}")
-    shutil.move(str(path), str(dest))
-    return dest
+def trash_node(ws: Workspace, root: Path, kind: str, path: Path) -> Path:
+    """Move a session / lot / sample / project into ``<root>/.trash`` through
+    the data layer (containment-checked, catalog kept in sync)."""
+    cat = Catalog(root)
+    path = Path(path)
+    if kind == "session":
+        dest = ws.delete_session(path)
+        cat.remove(path)
+        return dest
+    if kind == "project":
+        return ws.trash_project(path, catalog=cat)
+    if kind == "sample":
+        return ws.trash_sample(path.parent, path, catalog=cat)
+    if kind == "lot":
+        return ws.trash_lot(path.parent.parent, path.parent, path, catalog=cat)
+    raise ValueError(f"Cannot move a {kind} to the trash")
 
 
 def _reconnect(signal, slot) -> None:
@@ -1200,7 +1204,7 @@ class ProjectsPage(QWidget):
                 "project": "this project and everything inside it"}[node.kind]
         self.confirm.ask(f"Move “{name}” to the trash?",
                          f"This moves {what} into the workspace’s .trash folder. Nothing is "
-                         "permanently deleted — it can be restored from there with File Explorer.",
+                         "permanently deleted — Undo on the next message restores it.",
                          "Move to trash", lambda: self._delete(node))
 
     def _delete(self, node: NodeRef) -> None:
@@ -1209,17 +1213,13 @@ class ProjectsPage(QWidget):
         root = self.state.root
 
         def work():
-            if node.kind == "session":
-                dest = ws.delete_session(node.path)
-                Catalog(root).remove(node.path)
-            else:
-                dest = trash_folder(ws, node.path)
-                Catalog(root).rebuild()
-            return dest
+            return trash_node(ws, root, node.kind, node.path)
 
-        def done(_dest):
-            self._toast("Moved to trash", node_display_name(node) if node.path.exists() else node.path.name,
-                        "success")
+        def done(dest):
+            can_undo = node.kind in ("project", "sample", "lot")   # origin recorded
+            self._toast("Moved to trash", node.path.name, "success",
+                        "Undo" if can_undo else None,
+                        (lambda: self.restore_from_trash(dest)) if can_undo else None)
             parent = node_for_path(root, node.path.parent)
             self._node = parent
             self._pending_select = parent.path
@@ -1228,6 +1228,27 @@ class ProjectsPage(QWidget):
 
         run_task(work, on_done=done,
                  on_error=lambda m: self._toast("Could not move to trash", m.splitlines()[0], "danger"))
+
+    def restore_from_trash(self, trash_path) -> None:
+        ws = self.state.workspace
+        root = self.state.root
+
+        def work():
+            return ws.restore_from_trash(trash_path, catalog=Catalog(root))
+
+        def done(target):
+            self._toast("Restored", Path(target).name, "success")
+            self._pending_select = Path(target)
+            self.reload()
+
+        def failed(msg):
+            first = msg.splitlines()[0]
+            if first.startswith("FileExistsError"):
+                first = ("Something with the same name now exists in its original place. "
+                         "Rename it, then undo again from the .trash folder.")
+            self._toast("Could not restore", first, "danger")
+
+        run_task(work, on_done=done, on_error=failed)
 
     def _save_meta(self, node: NodeRef, vals: dict) -> None:
         ws = self.state.workspace

@@ -146,7 +146,7 @@ def test_no_network_capable_code_in_first_party_source():
         scanned.add(rel_path.replace("\\", "/"))
         all_violations.extend(_check_file(rel_path, full_path))
     for must in ("main.py", "core/grain_detector.py", "core/offline_guard.py",
-                 "ui/main_window.py"):
+                 "ui/app_shell.py"):
         assert must in scanned, f"offline scan did not cover {must}"
     assert not all_violations, "Offline violations found:\n" + "\n".join(all_violations)
 

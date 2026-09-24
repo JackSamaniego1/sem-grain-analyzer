@@ -423,6 +423,10 @@ class AnalyzePage(QWidget):
         self.cal_spin.setEnabled(False)
         self.sec_cal.add_widget(self.cal_override)
         self.sec_cal.add_widget(self.cal_spin)
+        self.btn_cal_reset = AnimatedButton("Reset to session scale", "undo", "ghost", "sm")
+        self.btn_cal_reset.setToolTip("Drop this image's own scale — it uses the session scale again")
+        self.btn_cal_reset.hide()
+        self.sec_cal.add_widget(self.btn_cal_reset)
         self.params.layout().insertWidget(1, self.sec_cal)
 
         self.sec_scan = CollapsibleSection("Scan area", expanded=False)
@@ -442,6 +446,11 @@ class AnalyzePage(QWidget):
         self.scan_this = QCheckBox("Only for this image")
         self.scan_this.setToolTip("Give only the selected image its own scan area")
         self.sec_scan.add_widget(self.scan_this)
+        self.btn_scan_reset = AnimatedButton("Reset to session scan area", "undo", "ghost", "sm")
+        self.btn_scan_reset.setToolTip("Drop this image's own scan area — it uses the session's "
+                                       "again")
+        self.btn_scan_reset.hide()
+        self.sec_scan.add_widget(self.btn_scan_reset)
         self.params.layout().insertWidget(2, self.sec_scan)
         iv.addStretch(1)
         sv.addWidget(scroll(inner))
@@ -479,6 +488,8 @@ class AnalyzePage(QWidget):
         self.btn_scan.clicked.connect(self.scan_area_requested)
         self.btn_scan_clear.clicked.connect(self._clear_scan)
         self.cal_override.toggled.connect(self._on_cal_override)
+        self.btn_cal_reset.clicked.connect(self._reset_cal)
+        self.btn_scan_reset.clicked.connect(self._reset_scan)
         self.cal_spin.valueChanged.connect(self._on_cal_spin)
         self.params.changed.connect(lambda: st.set_params(self.params.get_params()))
         self.params.show_excluded_regions.connect(self.canvas.set_show_excluded_regions)
@@ -615,6 +626,8 @@ class AnalyzePage(QWidget):
         else:
             self.scan_lbl.setText("Full image (nothing excluded)")
         self.canvas.set_scan_rect(rect)
+        self.btn_cal_reset.setVisible(im is not None and im.px_override > 0)
+        self.btn_scan_reset.setVisible(im is not None and im.scan_rect is not None)
 
     def _refresh_filters(self) -> None:
         im = self.state.current_image()
@@ -655,7 +668,21 @@ class AnalyzePage(QWidget):
 
     def _clear_scan(self) -> None:
         im = self.state.current_image()
-        self.state.set_scan_rect(None, im.uid if (im is not None and self.scan_this.isChecked()) else None)
+        if im is not None and self.scan_this.isChecked() and im.image_bgr is not None:
+            h, w = im.image_bgr.shape[:2]
+            self.state.set_scan_rect((0, 0, w, h), im.uid)   # this image: whole frame
+        else:
+            self.state.set_scan_rect(None, None)
+
+    def _reset_cal(self) -> None:
+        im = self.state.current_image()
+        if im is not None:
+            self.state.reset_image_calibration(im.uid)
+
+    def _reset_scan(self) -> None:
+        im = self.state.current_image()
+        if im is not None:
+            self.state.reset_image_scan_rect(im.uid)
 
     def is_busy(self) -> bool:
         return self.queue.is_running()

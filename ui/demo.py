@@ -97,7 +97,6 @@ def build_demo_workspace(root: Path, img_dir: Path, analyse: bool = True) -> dic
     def session(lot: Path, label: str, operator: str, paths: List[str], n_analyse: int,
                 notes: str = "") -> Path:
         entries = []
-        pf_images = {}
         opts = default_options(scan)
         opts.exclude_low_contrast = True
         opts.exclude_touching_invalid = True
@@ -108,14 +107,11 @@ def build_demo_workspace(root: Path, img_dir: Path, analyse: bool = True) -> dic
                 raw = analyze_image(bgr, ppu, params, scan, draw_overlay=False)
                 f = filter_image(raw, bgr, opts, frozenset(), params)
                 res = f["result"]
-                res.label_image = raw.label_image
-                pf_images[Path(p).name] = {"excluded": {str(k): v for k, v in f["excluded"].items()},
-                                           "manual": [], "options": None}
-            entries.append(ImageEntry(source_path=p, result=res, px_per_um=ppu,
-                                      scan_rect=scan))
+                res.label_image = raw.label_image     # every raw grain; filters re-derive
+            entries.append(ImageEntry(source_path=p, result=res))
         dp = params_to_dict(params)
-        dp["post_filters"] = {"options": options_to_dict(opts), "images": pf_images}
         ref = save_session(lot, {"operator": operator, "instrument": "Zeiss Sigma 300",
+                                 "filters": options_to_dict(opts),
                                  "magnification": "500×", "accelerating_voltage_kv": 15.0,
                                  "working_distance_mm": 8.6, "px_per_um": ppu,
                                  "scan_rect": list(scan), "detection_params": dp,
@@ -300,12 +296,47 @@ def capture(out_dir: str) -> List[str]:
         p = os.path.join(out_dir, "app_review.png")
         win.grab().save(p)
         saved.append(p)
-        for key in ("settings", "reports"):
-            win.go(key)
-            _pump(app, 500)
-            p = os.path.join(out_dir, f"app_{key}.png")
-            win.grab().save(p)
-            saved.append(p)
+        win.go("settings")
+        _pump(app, 500)
+        p = os.path.join(out_dir, "app_settings.png")
+        win.grab().save(p)
+        saved.append(p)
+
+        # ---- Reports: overview table, per-image slide with caption, light theme
+        rp = win.reports
+        win.go("reports")
+        _pump(app, 400)
+        rp.build_from_session()
+        _wait(app, lambda: rp.model is not None and not rp.is_busy(), 60000)
+        _pump(app, 600)
+        rp.inspector.org.setText("Metallurgy Laboratory")
+        rp.inspector.org.textEdited.emit("Metallurgy Laboratory")
+        rp.inspector.title.setText("Alloy 718 forging — grain size, lot 2026-0917-B")
+        rp.inspector.title.textEdited.emit(rp.inspector.title.text())
+        rp.select(("section", "overview_table"))
+        _pump(app, 700)
+        p = os.path.join(out_dir, "app_reports.png")
+        win.grab().save(p)
+        saved.append(p)
+        img = sorted(rp.model.images, key=lambda i: i.order)[0]
+        rp.select(("image", img.id))
+        _pump(app, 500)
+        prev = rp.current_preview()
+        prev.caption.setText("Transverse section, rim location — Kalling's No. 2 etch, 500×")
+        prev.notes.setPlainText("Uniform equiaxed grains; no duplex structure observed.")
+        prev.caption.setFocus()
+        _pump(app, 700)
+        p = os.path.join(out_dir, "app_reports_image.png")
+        win.grab().save(p)
+        saved.append(p)
+        win.set_theme("light")
+        rp.select(("section", "overview_table"))
+        _pump(app, 900)
+        p = os.path.join(out_dir, "app_reports_light.png")
+        win.grab().save(p)
+        saved.append(p)
+        win.set_theme("dark")
+        _pump(app, 300)
         state.flush()
         win.close()
         _pump(app, 200)

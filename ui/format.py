@@ -5,7 +5,35 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 
-from ui.results_panel import smart_format, smart_unit  # v2.3 behaviour, preserved
+
+def smart_unit(px_per_um):
+    """Pick units so values are close to whole numbers, never tiny exponents
+    (v2.3 behaviour).  Returns (area_unit, area_mult, diam_unit, diam_mult)."""
+    if not px_per_um or px_per_um <= 0:
+        return "px²", 1.0, "px", 1.0
+    nm_per_px = 1000.0 / px_per_um
+    if nm_per_px < 50:
+        return "nm²", 1e6, "nm", 1000.0
+    return "µm²", 1.0, "µm", 1.0
+
+
+def smart_format(val) -> str:
+    """Format a number close to a whole number, never with exponents (v2.3)."""
+    if val == 0:
+        return "0"
+    av = abs(val)
+    if av >= 100:
+        return f"{val:.0f}"
+    if av >= 10:
+        return f"{val:.1f}"
+    if av >= 1:
+        return f"{val:.2f}"
+    if av >= 0.1:
+        return f"{val:.3f}"
+    if av >= 0.01:
+        return f"{val:.4f}"
+    return f"{val:.3g}"
+
 
 __all__ = ["smart_unit", "smart_format", "area_value", "diam_value", "units_for",
            "fmt_int", "fmt_opt", "fmt_date_utc", "fmt_px_per_um", "astm_g"]

@@ -204,8 +204,9 @@ class ReviewPage(QWidget):
         bv.setContentsMargins(SPACE.lg, SPACE.sm, SPACE.lg, SPACE.md)
         cmp_card = Card("All images in this session",
                         "One row per image — click a row to open that image")
-        self.btn_export = AnimatedButton("Export to Excel", "excel", "secondary", "sm")
-        self.btn_export.setToolTip("Export every analysed image of the session (Ctrl+E)")
+        self.btn_export = AnimatedButton("Export report", "excel", "secondary", "sm")
+        self.btn_export.setToolTip("Excel report of every analysed image, saved in the session's "
+                                   "exports folder (Ctrl+E). Edit it on the Reports page.")
         self.btn_export.clicked.connect(self.export_requested)
         cmp_card.add_action(self.btn_export)
         self.cmp = QTableWidget(0, 10)

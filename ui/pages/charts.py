@@ -1,19 +1,123 @@
-"""Themed histogram — reuses the v2.3 binning (whole-number bins from 0, via
-``ui.results_panel.HistogramWidget._recompute``) with token colours."""
+"""Themed histogram with the v2.3 binning (whole-number bins starting at 0)
+and token colours.  ``set_binned`` accepts bins computed elsewhere (the report
+preview passes ``reports.charts.build_bins`` output so the in-app chart uses
+exactly the bins the Excel / PowerPoint export will use)."""
 from __future__ import annotations
 
 import math
+from typing import Sequence
 
+import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFontMetricsF, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ui.design.theme import theme_manager, ui_font
 from ui.design.tokens import TYPE, TypeStyle
-from ui.results_panel import HistogramWidget
 from ui.widgets._base import qcolor, tokens
 
 
-class ThemedHistogram(HistogramWidget):
+class HistogramBase(QWidget):
+    """Data + binning half of the v2.3 ``HistogramWidget`` (painting lives in
+    :class:`ThemedHistogram`)."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._values = np.array([])
+        self._xlabel = "Grain Area"
+        self._unit = ""
+        self._n_bins = 0
+        self._bins: list = []
+        self._counts: list = []
+        self._bin_labels: list = []
+        self._mu = 0.0
+        self._sigma = 0.0
+        self._has_data = False
+        self._actual_bins = 0
+
+    def set_data(self, values, xlabel="Grain Area", unit="", n_bins=0) -> None:
+        self._values = np.asarray(values, dtype=float)
+        self._xlabel = xlabel
+        self._unit = unit
+        self._n_bins = n_bins
+        self._recompute()
+        self.update()
+
+    def set_binned(self, values: Sequence[float], edges: Sequence[float],
+                   counts: Sequence[int], labels: Sequence[str], xlabel: str = "",
+                   unit: str = "") -> None:
+        """Show precomputed bins (edges has len(counts)+1 entries)."""
+        self._values = np.asarray(list(values), dtype=float)
+        self._xlabel, self._unit = xlabel, unit
+        self._has_data = len(counts) > 0 and len(self._values) >= 2
+        self._counts = [int(c) for c in counts]
+        self._bins = [float(e) for e in edges]
+        self._bin_labels = list(labels)
+        self._actual_bins = len(self._counts)
+        if self._has_data:
+            self._mu = float(np.mean(self._values))
+            self._sigma = float(np.std(self._values))
+        self.update()
+
+    def set_bin_count(self, n) -> None:
+        self._n_bins = n
+        if len(self._values) >= 2:
+            self._recompute()
+            self.update()
+
+    def get_bin_count(self) -> int:
+        return self._actual_bins
+
+    def _recompute(self) -> None:
+        v = self._values
+        if len(v) < 2:
+            self._has_data = False
+            return
+        self._has_data = True
+        self._mu = float(np.mean(v))
+        self._sigma = float(np.std(v))
+        vmax = float(np.max(v))
+        nb = self._n_bins if self._n_bins > 0 else min(max(int(math.sqrt(len(v))), 5), 30)
+        bw = max(1, math.ceil(vmax / nb))
+        edges = []
+        e = 0
+        while e <= vmax + bw:
+            edges.append(e)
+            e += bw
+        edges = np.array(edges, dtype=float)
+        counts, _ = np.histogram(v, bins=edges)
+        while len(counts) > 1 and counts[-1] == 0:
+            counts = counts[:-1]
+            edges = edges[:len(counts) + 1]
+        self._actual_bins = len(counts)
+        self._counts = counts.tolist()
+        self._bins = edges.tolist()
+        self._bin_labels = [f"{int(edges[i])}-{int(edges[i + 1])}{self._unit}"
+                            for i in range(len(counts))]
+
+    def clear_data(self) -> None:
+        self._has_data = False
+        self._values = np.array([])
+        self._counts, self._bins, self._bin_labels = [], [], []
+        self.update()
+
+    @staticmethod
+    def _nice_ceil(value):
+        if value <= 0:
+            return 1
+        mag = 10 ** math.floor(math.log10(value))
+        r = value / mag
+        if r <= 1:
+            return mag
+        if r <= 2:
+            return 2 * mag
+        if r <= 5:
+            return 5 * mag
+        return 10 * mag
+
+
+class ThemedHistogram(HistogramBase):
     MARGIN_LEFT = 46
     MARGIN_RIGHT = 12
     MARGIN_TOP = 14

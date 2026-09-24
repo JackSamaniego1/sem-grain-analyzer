@@ -13,8 +13,6 @@ Delete) plus Ctrl+N, Ctrl+S, Ctrl+Z/Ctrl+Y, Ctrl+1…5, Ctrl+F and ``?``.
 """
 from __future__ import annotations
 
-import os
-import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -41,7 +39,7 @@ from ui.widgets import (
     AnimatedButton, Badge, Breadcrumb, Card, FadeStackedWidget, IconButton, NavRail, SearchBox,
     ShortcutOverlay, ToastManager, label,
 )
-from ui.workers import IMAGE_FILTER, run_task, snapshot_result
+from ui.workers import IMAGE_FILTER, run_task
 from version import APP_NAME, __version__
 
 PAGES = [("projects", "projects", "Projects"), ("analyze", "analyze", "Analyze"),
@@ -49,7 +47,8 @@ PAGES = [("projects", "projects", "Projects"), ("analyze", "analyze", "Analyze")
 
 SHORTCUTS = {
     "Sessions": [("Ctrl+N", "New session"), ("Ctrl+O", "Add / open images"),
-                 ("Ctrl+S", "Save now (autosave is on)"), ("Ctrl+E", "Export session to Excel"),
+                 ("Ctrl+S", "Save now (autosave is on)"), ("Ctrl+E", "Export report to Excel"),
+                 ("Ctrl+Shift+P", "Export report to PowerPoint"),
                  ("Ctrl+F", "Search all sessions")],
     "Analysis": [("F5", "Analyze all images"), ("Ctrl+F5", "Analyze current image"),
                  ("Ctrl+K", "Set scale bar"), ("Ctrl+R", "Set scan area")],
@@ -156,7 +155,7 @@ class AppShell(QMainWindow):
         self.projects = ProjectsPage(self.state, self.toasts)
         self.analyze = AnalyzePage(self.state, self.toasts)
         self.review = ReviewPage(self.state, self.toasts)
-        self.reports = ReportsPage(self.state)
+        self.reports = ReportsPage(self.state, self.toasts)
         self.settings_page = SettingsPage(self.state, self.toasts)
         self.pages = {"projects": self.projects, "analyze": self.analyze, "review": self.review,
                       "reports": self.reports, "settings": self.settings_page}
@@ -232,8 +231,12 @@ class AppShell(QMainWindow):
         self._act(f, "&Import folder of images…", self.projects.import_folder, None, "import")
         f.addSeparator()
         self.act_save = self._act(f, "&Save", self.save, QKeySequence.Save, "save")
-        self._act(f, "Export session to &Excel…", self.export_all_excel, "Ctrl+E", "excel")
-        self._act(f, "Export &current image to Excel…", self.export_current_excel, "Ctrl+Shift+E")
+        self._act(f, "Export report to &Excel", self.export_all_excel, "Ctrl+E", "excel",
+                  "Excel workbook of the session's report, saved in the session's exports folder")
+        self._act(f, "Export report to &PowerPoint", self.export_pptx, "Ctrl+Shift+P",
+                  "powerpoint", "PowerPoint deck of the session's report")
+        self._act(f, "Export &current image to Excel", self.export_current_excel, "Ctrl+Shift+E")
+        self._act(f, "Open report &designer…", lambda: self.go("reports"), None, "reports")
         f.addSeparator()
         self._act(f, "&Close session", self.state.close_session)
         self._act(f, "&Quit", self.close, QKeySequence.Quit)
@@ -297,8 +300,7 @@ class AppShell(QMainWindow):
         self.analyze.progress_changed.connect(self._on_progress)
         self.review.export_requested.connect(self.export_all_excel)
         self.review.open_projects_requested.connect(lambda: self.go("projects"))
-        self.reports.export_all_requested.connect(self.export_all_excel)
-        self.reports.export_current_requested.connect(self.export_current_excel)
+        self.reports.empty_session.action_triggered.connect(lambda: self.go("projects"))
         self.settings_page.theme_requested.connect(self.set_theme)
         self.settings_page.defaults_from_analyze_requested.connect(
             lambda: self.settings_page.set_defaults(self.analyze.params.get_params()))
@@ -511,7 +513,10 @@ class AppShell(QMainWindow):
 
         def apply(x, y, w, h):
             H, W = im.image_bgr.shape[:2]
-            rect = None if (w >= W and h >= H) else (x, y, w, h)
+            full = w >= W and h >= H
+            # session: full frame = no scan area; this image only: an explicit
+            # full-frame override (a reset to the session's area is a button)
+            rect = (None if not this_only else (0, 0, W, H)) if full else (x, y, w, h)
             self.state.set_scan_rect(rect, im.uid if this_only else None)
             self.toasts.show_toast("Scan area cleared" if rect is None else "Scan area set",
                                    "Using the full image." if rect is None else
@@ -530,60 +535,24 @@ class AppShell(QMainWindow):
         if msg:
             self._status(msg)
 
-    # ------------------------------------------------------------------ export (legacy)
-    def _export_rows(self, only_current: bool = False):
-        imgs = [self.state.current_image()] if only_current else self.state.images()
-        rows = []
-        for im in imgs:
-            if im is None or im.result is None:
-                continue
-            path = str(im.path) if im.path else im.filename
-            rows.append((snapshot_result(im.result), path, im.image_bgr))
-        return rows
-
+    # ------------------------------------------------------------------ export
+    # Every export goes through the report pipeline (ReportModel → renderers):
+    # the report is built on demand, refreshed if the results changed, and the
+    # file lands in <session>/exports/.  Save-as lives on the Reports page.
     def export_all_excel(self, only_current: bool = False) -> None:
-        rows = self._export_rows(only_current)
-        if not rows:
+        if not any(im.result is not None for im in self.state.images()):
             self.toasts.show_toast("No results to export", "Analyse images first.", "info")
             return
-        s = self.state.session
-        stem = (Path(rows[0][1]).stem if only_current else
-                (s.title if s else "grains")).replace(" ", "_").replace(":", "")
-        default_dir = (s.path / "exports") if s else Path.home()
-        path, _ = QFileDialog.getSaveFileName(self, "Export to Excel",
-                                              str(default_dir / f"{stem}_grains.xlsx"),
-                                              "Excel workbook (*.xlsx)")
-        if not path:
-            return
-        n_bins = self.review.bins_area.value()
-
-        def work():
-            from utils.excel_export import export_multi_to_excel, export_to_excel
-            if len(rows) == 1:
-                r, p, bgr = rows[0]
-                export_to_excel(r, p, path, image_bgr=bgr, n_bins=n_bins)
-            else:
-                export_multi_to_excel(rows, path, n_bins=n_bins)
-            return path
-
-        def done(p):
-            self.toasts.show_toast("Export complete", f"{len(rows)} image(s) → {Path(p).name}",
-                                   "success", "Open", lambda: self._open_file(p))
-
-        self.toasts.show_toast("Exporting…", f"Writing {Path(path).name}", "info")
-        run_task(work, on_done=done,
-                 on_error=lambda m: self.toasts.show_toast("Export failed", m.splitlines()[0], "danger"))
+        self.reports.quick_export("xlsx", only_current=only_current)
 
     def export_current_excel(self) -> None:
         self.export_all_excel(only_current=True)
 
-    @staticmethod
-    def _open_file(path: str) -> None:
-        try:
-            if sys.platform == "win32":
-                os.startfile(path)  # opens locally in Excel; no network
-        except OSError:
-            pass
+    def export_pptx(self) -> None:
+        if not any(im.result is not None for im in self.state.images()):
+            self.toasts.show_toast("No results to export", "Analyse images first.", "info")
+            return
+        self.reports.quick_export("pptx")
 
     # ------------------------------------------------------------------ chrome state
     def _status(self, msg: str) -> None:
