@@ -45,3 +45,10 @@
 - **HIER-04 done (276d579)**: Excel/PPTX export re-verified vs HIER-01 spec (hierarchy labels, export basename, renamed levels, filename sanitisation). 3 acceptance tests pass; no defects. Tests in tests/test_hier01_export_acceptance.py.
 - Full suite: **417 passed / 0 failed**. SESSION_STATE.md cleaned (UTF-8 encoding, ASCII punctuation).
 - Next: UI-09 + UI-11 in parallel (file management and scale-bar calibration), then UI-10.
+
+## 2026-09-24 — UI-09 + UI-11 completed (Opus coordinator)
+- **UI-09 done (c0e8e53)**: Projects browser file management. New: data/file_ops.py (Qt-free trash/restore entry point), ui/widgets/selection_bar.py (multi-select action bar), ui/dialogs/move_to_dialog.py (same-level folder picker), ui/dialogs/rename_dialog.py. Right-click context menu on folders and images (Open/Rename/Move to…/Delete), per-row select checkboxes with Ctrl/Shift multi-select, action bar shows "N selected — Select all · Move to… · Delete · Clear". Trash with undo (data layer integration). Tests: test_data_file_ops.py (11), test_ui_file_management.py (9).
+- **UI-11 done (c0e8e53)**: Scale-bar calibration modes. New: core/scale_bar_snap.py (snap-to-endpoints, endpoint detection, tilt warning), ui/canvas/calibration_canvas.py (pan + snap interaction), ui/calibration_dialog.py rebuilt (3 modes: Rectangle editable box, Level line horizontal-locked + 4x loupe, Free line + tilt warning; pan via middle/right-drag; Alt disables snap). Last-used mode persisted in calibration_ui.json. core/scale_bar.py kernel width 20→21 (odd, fixes 1 px right offset). Tests: test_scale_bar_snap.py (13), test_ui_calibration_modes.py (16).
+- Follow-ups added to task board: FIX-02 (image card open doesn't jump), FIX-03 (Delete key routing), FIX-04 (Catalog batching).
+- Full suite: **466 passed / 0 failed**. Code-reviewer verdict: APPROVE.
+- Next: UI-10 (guided tour), then UI-05 remainder (lasso, merge/split), then Phase 5 innovator features.

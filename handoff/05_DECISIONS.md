@@ -49,3 +49,12 @@ Context: in-process socket guard cannot see sockets opened by native C/C++ libra
 
 ### D-16 · 2026-09-23 · accepted — Custom agents in .claude/agents registered at session start
 Context: `.claude/agents/` defines scribe, detection-engineer, data-architect, etc. as agent types; this session used fallback (general-purpose + "ROLE: read .claude/agents/scribe.md"). Decision: next session will register these agents at startup; `subagent_type` parameter in Agent calls will work directly. Consequences: cleaner prompt syntax; agents inherit model pinning from `.md` frontmatter.
+
+### D-17 · 2026-09-24 · accepted — UI-11 calibration canvas pan shortcut
+Context: UI-11 added scale-bar calibration modes (Rectangle, Level line, Free line); calibration canvas needs pan for large images. Ctrl+drag was the natural shortcut but conflicts with multi-select in Review canvas; Alt+drag was natural for pan but needed for Alt-disables-snapping in calibration canvas. Decision: use **middle-mouse-drag and right-drag** for pan in calibration canvas (no modifier). Consequences: consistent with desktop map convention; snapping toggled via Alt without interference; no conflict with future UI-05 multi-select.
+
+### D-18 · 2026-09-24 · accepted — UI-11 last-used calibration mode persistence
+Context: UI-11 offers three calibration modes (Rectangle, Level line, Free line; default Level). User may prefer one for their workflow. Decision: persist the last-used mode in `calibration_ui.json` (alongside `settings.json`, separate from session data) and restore it on next calibration dialog open. Consequences: faster workflow; non-destructive (mode always overridable); survives app restart.
+
+### D-19 · 2026-09-24 · accepted — core/scale_bar.py kernel width fix
+Context: Line-detection auto-calibration in UI-11 uses a convolution kernel for edge detection; measured bar length was correct but auto-detected bar position was 1 px off to the right. Decision: change kernel width 20→21 (odd width ensures symmetric padding and centered filter response). Consequences: auto-detected bar position now matches measured length; no API change; previous bar detections unaffected (mode is re-detectable).
