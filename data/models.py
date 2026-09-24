@@ -281,6 +281,10 @@ class LotMeta:
 @dataclass
 class ImageManifestEntry:
     filename: str = ""
+    # HIER-01: the display filename may be rendered from the workspace's
+    # image_name_template; original_name preserves the source file name
+    # (before renaming/sanitizing) so the UI/report can show both.
+    original_name: str = ""
     sha256: str = ""
     width: int = 0
     height: int = 0

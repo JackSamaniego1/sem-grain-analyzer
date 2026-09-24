@@ -12,6 +12,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+from data.hierarchy import load_profile
 from data.models import read_json
 
 _DB_FILENAME = "catalog.sqlite"
@@ -31,9 +32,28 @@ CREATE TABLE IF NOT EXISTS sessions (
     image_count INTEGER,
     grain_count INTEGER,
     mean_area_um2 REAL,
-    mean_diameter_um REAL
+    mean_diameter_um REAL,
+    profile_json TEXT
 );
 """
+
+# HIER-01: columns added after the original schema. SQLite has no "ADD
+# COLUMN IF NOT EXISTS"; adding is attempted every connection and the
+# "duplicate column" failure (already there, from an earlier run) is
+# swallowed.
+_MIGRATIONS = [
+    "ALTER TABLE sessions ADD COLUMN profile_json TEXT",
+]
+
+# Keys that live in project.json/sample.json/lot.json for bookkeeping (id,
+# schema version, ...) rather than as a profile field value -- never
+# surfaced as a searchable "<levelkey>_<fieldkey>" entry.
+_LEVEL_META_SKIP = {
+    "project": {"schema_version", "path", "name", "created_utc"},
+    "sample": {"schema_version", "path", "sample_id", "created_utc"},
+    "lot": {"schema_version", "path", "lot_number", "created_utc", "spec_limits"},
+}
+_LEVEL_META_FILES = {"project": "project.json", "sample": "sample.json", "lot": "lot.json"}
 
 
 def _manifest_paths(root: Path):
@@ -45,7 +65,46 @@ def _manifest_paths(root: Path):
         yield manifest_path.parent
 
 
-def _row_from_manifest(session_dir: Path) -> Optional[dict]:
+def _level_meta_dirs(session_dir: Path) -> Dict[str, Path]:
+    """A session's ancestor level directories -- generic, no profile
+    lookup needed: a lot-as-session dir carries ``lot.json`` itself
+    (HIER-01, ``images_location == "lot"``); a legacy timestamped session
+    dir does not, so its parent is the lot."""
+    lot_dir = session_dir if (session_dir / "lot.json").exists() else session_dir.parent
+    sample_dir = lot_dir.parent
+    project_dir = sample_dir.parent
+    return {"project": project_dir, "sample": sample_dir, "lot": lot_dir}
+
+
+def _extra_profile_fields(root: Path, session_dir: Path) -> dict:
+    """Level field values (heat number, part description, customer, ...)
+    and level labels, so ``Catalog.search`` can match on them even though
+    they aren't fixed columns (HIER-01)."""
+    out: dict = {}
+    dirs = _level_meta_dirs(session_dir)
+    for level_key, dirpath in dirs.items():
+        mp = dirpath / _LEVEL_META_FILES[level_key]
+        d = {}
+        try:
+            if mp.exists():
+                d = read_json(mp)
+        except (OSError, ValueError):
+            d = {}
+        skip = _LEVEL_META_SKIP[level_key]
+        for k, v in d.items():
+            if k in skip or not isinstance(v, (str, int, float)):
+                continue
+            out[f"{level_key}_{k}"] = v
+    try:
+        profile = load_profile(root)
+        for lv in profile.levels:
+            out[f"{lv.key}_label"] = lv.label
+    except Exception:
+        pass
+    return out
+
+
+def _row_from_manifest(session_dir: Path, root: Optional[Path] = None) -> Optional[dict]:
     manifest_path = session_dir / "manifest.json"
     try:
         m = read_json(manifest_path)
@@ -67,6 +126,8 @@ def _row_from_manifest(session_dir: Path) -> Optional[dict]:
                 diam_means.append(s.get("mean_diameter_um", 0.0))
             except (OSError, ValueError):
                 pass
+    extra = _extra_profile_fields(root if root is not None else session_dir.parent.parent.parent,
+                                   session_dir)
     return {
         "path": str(session_dir),
         "project": m.get("project", ""),
@@ -82,15 +143,16 @@ def _row_from_manifest(session_dir: Path) -> Optional[dict]:
         "grain_count": int(sum(grain_counts)),
         "mean_area_um2": float(sum(summary_means) / len(summary_means)) if summary_means else 0.0,
         "mean_diameter_um": float(sum(diam_means) / len(diam_means)) if diam_means else 0.0,
+        "profile_json": json.dumps(extra),
     }
 
 
 _COLUMNS = ["path", "project", "sample_id", "lot_number", "session_id", "label",
             "operator", "created_utc", "notes", "tags", "image_count",
-            "grain_count", "mean_area_um2", "mean_diameter_um"]
+            "grain_count", "mean_area_um2", "mean_diameter_um", "profile_json"]
 
 _TEXT_COLUMNS = ["project", "sample_id", "lot_number", "session_id", "label",
-                  "operator", "notes", "tags"]
+                  "operator", "notes", "tags", "profile_json"]
 
 
 class Catalog:
@@ -109,6 +171,11 @@ class Catalog:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")
             conn.execute(_SCHEMA)
+            for migration in _MIGRATIONS:
+                try:
+                    conn.execute(migration)
+                except sqlite3.OperationalError:
+                    pass  # column already present from an earlier run
             with conn:
                 yield conn
         finally:
@@ -117,7 +184,7 @@ class Catalog:
     # ------------------------------------------------------------------
 
     def index_session(self, session_path: Union[str, Path]) -> bool:
-        row = _row_from_manifest(Path(session_path))
+        row = _row_from_manifest(Path(session_path), self.root)
         if row is None:
             return False
         try:
@@ -170,7 +237,7 @@ class Catalog:
         text_l = text.lower()
         out = []
         for session_dir in _manifest_paths(self.root):
-            row = _row_from_manifest(session_dir)
+            row = _row_from_manifest(session_dir, self.root)
             if row is None:
                 continue
             if filters and any(row.get(k) != v for k, v in filters.items() if k in _COLUMNS):
@@ -186,7 +253,7 @@ class Catalog:
         the index from scratch. Returns the number of sessions indexed.
         Degrades gracefully: if the DB itself can't be written (locked,
         corrupt beyond repair), still returns the count found on disk."""
-        rows = [r for r in (_row_from_manifest(d) for d in _manifest_paths(self.root)) if r]
+        rows = [r for r in (_row_from_manifest(d, self.root) for d in _manifest_paths(self.root)) if r]
         try:
             if self.db_path.exists():
                 try:

@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
+from data.hierarchy import (
+    HierarchyProfile, RESERVED_LOT_SUBDIRS, load_profile, render_template, save_profile,
+)
 from data.models import (
     LotMeta, ProjectMeta, SampleMeta, SessionMeta,
     dedupe_name, read_json, sanitize_name, utc_now_iso, write_json_atomic,
@@ -27,6 +30,47 @@ class Workspace:
     def __init__(self, root: Union[str, Path]):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
+        self._profile: Optional[HierarchyProfile] = None
+
+    # ------------------------------------------------------------------
+    # hierarchy profile (HIER-01)
+    # ------------------------------------------------------------------
+
+    @property
+    def profile(self) -> HierarchyProfile:
+        """The workspace's :class:`~data.hierarchy.HierarchyProfile`,
+        loaded (and, on a workspace with no ``workspace.json`` yet,
+        decided-and-persisted) lazily on first use -- so a freshly
+        constructed ``Workspace`` that never touches the profile never
+        writes ``workspace.json`` as a side effect."""
+        if self._profile is None:
+            self._profile = load_profile(self.root)
+        return self._profile
+
+    def reload_profile(self) -> HierarchyProfile:
+        """Force a re-read of ``workspace.json`` (e.g. after Settings
+        edited it from another part of the app)."""
+        self._profile = load_profile(self.root)
+        return self._profile
+
+    def set_profile(self, profile: HierarchyProfile) -> None:
+        save_profile(self.root, profile)
+        self._profile = profile
+
+    def _level_context(self, level_key: str, id_value: str, fields: dict) -> dict:
+        ctx = {"id": id_value}
+        level = self.profile.level(level_key)
+        if level:
+            for f in level.fields:
+                ctx[f.key] = fields.get(f.key, "")
+        return ctx
+
+    def _folder_name_for(self, level_key: str, id_value: str, fields: dict) -> str:
+        level = self.profile.level(level_key)
+        template = level.folder_template if level else "{id}"
+        ctx = self._level_context(level_key, id_value, fields)
+        rendered = render_template(template, ctx, for_filename=True)
+        return rendered or sanitize_name(id_value)
 
     # ------------------------------------------------------------------
     # containment
@@ -122,9 +166,19 @@ class Workspace:
     # create
     # ------------------------------------------------------------------
 
+    def _profile_field_extras(self, level_key: str, meta: dict) -> dict:
+        """Profile field values (from ``**meta``) for ``level_key`` that
+        aren't already covered by the level's fixed dataclass fields --
+        written as extra top-level keys in the level's meta JSON so the
+        hierarchy layer (``context_for_session``/catalog) can read them
+        back, alongside the id under the pre-existing key."""
+        level = self.profile.level(level_key)
+        if not level:
+            return {}
+        return {f.key: meta[f.key] for f in level.fields if f.key in meta}
+
     def create_project(self, name: str, **meta) -> Path:
-        safe = sanitize_name(name)
-        dirname = dedupe_name(self.root, safe)
+        dirname = dedupe_name(self.root, self._folder_name_for("project", name, meta))
         path = self.root / dirname
         path.mkdir(parents=True)
         pm = ProjectMeta(
@@ -133,13 +187,14 @@ class Workspace:
             customer=meta.get("customer", ""),
             created_utc=meta.get("created_utc") or utc_now_iso(),
         )
-        write_json_atomic(path / "project.json", pm.to_dict())
+        d = pm.to_dict()
+        d.update(self._profile_field_extras("project", meta))
+        write_json_atomic(path / "project.json", d)
         return path
 
     def create_sample(self, project: ProjectLike, sample_id: str, **meta) -> Path:
         project_path = self.resolve_project(project)
-        safe = sanitize_name(sample_id)
-        dirname = dedupe_name(project_path, safe)
+        dirname = dedupe_name(project_path, self._folder_name_for("sample", sample_id, meta))
         path = project_path / dirname
         path.mkdir(parents=True)
         sm = SampleMeta(
@@ -150,14 +205,15 @@ class Workspace:
             description=meta.get("description", ""),
             created_utc=meta.get("created_utc") or utc_now_iso(),
         )
-        write_json_atomic(path / "sample.json", sm.to_dict())
+        d = sm.to_dict()
+        d.update(self._profile_field_extras("sample", meta))
+        write_json_atomic(path / "sample.json", d)
         return path
 
     def create_lot(self, project: ProjectLike, sample_id: ProjectLike,
                     lot_number: str, **meta) -> Path:
         sample_path = self.resolve_sample(project, sample_id)
-        safe = sanitize_name(lot_number)
-        dirname = dedupe_name(sample_path, safe)
+        dirname = dedupe_name(sample_path, self._folder_name_for("lot", lot_number, meta))
         path = sample_path / dirname
         path.mkdir(parents=True)
         lm = LotMeta(
@@ -168,7 +224,12 @@ class Workspace:
             spec_limits=meta.get("spec_limits", {}) or {},
             created_utc=meta.get("created_utc") or utc_now_iso(),
         )
-        write_json_atomic(path / "lot.json", lm.to_dict())
+        d = lm.to_dict()
+        d.update(self._profile_field_extras("lot", meta))
+        write_json_atomic(path / "lot.json", d)
+        if self.profile.images_location == "lot":
+            for sub in ("images", "results", "thumbs", "exports"):
+                (path / sub).mkdir(exist_ok=True)
         return path
 
     # ------------------------------------------------------------------
@@ -206,8 +267,40 @@ class Workspace:
 
     def list_sessions(self, project: ProjectLike, sample_id: ProjectLike,
                        lot_number: ProjectLike) -> List[SessionMeta]:
-        """Fast: reads only manifest.json per session, no image/result IO."""
+        """Fast: reads only manifest.json per session, no image/result IO.
+
+        When the workspace's profile has ``images_location == "lot"`` the
+        lot folder *is* the (one, continuous) session: if it has its own
+        ``manifest.json`` that's returned as the sole entry (path == the
+        lot path), never mistaking its own ``images/``/``results/``/etc.
+        subfolders for sessions. Any legacy timestamped run subfolders
+        left over from before the workspace switched profiles are still
+        listed alongside it."""
         lot_path = self.resolve_lot(project, sample_id, lot_number)
+        if self.profile.images_location == "lot":
+            out: List[SessionMeta] = []
+            manifest_path = lot_path / "manifest.json"
+            if manifest_path.exists():
+                try:
+                    obj = SessionMeta.from_dict(read_json(manifest_path))
+                    obj.path = str(lot_path)
+                    out.append(obj)
+                except (OSError, ValueError):
+                    pass
+            if lot_path.exists():
+                for child in sorted(lot_path.iterdir()):
+                    if not child.is_dir() or child.name in RESERVED_LOT_SUBDIRS:
+                        continue
+                    mp = child / "manifest.json"
+                    if not mp.exists():
+                        continue
+                    try:
+                        obj = SessionMeta.from_dict(read_json(mp))
+                    except (OSError, ValueError):
+                        continue
+                    obj.path = str(child)
+                    out.append(obj)
+            return out
         return self._list_children_with_meta(lot_path, "manifest.json", SessionMeta)
 
     # ------------------------------------------------------------------
@@ -421,3 +514,126 @@ class Workspace:
             for manifest_path in target.rglob("manifest.json"):
                 catalog.index_session(manifest_path.parent)
         return target
+
+
+# ==========================================================================
+# HIER-01: "Rename existing folders to match" (Settings action)
+# ==========================================================================
+
+_RENAME_ORIGIN_FILENAME = "_rename_origin.json"
+
+_LEVEL_META = {
+    "project": ("project.json", "name"),
+    "sample": ("sample.json", "sample_id"),
+    "lot": ("lot.json", "lot_number"),
+}
+
+
+def _classify_level(path: Path) -> Optional[str]:
+    if (path / "lot.json").exists():
+        return "lot"
+    if (path / "sample.json").exists():
+        return "sample"
+    if (path / "project.json").exists():
+        return "project"
+    return None
+
+
+def _walk_hierarchy(path: Path):
+    """Yield ``(level_key, path)`` for every project/sample/lot directory
+    at or under ``path``, never descending into a lot's own reserved
+    subfolders (``images/``, ``results/``, ...) or ``.trash``."""
+    if not path.is_dir() or path.name in RESERVED_LOT_SUBDIRS:
+        return
+    level = _classify_level(path)
+    if level:
+        yield level, path
+    if level == "lot":
+        return
+    try:
+        children = sorted(path.iterdir())
+    except OSError:
+        return
+    for child in children:
+        if not child.is_dir() or child.name in RESERVED_LOT_SUBDIRS:
+            continue
+        yield from _walk_hierarchy(child)
+
+
+def rename_to_template(workspace: "Workspace", node_path: Union[str, Path],
+                        profile: Optional[HierarchyProfile] = None
+                        ) -> List[Tuple[Path, Path]]:
+    """Preview what "Rename existing folders to match" would do: for every
+    project/sample/lot directory at or under ``node_path``, the folder
+    name its level's ``folder_template`` (evaluated against that level's
+    saved id + profile field values) would produce, if different from its
+    current name. Read-only -- does not touch disk. Returns
+    ``[(old_path, new_path), ...]`` for entries that would actually
+    change, in top-down (parent-before-child) order; ``apply_renames``
+    reorders for safe execution."""
+    node_path = workspace._require_within_root(Path(node_path))
+    prof = profile or workspace.profile
+    plan: List[Tuple[Path, Path]] = []
+    for level_key, path in _walk_hierarchy(node_path):
+        meta_filename, id_key = _LEVEL_META[level_key]
+        try:
+            meta = read_json(path / meta_filename)
+        except (OSError, ValueError):
+            continue
+        id_value = meta.get(id_key, "")
+        level = prof.level(level_key)
+        template = level.folder_template if level else "{id}"
+        fields = {f.key: meta.get(f.key, "") for f in (level.fields if level else [])}
+        ctx = {"id": id_value, **fields}
+        try:
+            desired = render_template(template, ctx, for_filename=True) or sanitize_name(str(id_value))
+        except ValueError:
+            continue
+        if desired and desired != path.name:
+            plan.append((path, path.parent / desired))
+    return plan
+
+
+def apply_renames(workspace: "Workspace",
+                   plan: Sequence[Tuple[Union[str, Path], Union[str, Path]]],
+                   *, catalog=None) -> List[Tuple[Path, Path]]:
+    """Apply a rename plan (from ``rename_to_template``, or its reverse --
+    ``[(new, old) for old, new in applied]`` -- to undo a previous apply).
+    Every path is checked to stay within the workspace root; renames are
+    executed deepest-first so a parent rename never invalidates an
+    already-queued child path; a collision with an existing sibling (or
+    another entry in this same plan) is resolved with the usual
+    ``" (2)"`` dedupe suffix rather than overwriting anything. Each
+    renamed folder gets a ``_rename_origin.json`` marker recording where
+    it came from. If ``catalog`` is given, every session under a renamed
+    folder is re-indexed at its new path. Returns the renames actually
+    applied (post-dedupe), in the same ``(old, new)`` shape as the input,
+    so the caller can build the reverse plan for Undo."""
+    items = [(workspace._require_within_root(Path(o)), Path(n)) for o, n in plan]
+    items.sort(key=lambda pair: len(pair[0].parts), reverse=True)
+    applied: List[Tuple[Path, Path]] = []
+    for old, new in items:
+        if not old.exists():
+            continue  # already moved as part of an ancestor's rename, or stale
+        new = workspace._require_within_root(new)
+        if new == old:
+            continue
+        old_manifest_dirs = list(old.rglob("manifest.json")) if catalog is not None else []
+        parent = new.parent
+        final_name = dedupe_name(parent, new.name, exclude=old)
+        final = parent / final_name
+        origin_rel = str(old.resolve().relative_to(workspace.root.resolve()))
+        old.rename(final)
+        write_json_atomic(final / _RENAME_ORIGIN_FILENAME,
+                           {"origin_relpath": origin_rel, "renamed_utc": utc_now_iso()})
+        applied.append((old, final))
+        if catalog is not None:
+            for old_manifest in old_manifest_dirs:
+                old_dir = old_manifest.parent
+                try:
+                    rel = old_dir.relative_to(old)
+                except ValueError:
+                    continue
+                catalog.remove(str(old_dir))
+                catalog.index_session(final / rel)
+    return applied
