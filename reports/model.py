@@ -197,6 +197,22 @@ def lot_statistics_from_items(items: List[ReportImageInput], cfg: Any = None) ->
     return out
 
 
+def normalize_verdict(v: Any) -> Optional[Dict[str, Any]]:
+    """A plain ``dict`` for ``ReportModel.verdict``, or ``None``.
+
+    Accepts a ``data.specs.Verdict``, an equivalent dict, or ``None``.
+    Collapses the "no spec attached" case (``overall`` missing/empty/
+    ``"no_spec"``) to ``None`` so callers never need to special-case it and
+    a report with no spec renders byte-for-byte like before INN-02.
+    """
+    if v is None:
+        return None
+    d = v.to_dict() if hasattr(v, "to_dict") else dict(v)
+    if not d or not d.get("overall") or d.get("overall") == "no_spec":
+        return None
+    return d
+
+
 def _save_bgr(bgr: np.ndarray, asset_dir: str, name: str) -> str:
     os.makedirs(asset_dir, exist_ok=True)
     path = os.path.join(asset_dir, name)
@@ -242,6 +258,15 @@ class ReportModel:
     # "sample_statistics" (``is_enabled`` defaults to True).
     sample_statistics: List[Dict[str, Any]] = field(default_factory=list)
 
+    # INN-02: ``data.specs.Verdict.to_dict()`` -- PASS/FAIL/INCONCLUSIVE
+    # against a project/sample spec, or ``None`` (the default) when no spec
+    # is attached. Spec limits are opt-in: with ``verdict`` at its default
+    # ``None``, nothing changes anywhere in either renderer -- no badge, no
+    # verdict cell, no conformity statement, no extra columns. A verdict
+    # whose ``overall`` is ``"no_spec"`` (or missing/empty) is normalized to
+    # ``None`` on load/construction so it can never accidentally render.
+    verdict: Optional[Dict[str, Any]] = None
+
     # ------------------------------------------------------------------
     # Construction from analysis results
     # ------------------------------------------------------------------
@@ -263,6 +288,7 @@ class ReportModel:
         hierarchy: Optional[List[Dict[str, str]]] = None,
         export_basename: str = "",
         sample_statistics: Any = None,
+        verdict: Any = None,
     ) -> "ReportModel":
         """Build a model from freshly-analysed images.
 
@@ -347,6 +373,7 @@ class ReportModel:
         elif sample_statistics:
             model.sample_statistics = [
                 s.to_dict() if hasattr(s, "to_dict") else dict(s) for s in sample_statistics]
+        model.verdict = normalize_verdict(verdict)
         return model
 
     def _default_sections(self) -> List[Section]:
@@ -440,6 +467,7 @@ class ReportModel:
             "hierarchy": [dict(h) for h in self.hierarchy],
             "export_basename": self.export_basename,
             "sample_statistics": [dict(s) for s in self.sample_statistics],
+            "verdict": normalize_verdict(self.verdict),
         }
 
     def to_json(self, *, indent: int = 2) -> str:
@@ -463,6 +491,7 @@ class ReportModel:
             hierarchy=[dict(h) for h in (d.get("hierarchy") or [])],
             export_basename=d.get("export_basename", ""),
             sample_statistics=[dict(s) for s in (d.get("sample_statistics") or [])],
+            verdict=normalize_verdict(d.get("verdict")),
         )
 
     @classmethod

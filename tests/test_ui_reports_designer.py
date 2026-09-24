@@ -159,8 +159,10 @@ def test_build_edit_export_roundtrip(analysed, qtbot, tmp_path):
     assert Path(names[2]).stem in img_sheets[0] and Path(names[0]).stem in img_sheets[1]
     ov = wb["Overview"]
     assert ov["A1"].value == "Alloy 718 — Lot L-1"
-    data_rows = [r for r in ov.iter_rows(min_row=5, values_only=True)
-                 if r[1] and r[1] != "Combined (all images)"]
+    rows = list(ov.iter_rows(min_row=5, values_only=True))
+    assert any(r[0] == "Lot" and r[1] == "Fields (n)" for r in rows)   # INN-27 lot block
+    data_rows = [r for r in rows if isinstance(r[0], int) and r[1]
+                 and r[1] != "Combined (all images)"]
     assert len(data_rows) == 2                         # overview rows = included images
     assert any(r[1] == "Combined (all images)" for r in ov.iter_rows(min_row=5, values_only=True))
     first_img = wb[img_sheets[0]]

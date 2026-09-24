@@ -454,6 +454,7 @@ class ReportsPage(QWidget):
         self._gen += 1
         gen = self._gen
         kw = self._build_args()
+        kw["sample_statistics"] = rb.sample_statistics_arg(self.state, inputs)
         self._set_model(None)
         self.skeleton_caption.setText(f"Building the report from {len(inputs)} image"
                                       f"{'s' if len(inputs) != 1 else ''}…")
@@ -522,6 +523,7 @@ class ReportsPage(QWidget):
         self._gen += 1
         gen = self._gen
         kw = self._build_args()
+        kw["sample_statistics"] = rb.sample_statistics_arg(self.state, inputs)
         old = ReportModel.from_dict(self.model.to_dict())
         self._set_busy("refresh", "Refreshing the numbers…")
 

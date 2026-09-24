@@ -10,7 +10,7 @@ import contextlib
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from core.metrics import FieldResult
 from data.hierarchy import load_profile
@@ -35,6 +35,22 @@ CREATE TABLE IF NOT EXISTS sessions (
     mean_area_um2 REAL,
     mean_diameter_um REAL,
     profile_json TEXT
+);
+"""
+
+# INN-02: one row per lot directory -- a rebuildable cache of the
+# conformity verdict (data.specs.evaluate) for tree/browser badges. A lot
+# with no spec attached is simply never written here (see
+# ``compute_lot_verdict``/``index_lot_verdict``), so an unspecced workspace
+# never gains an "overall" column value anywhere.
+_LOT_VERDICT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS lot_verdicts (
+    path TEXT PRIMARY KEY,
+    project TEXT,
+    sample_id TEXT,
+    lot_number TEXT,
+    overall TEXT,
+    verdict_json TEXT
 );
 """
 
@@ -168,13 +184,73 @@ def _session_dirs_of_lot(lot_path: Path) -> List[Path]:
     return out
 
 
-def _field_from_saved(session_dir: Path, session_id: str, img: dict) -> FieldResult:
+# A refilter hook: ``(session_dir, manifest_dict, image_dict) -> AnalysisResult``
+# (or None).  Supplied by the UI (``ui.pages.lot_results.refilter_saved_field``)
+# so the data layer never imports the UI / image-processing adapters.
+Refilter = Callable[[Path, dict, dict], Any]
+
+_NUMERIC_FILTERS = ("min_area_px", "max_area_px", "max_aspect_ratio", "min_circularity")
+
+
+def _filter_state(manifest: dict, img: dict):
+    """Effective post-filter options + manual grain removals of one image,
+    resolved like the app does (per-image override > session filters >
+    pre-DATA-09 ``detection_params["post_filters"]`` > default: border
+    exclusion when a scan area is set)."""
+    pf = (manifest.get("detection_params") or {}).get("post_filters") or {}
+    legacy = (pf.get("images") or {}).get(img.get("filename", "")) or {}
+    opts = (img.get("filters_override") or legacy.get("options")
+            or manifest.get("filters") or pf.get("options"))
+    if not isinstance(opts, dict):
+        opts = {"exclude_border": bool(manifest.get("scan_rect"))}
+    manual = img.get("manual_excluded") or legacy.get("manual") or []
+    return opts, {int(i) for i in manual}
+
+
+def edits_not_in_saved_result(summary: dict, grains: List[dict], opts: dict,
+                              manual) -> bool:
+    """True when an image's saved summary/grains predate its grain filters
+    or manual grain removals.  The app normally re-saves the filtered
+    result, but legacy sessions, manifest-only edits and interrupted saves
+    can leave it raw.  Cheap: only reads what is already loaded."""
+    kept = {int(g.get("grain_id", -1)) for g in grains}
+    if set(manual) & kept:
+        return True
+    lim = {k: float(opts.get(k) or 0) for k in _NUMERIC_FILTERS}
+    for g in grains:
+        area = float(g.get("area_px", 0) or 0)
+        if (lim["min_area_px"] and area < lim["min_area_px"]) or \
+           (lim["max_area_px"] and area > lim["max_area_px"]) or \
+           (lim["max_aspect_ratio"]
+                and float(g.get("aspect_ratio", 0) or 0) > lim["max_aspect_ratio"]) or \
+           (lim["min_circularity"]
+                and float(g.get("circularity", 1) or 0) < lim["min_circularity"]):
+            return True
+    active = bool(manual) or any(bool(opts.get(k)) for k in
+                                 ("exclude_border", "exclude_touching_invalid",
+                                  "exclude_low_contrast")) or any(lim.values())
+    if not active:
+        return False
+    astm = summary.get("astm") if isinstance(summary.get("astm"), dict) else {}
+    # core.postfilter stamps every filtered ASTM evaluation with this note
+    return not any("Post-filter" in str(n) for n in (astm.get("notes") or []))
+
+
+def _field_from_saved(session_dir: Path, session_id: str, img: dict,
+                      manifest: Optional[dict] = None,
+                      refilter: Optional[Refilter] = None) -> FieldResult:
     stem = Path(img.get("filename", "")).stem
     summary: dict = {}
     try:
         summary = read_json(session_dir / "results" / f"{stem}.summary.json")
     except (OSError, ValueError):
         pass
+    grains: List[dict] = []
+    try:
+        grains = list(read_json(session_dir / "results" / f"{stem}.grains.json")
+                      .get("grains", []) or [])
+    except (OSError, ValueError, AttributeError):
+        grains = []
     astm = summary.get("astm") if isinstance(summary.get("astm"), dict) else {}
     g = summary.get("astm_g")
     if g is None:
@@ -183,13 +259,12 @@ def _field_from_saved(session_dir: Path, session_id: str, img: dict) -> FieldRes
     ecds: List[float] = []
     if calibrated:
         try:
-            grains = read_json(session_dir / "results" / f"{stem}.grains.json").get("grains", [])
             ecds = [float(x.get("equivalent_diameter_um", 0.0)) for x in grains]
-        except (OSError, ValueError, AttributeError):
+        except (AttributeError, TypeError, ValueError):
             ecds = []
     mean_d = float(summary.get("mean_diameter_um") or 0.0)
     thumb = session_dir / "thumbs" / f"{stem}.jpg"
-    return FieldResult(
+    field = FieldResult(
         field_id=f"{session_id}/{img.get('filename', '')}",
         G=float(g) if g is not None else None,
         method=str(astm.get("primary_method", "") or ""),
@@ -204,13 +279,33 @@ def _field_from_saved(session_dir: Path, session_id: str, img: dict) -> FieldRes
         thumb_path=str(thumb) if thumb.exists() else "",
         ecds_um=ecds,
     )
+    if refilter is not None and manifest is not None:
+        opts, manual = _filter_state(manifest, img)
+        if edits_not_in_saved_result(summary, grains, opts, manual):
+            try:
+                res = refilter(session_dir, manifest, img)
+            except Exception:
+                res = None
+            if res is not None:
+                edited = FieldResult.from_analysis(res, field_id=field.field_id)
+                for k in ("G", "method", "ecd_mean_um", "grain_count", "valid_area_pct",
+                          "ecds_um"):
+                    setattr(field, k, getattr(edited, k))
+    return field
 
 
-def fields_for_lot(lot_path: Union[str, Path]) -> List[FieldResult]:
+def fields_for_lot(lot_path: Union[str, Path],
+                   refilter: Optional[Refilter] = None) -> List[FieldResult]:
     """One ``FieldResult`` per analysed image (latest saved result) in
     every session of the lot at ``lot_path``, excluded fields included
     (flagged ``included=False``) so the UI can list them.  Feed the list
-    to ``core.metrics.sample_statistics``."""
+    to ``core.metrics.sample_statistics``.
+
+    Grain filters / manual grain removals: the app saves the *filtered*
+    result, so the saved G normally already honours them.  When a saved
+    result predates the image's edits (``edits_not_in_saved_result``) and
+    ``refilter`` is given, that image's G / ECD come from it instead --
+    the same numbers the Review page and the exports use."""
     out: List[FieldResult] = []
     for sdir in _session_dirs_of_lot(Path(lot_path)):
         try:
@@ -220,7 +315,73 @@ def fields_for_lot(lot_path: Union[str, Path]) -> List[FieldResult]:
         sid = m.get("session_id") or sdir.name
         for img in m.get("images", []) or []:
             if isinstance(img, dict) and img.get("has_result"):
-                out.append(_field_from_saved(sdir, sid, img))
+                out.append(_field_from_saved(sdir, sid, img, m, refilter))
+    return out
+
+
+# ----------------------------------------------------------------------
+# INN-02: per-lot conformity verdict (spec limits). Always re-derivable
+# from project.json + the manifests on disk -- the ``lot_verdicts`` table
+# (below) is only a rebuildable cache for tree/browser badges, same as
+# ``sessions`` is for search (D-04). A lot whose project defines no spec
+# is never written here, so an unspecced workspace has no verdict rows at
+# all -- no badge, nothing to fall back on but "no_spec".
+# ----------------------------------------------------------------------
+
+def _project_meta_for_lot(lot_path: Path) -> dict:
+    p = lot_path.parent.parent / "project.json"
+    try:
+        return read_json(p) if p.exists() else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _sample_id_for_lot(lot_path: Path) -> str:
+    p = lot_path.parent / "sample.json"
+    try:
+        d = read_json(p) if p.exists() else {}
+    except (OSError, ValueError):
+        d = {}
+    return str(d.get("sample_id") or lot_path.parent.name)
+
+
+def _lot_number_for(lot_path: Path) -> str:
+    p = lot_path / "lot.json"
+    try:
+        d = read_json(p) if p.exists() else {}
+    except (OSError, ValueError):
+        d = {}
+    return str(d.get("lot_number") or lot_path.name)
+
+
+def compute_lot_verdict(lot_path: Union[str, Path]) -> dict:
+    """Live (uncached) INN-02 conformity verdict for the lot at
+    ``lot_path``: resolves the applicable spec out of ``project.json``
+    (sample-level override wins -- ``data.specs.select_spec``), computes
+    lot statistics (``fields_for_lot`` + ``core.metrics.sample_statistics``)
+    only if a spec applies, and evaluates. Always returns a dict --
+    ``data.specs.Verdict(overall="no_spec").to_dict()`` when the project/
+    sample has no spec attached, never an error, never a badge."""
+    from core.metrics import sample_statistics as _sample_statistics
+    from data.specs import evaluate, select_spec, specs_from_project_dict
+
+    lot_path = Path(lot_path)
+    specs = specs_from_project_dict(_project_meta_for_lot(lot_path))
+    spec = select_spec(specs, _sample_id_for_lot(lot_path)) if specs else None
+    stats = _sample_statistics(fields_for_lot(lot_path)) if spec is not None else None
+    return evaluate(spec, stats).to_dict()
+
+
+def _lot_dirs(root: Path) -> List[Path]:
+    """Every distinct lot directory under ``root``, derived from every
+    session's manifest (HIER-01-aware via ``_level_meta_dirs``)."""
+    out: List[Path] = []
+    seen = set()
+    for session_dir in _manifest_paths(root):
+        lot_dir = _level_meta_dirs(session_dir)["lot"]
+        if lot_dir not in seen:
+            seen.add(lot_dir)
+            out.append(lot_dir)
     return out
 
 
@@ -248,6 +409,7 @@ class Catalog:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")
             conn.execute(_SCHEMA)
+            conn.execute(_LOT_VERDICT_SCHEMA)
             for migration in _MIGRATIONS:
                 try:
                     conn.execute(migration)
@@ -325,7 +487,8 @@ class Catalog:
         out.sort(key=lambda r: r.get("created_utc", ""), reverse=True)
         return out
 
-    def fields_for_lot(self, lot_id: Union[str, Path]) -> List[FieldResult]:
+    def fields_for_lot(self, lot_id: Union[str, Path],
+                       refilter: Optional[Refilter] = None) -> List[FieldResult]:
         """Latest per-image results of a lot (INN-27). ``lot_id`` is the lot
         folder (absolute, or relative to the workspace root) or a lot
         number, resolved through the index (manifest scan fallback)."""
@@ -333,14 +496,62 @@ class Catalog:
         if not p.is_absolute():
             p = self.root / p
         if p.is_dir():
-            return fields_for_lot(p)
+            return fields_for_lot(p, refilter)
         lots: List[Path] = []
         for row in self.search("", {"lot_number": str(lot_id)}):
             sdir = Path(row["path"])
             lot = sdir if (sdir / "lot.json").exists() else sdir.parent
             if lot not in lots:
                 lots.append(lot)
-        return [f for lot in lots for f in fields_for_lot(lot)]
+        return [f for lot in lots for f in fields_for_lot(lot, refilter)]
+
+    def index_lot_verdict(self, lot_path: Union[str, Path]) -> dict:
+        """Compute (``compute_lot_verdict``) and cache the INN-02 verdict
+        for one lot. Returns the verdict dict regardless of whether the
+        cache write itself succeeds. A lot with no spec attached
+        (``overall == "no_spec"``) is never written -- any stale cached row
+        (spec since removed) is dropped instead -- so a workspace with no
+        specs defined never gains a single ``lot_verdicts`` row."""
+        lot_path = Path(lot_path)
+        verdict = compute_lot_verdict(lot_path)
+        overall = str(verdict.get("overall", "no_spec"))
+        try:
+            with self._connection() as conn:
+                if overall == "no_spec":
+                    conn.execute("DELETE FROM lot_verdicts WHERE path = ?", (str(lot_path),))
+                else:
+                    project_meta = _project_meta_for_lot(lot_path)
+                    row = (str(lot_path), str(project_meta.get("name", "")),
+                           _sample_id_for_lot(lot_path), _lot_number_for(lot_path),
+                           overall, json.dumps(verdict))
+                    conn.execute(
+                        "INSERT INTO lot_verdicts (path, project, sample_id, lot_number, overall, verdict_json) "
+                        "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET "
+                        "project=excluded.project, sample_id=excluded.sample_id, "
+                        "lot_number=excluded.lot_number, overall=excluded.overall, "
+                        "verdict_json=excluded.verdict_json",
+                        row,
+                    )
+        except sqlite3.Error:
+            pass
+        return verdict
+
+    def get_lot_verdict(self, lot_path: Union[str, Path]) -> dict:
+        """The cached INN-02 verdict for ``lot_path`` if indexed, else a
+        live evaluation (DB missing/locked/never indexed -- D-04: the cache
+        is never the source of truth)."""
+        lot_path = Path(lot_path)
+        try:
+            with self._connection() as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT verdict_json FROM lot_verdicts WHERE path = ?", (str(lot_path),)
+                ).fetchone()
+                if row is not None:
+                    return json.loads(row["verdict_json"])
+        except (sqlite3.Error, ValueError):
+            pass
+        return compute_lot_verdict(lot_path)
 
     def rebuild(self) -> int:
         """Rescan every manifest.json under the workspace root and rebuild
@@ -353,6 +564,7 @@ class Catalog:
                 try:
                     with self._connection() as conn:
                         conn.execute("DELETE FROM sessions")
+                        conn.execute("DELETE FROM lot_verdicts")
                 except sqlite3.Error:
                     # Corrupt DB file: drop it and start fresh.
                     for suffix in ("", "-wal", "-shm"):
@@ -368,4 +580,8 @@ class Catalog:
                 )
         except sqlite3.Error:
             pass
+        # INN-02: recompute every lot's verdict cache so a rebuild restores
+        # the same badges a live evaluation would show right now.
+        for lot_dir in _lot_dirs(self.root):
+            self.index_lot_verdict(lot_dir)
         return len(rows)

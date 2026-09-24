@@ -230,6 +230,11 @@ class ProjectMeta:
     description: str = ""
     customer: str = ""
     created_utc: str = ""
+    # INN-02: [{id, name, revision, decision_rule, rules:[{metric, lower,
+    # upper, unit}], applies_to:{sample_ids?}}, ...] -- plain dicts here
+    # (data.specs.Spec.to_dict()/from_dict() owns the shape); kept generic
+    # so this module doesn't need to import data.specs.
+    specs: list = field(default_factory=list)
     path: Optional[str] = None  # runtime-only, set when listed/loaded
 
     def to_dict(self) -> dict:
@@ -341,6 +346,11 @@ class SessionMeta:
     # INN-27: append-only audit notes (field include/exclude with reason,
     # operator, UTC time) until a global audit log (INN-07) exists.
     audit_log: List[dict] = field(default_factory=list)
+    # INN-29 (optional feature): calibration check this session cites
+    # (data/cal_records.py). None/"" when verification is not in use.
+    calibration_check_id: Optional[str] = None
+    calibration_status: str = ""      # "" (off) | "verified" | "not verified"
+    calibration_reason: str = ""
     path: Optional[str] = None
 
     def to_dict(self) -> dict:
@@ -469,6 +479,10 @@ class AppSettings:
     # INN-27 lot statistics (ASTM E112 sec. 15: >= 5 fields, %RA <= 10 %)
     required_fields: int = 5
     target_RA_pct: float = 10.0
+    # INN-29 calibration verification: OPT-IN, default off (user requirement)
+    calibration_verification_enabled: bool = False
+    # [{name, tolerance_pct (2.0), check_interval_days (7)}]
+    instruments: List[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)

@@ -27,7 +27,7 @@ import re
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from reports.model import ImageSummary, ReportImageInput, ReportModel, Section
 
@@ -90,7 +90,59 @@ def results_fingerprint(state) -> str:
         area = round(float(sum(g.area_px for g in r.grains)), 3)
         h.update(json.dumps([im.filename, ids, area, round(float(r.px_per_um or 0.0), 6)])
                  .encode("utf-8"))
+    excl = field_exclusions(state)
+    if excl:                      # INN-27: excluding a field changes the lot block
+        h.update(json.dumps(sorted(excl.items())).encode("utf-8"))
     return h.hexdigest()[:16]
+
+
+# ======================================================================
+# INN-27: lot statistics block (opt-in "auto")
+# ======================================================================
+
+def field_exclusions(state) -> Dict[str, str]:
+    """``{filename: reason}`` of the open session's images excluded from the
+    lot statistics (Projects ▸ Lot result), read from its manifest on disk."""
+    s = state.session
+    if s is None:
+        return {}
+    try:
+        m = json.loads((Path(s.path) / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {str(i.get("filename", "")): str(i.get("exclusion_reason") or "")
+            for i in (m.get("images") or []) if isinstance(i, dict)
+            and i.get("included", True) is False}
+
+
+def sample_statistics_arg(state, inputs: Sequence[ReportImageInput]):
+    """What the report export passes as ``from_results(sample_statistics=)``:
+    ``"auto"`` (one lot block per lot, every image a field) -- or, when the
+    user excluded fields or changed the required fields / target %RA in
+    Settings, the same blocks computed with those choices.  ``None`` for a
+    single image (a lot result needs >= 2 fields; the report is unchanged)."""
+    if len(inputs) < 2:
+        return None
+    from core.metrics import FieldResult, sample_statistics
+    settings = getattr(state, "settings", None)
+    cfg = {"required_fields": int(getattr(settings, "required_fields", 5) or 5),
+           "target_RA_pct": float(getattr(settings, "target_RA_pct", 10.0) or 10.0)}
+    excl = field_exclusions(state)
+    if not excl and cfg == {"required_fields": 5, "target_RA_pct": 10.0}:
+        return "auto"
+    groups: Dict[str, list] = {}
+    for idx, it in enumerate(inputs, 1):
+        name = os.path.basename(it.image_path or "") or f"image_{idx}"
+        f = FieldResult.from_analysis(it.result, field_id=name)
+        if name in excl:
+            f.included, f.exclusion_reason = False, excl[name] or None
+        groups.setdefault(it.lot_number or "", []).append(f)
+    out = []
+    for lot, fields in groups.items():
+        st = sample_statistics(fields, cfg)
+        st.label = lot or "All images"
+        out.append(st.to_dict())
+    return out
 
 
 def analysed_count(state) -> int:
@@ -225,8 +277,9 @@ def build_model(inputs: Sequence[ReportImageInput], *, title: str, operator: str
                 organization: str = "", logo_path: Optional[str] = None,
                 metadata: Optional[dict] = None, asset_dir: Optional[str] = None,
                 fingerprint: str = "", hierarchy: Optional[list] = None,
-                export_basename: str = "") -> ReportModel:
-    """Pool-thread: ReportModel from snapshots (writes overlay PNGs)."""
+                export_basename: str = "", sample_statistics=None) -> ReportModel:
+    """Pool-thread: ReportModel from snapshots (writes overlay PNGs).
+    ``sample_statistics``: see :func:`sample_statistics_arg` (INN-27)."""
     if asset_dir:
         os.makedirs(asset_dir, exist_ok=True)
     meta = dict(metadata or {})
@@ -238,7 +291,8 @@ def build_model(inputs: Sequence[ReportImageInput], *, title: str, operator: str
     model = ReportModel.from_results(list(inputs), title=title, operator=operator,
                                      organization=organization, logo_path=logo_path,
                                      metadata=meta, asset_dir=asset_dir,
-                                     hierarchy=hierarchy, export_basename=export_basename)
+                                     hierarchy=hierarchy, export_basename=export_basename,
+                                     sample_statistics=sample_statistics)
     normalize(model)
     return model
 

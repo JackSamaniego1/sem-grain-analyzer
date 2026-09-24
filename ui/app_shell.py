@@ -313,6 +313,8 @@ class AppShell(QMainWindow):
         st.undo_stack.canRedoChanged.connect(self.act_redo.setEnabled)
         st.session_loading.connect(lambda p: self._status(f"Opening {Path(p).name}…"))
         self.projects.open_session_requested.connect(self.open_session)
+        self.projects.open_image_requested.connect(
+            lambda path, name: self.open_session(path, select=name))
         self.projects.new_session_requested.connect(lambda pre: self.new_session(prefill=pre))
         self.projects.import_requested.connect(lambda paths: self.new_session(images=paths))
         self.projects.choose_workspace_requested.connect(self.settings_page.choose_workspace)
@@ -346,6 +348,9 @@ class AppShell(QMainWindow):
 
     def _on_page(self, key: str) -> None:
         self.stack.set_current_widget(self.pages[key])
+        if hasattr(self, "act_delete"):
+            self.act_delete.setText("Move selected to &trash" if key == "projects"
+                                    else "Remove selected &grains")
         self.search_popup.hide()
         self._update_breadcrumb(key)
         self.state.ui_state["last_page"] = key
@@ -468,7 +473,10 @@ class AppShell(QMainWindow):
             self.state.close_session()      # images were appended on disk: reload
         self.open_session(path, prefer="analyze", probe=True)
 
-    def open_session(self, path, prefer: Optional[str] = None, probe: bool = False) -> None:
+    def open_session(self, path, prefer: Optional[str] = None, probe: bool = False,
+                     select: Optional[str] = None) -> None:
+        """Open a session / lot record; ``select`` (an image filename) makes
+        that image current -- Review when it has a result, else Analyze."""
         path = Path(path)
 
         def done(ok):
@@ -477,6 +485,11 @@ class AppShell(QMainWindow):
             if probe:
                 self.state.probe_metadata()
             has = any(im.result is not None for im in self.state.images())
+            target = next((im for im in self.state.images() if im.filename == select),
+                          None) if select else None
+            if target is not None:
+                self.state.set_current_image(target.uid)
+                has = target.result is not None
             self.go(prefer or ("review" if has else "analyze"))
             self.projects.reload()
             n = len(self.state.images())
@@ -530,9 +543,8 @@ class AppShell(QMainWindow):
             ids = self.analyze.canvas.selected()
             if ids and self.state.delete_grains(self.state.current_uid, ids):
                 self.analyze.canvas.clear_selection()
-        elif page == "projects" and self.projects._selected_card is not None:
-            it = self.projects._selected_card.item
-            self.projects.ask_delete(NodeRef(it["kind"], it["path"]))
+        elif page == "projects":
+            self.projects.delete_pressed()
 
     def _need_image(self):
         im = self.state.current_image()

@@ -255,6 +255,16 @@ def _build_formats(wb: "xlsxwriter.Workbook", series: Dict[str, str] = SERIES
                                      "border": 1})
     f["hyperlink_band"] = wb.add_format({"font_color": "#1155CC", "underline": 1, "align": "left", "indent": 1,
                                           "border": 1, "bg_color": SERIES["band"]})
+    # INN-02: conformity verdict badge -- only ever used when
+    # ``ReportModel.verdict`` is set (a spec is attached); a report with no
+    # spec never touches these formats.
+    f["verdict_pass"] = wb.add_format({"bold": True, "font_size": 14, "font_color": "#FFFFFF",
+                                        "bg_color": "#2E7D32", "align": "center", "valign": "vcenter"})
+    f["verdict_fail"] = wb.add_format({"bold": True, "font_size": 14, "font_color": "#FFFFFF",
+                                        "bg_color": "#C62828", "align": "center", "valign": "vcenter"})
+    f["verdict_inconclusive"] = wb.add_format({"bold": True, "font_size": 14, "font_color": "#FFFFFF",
+                                                "bg_color": "#E9A400", "align": "center", "valign": "vcenter"})
+    f["verdict_rule"] = wb.add_format({"font_size": 10, "align": "left", "indent": 1, "border": 1})
     return f
 
 
@@ -327,6 +337,12 @@ def _write_overview(wb, model: ReportModel, images: List[ImageSummary], fmts, na
         if hier:
             ws.merge_range(2, 0, 2, ncols - 1, model.hierarchy_header(), fmts["subtitle"])
         header_row = 3
+
+    # INN-02: only ever drawn when a spec is attached (``model.verdict`` is
+    # not ``None``, see ``reports.model.normalize_verdict``) -- a report
+    # with no spec has no verdict cell/rule table at all.
+    if model.verdict and model.verdict.get("overall") not in (None, "no_spec"):
+        header_row = _write_verdict_block(ws, model, fmts, header_row, ncols) + 1
 
     if model.sample_statistics and model.is_enabled("sample_statistics", default=True):
         header_row = _write_lot_block(ws, model, fmts, header_row, ncols) + 1
@@ -431,6 +447,27 @@ def _write_overview(wb, model: ReportModel, images: List[ImageSummary], fmts, na
         widths = [5, 30, 12, 12, 9, 13, 13, 13, 15, 14, 13, 11, 10, 15, 15, 9]
     for c, w in enumerate(widths):
         ws.set_column(c, c, w)
+
+
+def _write_verdict_block(ws, model: ReportModel, fmts, top: int, ncols: int) -> int:
+    """INN-02 conformity verdict banner (only called when ``model.verdict``
+    is set -- see ``_write_overview``). Returns the first free row."""
+    v = model.verdict
+    overall = str(v.get("overall", "")).lower()
+    fmt = fmts.get(f"verdict_{overall}", fmts["verdict_inconclusive"])
+    label = {"pass": "PASS", "fail": "FAIL", "inconclusive": "INCONCLUSIVE"}.get(overall, overall.upper())
+    spec_bits = " ".join(x for x in (v.get("spec_name"), v.get("spec_revision")) if x)
+    headline = f"Conformity: {label}" + (f"  —  {spec_bits}" if spec_bits else "")
+    ws.merge_range(top, 0, top, ncols - 1, headline, fmt)
+    ws.set_row(top, 24)
+    r = top + 1
+    for rule in v.get("rules", []) or []:
+        ws.merge_range(r, 0, r, ncols - 1, str(rule.get("text", "")), fmts["verdict_rule"])
+        r += 1
+    if v.get("statement"):
+        ws.merge_range(r, 0, r, ncols - 1, str(v["statement"]), fmts["caption"])
+        r += 1
+    return r
 
 
 _LOT_COLS = ["Lot", "Fields (n)", "Fields needed", "Mean G", "± 95% CI (G)", "G low", "G high",
@@ -724,6 +761,17 @@ def _write_methods(wb, model: ReportModel, fmts, name: str) -> None:
     ws.write(r, 0, "Instrument", fmts["label"]); ws.write(r, 1, str(model.metadata.get("instrument", "—")), fmts["value"]); r += 1
     ws.write(r, 0, "Calibrated", fmts["label"])
     ws.write(r, 1, "Yes" if any(i.has_calibration for i in model.images) else "No", fmts["value"]); r += 1
+
+    if model.verdict and model.verdict.get("overall") not in (None, "no_spec"):
+        r += 1
+        ws.merge_range(r, 0, r, 2, "Conformity", fmts["section"]); r += 1
+        ws.write(r, 0, "Specification", fmts["label"])
+        spec_bits = " ".join(x for x in (model.verdict.get("spec_name"), model.verdict.get("spec_revision")) if x)
+        ws.write(r, 1, spec_bits or "—", fmts["value"]); r += 1
+        ws.write(r, 0, "Decision rule", fmts["label"])
+        ws.write(r, 1, str(model.verdict.get("decision_rule", "—")), fmts["value"]); r += 1
+        ws.write(r, 0, "Statement", fmts["label"])
+        ws.write(r, 1, str(model.verdict.get("statement", "—")), fmts["value"]); r += 1
 
     r += 1
     ws.merge_range(r, 0, r, 2, "Software", fmts["section"]); r += 1

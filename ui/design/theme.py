@@ -430,6 +430,10 @@ QCheckBox::indicator:hover, QRadioButton::indicator:hover {{ border-color: {a.ho
 QCheckBox::indicator:focus, QRadioButton::indicator:focus {{ border-color: {b.focus}; }}
 QCheckBox::indicator:checked {{ background: {a.base}; border-color: {a.base}; image: url({check}); }}
 QCheckBox::indicator:indeterminate {{ background: {a.base}; border-color: {a.base}; image: url({dash}); }}
+QTableView::indicator {{ width: 16px; height: 16px; background: {s.surface2};
+    border: 1px solid {b.strong}; border-radius: {r.sm}px; }}
+QTableView::indicator:hover {{ border-color: {a.hover}; }}
+QTableView::indicator:checked {{ background: {a.base}; border-color: {a.base}; image: url({check}); }}
 QRadioButton::indicator:checked {{ border-color: {a.base};
     background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,
         stop:0 {a.fg}, stop:0.32 {a.fg}, stop:0.42 {a.base}, stop:1 {a.base}); }}

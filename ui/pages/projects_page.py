@@ -23,15 +23,15 @@ from typing import Dict, List, Optional
 from PySide6.QtCore import QModelIndex, QSize, Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QMenu,
-    QSizePolicy, QSplitter, QTreeView, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QHBoxLayout,
+    QLabel, QMenu, QSizePolicy, QSplitter, QTreeView, QVBoxLayout, QWidget,
 )
 
 from data import file_ops
 from data.catalog import Catalog
 from data.hierarchy import FieldDef
 from data.models import read_json
-from data.session_io import import_loose_images
+from data.session_io import import_loose_images, set_image_included
 from data.workspace import Workspace
 from ui import hierarchy_ui as hui
 from ui.app_state import NodeRef, node_display_name, node_for_path
@@ -41,6 +41,7 @@ from ui.format import fmt_date_utc, fmt_int, fmt_opt, smart_format
 from ui.pages.common import (
     CardGrid, ConfirmBar, MetricCard, PageHeader, Panel, SelectableCard, ThumbStrip, scroll,
 )
+from ui.pages.lot_results import LotResultPanel, load_lot_result
 from ui.widgets import (
     AnimatedButton, Badge, Card, Divider, EmptyState, FadeStackedWidget, IconButton,
     KeyValueList, SearchBox, SelectionBar, Skeleton, label,
@@ -247,10 +248,12 @@ def load_contents(kind: str, path: str, root: str) -> dict:
     return {"kind": kind, "path": p, "items": items, "meta": meta, "acquisition": acq}
 
 
-def trash_node(ws: Workspace, root: Path, kind: str, path: Path) -> Path:
+def trash_node(ws: Workspace, root: Path, kind: str, path: Path,
+               catalog: Optional[Catalog] = None) -> Path:
     """Move a session / lot / sample / project into ``<root>/.trash`` through
-    the data layer (containment-checked, catalog kept in sync)."""
-    cat = Catalog(root)
+    the data layer (containment-checked, catalog kept in sync).  A batched
+    delete passes its one ``catalog`` in instead of building one per item."""
+    cat = catalog if catalog is not None else Catalog(root)
     path = Path(path)
     if kind == "session":
         dest = ws.delete_session(path)
@@ -768,6 +771,7 @@ class DetailsPanel(Panel):
 
 class ProjectsPage(QWidget):
     open_session_requested = Signal(object)          # Path
+    open_image_requested = Signal(object, str)       # session/lot Path, image filename
     new_session_requested = Signal(object)           # dict prefill
     import_requested = Signal(list)                  # image paths (no lot selected)
     choose_workspace_requested = Signal()
@@ -787,6 +791,7 @@ class ProjectsPage(QWidget):
         self.move_dialog = None
         self.rename_dialog = None
         self._loading = False
+        self._lot_gen = 0
         self._build()
         state.workspace_changed.connect(self.reload)
         state.node_changed.connect(self._on_state_node)
@@ -939,6 +944,12 @@ class ProjectsPage(QWidget):
         gw = QWidget()
         gwl = QVBoxLayout(gw)
         gwl.setContentsMargins(4, 4, 4, 12)
+        # INN-27: lot result card + field table, above the lot's cards
+        self.lot_panel = LotResultPanel(lambda: self.state.settings)
+        self.lot_panel.include_requested.connect(self._set_field_included)
+        self.lot_panel.open_field_requested.connect(self.open_image_requested)
+        self.lot_panel.hide()
+        gwl.addWidget(self.lot_panel)
         gwl.addWidget(self.grid)
         gwl.addStretch(1)
         self.grid_scroll = scroll(gw)
@@ -1261,6 +1272,65 @@ class ProjectsPage(QWidget):
         run_task(load_contents, node.kind, str(node.path), str(self.state.root),
                  on_done=lambda d: self._on_contents(gen, d),
                  on_error=lambda m: self._on_contents_error(gen, m))
+        self.load_lot_result()
+
+    # ------------------------------------------------------------------ lot result (INN-27)
+    def load_lot_result(self) -> None:
+        """(Re)compute the Lot result card off-thread for the current lot."""
+        self._lot_gen += 1
+        gen = self._lot_gen
+        node = self._node
+        if node is None or node.kind != "lot":
+            self.lot_panel.hide()
+            return
+        if self.lot_panel.data is None or self.lot_panel.data.get("lot") != node.path:
+            self.lot_panel.set_loading()
+
+        def done(data):
+            if gen != self._lot_gen:
+                return
+            if not data["fields"]:
+                self.lot_panel.hide()
+                return
+            self.lot_panel.set_data(data)
+            self.lot_panel.show()
+
+        def failed(msg):
+            if gen == self._lot_gen:
+                self.lot_panel.set_error(msg.splitlines()[0])
+                self.lot_panel.show()
+
+        run_task(load_lot_result, str(self.state.root), str(node.path),
+                 on_done=done, on_error=failed)
+
+    def is_lot_loading(self) -> bool:
+        return self.lot_panel.isVisible() and self.lot_panel.card.skeleton.isVisible()
+
+    def _set_field_included(self, field, include: bool, reason: str) -> None:
+        """Include / exclude one field (audited in the session manifest)."""
+        root = self.state.root
+        operator = self.state.operator()
+
+        def work():
+            return set_image_included(field.session_path, field.image_name, include,
+                                      reason=reason or None, operator=operator,
+                                      catalog=Catalog(root))
+
+        def done(_note):
+            if include:
+                self._toast("Field included again", f"{field.image_name} counts in the lot "
+                            "statistics. Logged in the audit trail.", "success")
+            else:
+                self._toast("Field excluded", f"{field.image_name}: {reason}. Logged in the "
+                            "audit trail.", "success", "Undo",
+                            lambda: self._set_field_included(field, True, ""))
+            self.load_lot_result()
+
+        def failed(msg):
+            self.lot_panel.table.set_checked(field.field_id, field.included)
+            self._toast("Could not change the field", msg.splitlines()[0], "danger")
+
+        run_task(work, on_done=done, on_error=failed)
 
     def is_loading(self) -> bool:
         return self._loading
@@ -1644,7 +1714,8 @@ class ProjectsPage(QWidget):
     def _card_open(self, card: NodeCard) -> None:
         it = card.item
         if it["kind"] == "image":
-            self.open_session_requested.emit(it["session"])
+            self.open_image_requested.emit(Path(it["session"]), it.get("filename") or
+                                           Path(it["path"]).name)
         elif it["kind"] == "session" or (it["kind"] == "lot" and hui.lot_mode(self.profile)):
             self.open_session_requested.emit(it["path"])
         else:
@@ -1707,6 +1778,24 @@ class ProjectsPage(QWidget):
         return {"project_path": lot.parent.parent, "sample_path": lot.parent, "lot_path": lot}
 
     # ------------------------------------------------------------------ delete (UI-09)
+    def delete_pressed(self) -> None:
+        """Delete key / Edit ▸ Move selected to trash on this page: the
+        selected cards (checkbox / Ctrl / Shift selection) if any, else the
+        single clicked card, else -- with the tree focused -- the tree's
+        current folder.  Never acts while typing or inside the lot result."""
+        fw = QApplication.focusWidget()
+        if fw is not None and (self.lot_panel.isAncestorOf(fw) or fw is self.lot_panel):
+            return
+        if self.confirm.isVisible() or self.form.isVisible():
+            return
+        sel = self.selected_items()
+        if sel:
+            self.ask_delete_items(sel)
+        elif self._selected_card is not None and self._selected_card.selectable:
+            self.ask_delete_items([self._selected_card.item])
+        elif fw is self.tree and self._node is not None and self._node.kind != "workspace":
+            self.ask_delete(self._node)
+
     def ask_delete(self, node: Optional[NodeRef] = None) -> None:
         """Delete (move to trash) ``node`` -- or the whole selection when
         ``node`` is one of several selected cards."""
@@ -1774,7 +1863,7 @@ class ProjectsPage(QWidget):
             cat = Catalog(root)
             dests = [file_ops.trash_images(ws, sd, fns, catalog=cat) for sd, fns in images.items()]
             for kind, path in folders:
-                dests.append(trash_node(ws, root, kind, path))
+                dests.append(trash_node(ws, root, kind, path, catalog=cat))
             return dests
 
         def done(dests):
