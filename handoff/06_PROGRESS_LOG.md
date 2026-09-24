@@ -24,3 +24,8 @@
 - **Stage-1 UI agent (opus) hit API rate limit mid-task**. Work recovered via checkpoint commit 04a65b7; session continued with haiku agents for refinement.
 - **New rows created**: REP-08 (renderers + grain notes), DET-05 (auto-detect info bars), INN-05 (SEM metadata calibration), REV-S2 (report designer code review), FIX-01 (crash on close fix).
 - **Next**: Review REP-08/DET-05/INN-05, wire into Analyze page; UI-05 lasso/merge/split; Phase 5 features (INN-27, INN-02, INN-29, INN-30); Phase 6 journey tests + release.
+
+## 2026-09-24 — Opus coordinator (cont.), saved before usage limit
+- Committed: REP-08 exports honour designer edits (fb09964); DET-05 info-bar + INN-05 metadata calibration core (e6d0e1d); HIER-01 reports (b50751d) and data layer (a916add) — user request: Job # › Part Number › Lot, images in the lot, user-editable naming; session trash undo (19a20be); context/usage discipline rules in CLAUDE.md (17855db).
+- User set autoContinueAtUsageLimit=true (user settings) and asked for frequent handoff saves + context clears.
+- HIER-01 UI agent hit the usage limit; partial work checkpointed as 93937b1 (tests may fail). Resume per SESSION_STATE.md.
