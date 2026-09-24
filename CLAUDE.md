@@ -26,8 +26,8 @@ PySide6 desktop app for grain detection/measurement on SEM images (Python 3.11).
 
 ## Context & usage discipline (user request — keep token usage low)
 - **Save the handoff after EVERY commit**, not just at the end of a phase: `/save-handoff` (scribe runs on haiku — cheap). `handoff/SESSION_STATE.md` must always be good enough to resume cold.
-- **Clear context often.** After every 2–3 committed tasks, or whenever the conversation is long / a phase ends: (1) make sure nothing is uncommitted and no background agent is still running (wait for their reports, commit, save handoff), (2) tell the user in one line: "Handoff saved — safe to `/clear` now, then say: *Read handoff/SESSION_STATE.md and continue*." Claude cannot run `/clear` itself; the user types it.
-- **On resume after a clear:** read only `handoff/SESSION_STATE.md` first, then the specific files/specs the next task needs. Do NOT re-read the whole handoff folder, the codebase analysis, or big source files "for context".
+- **Clear context only when it's big.** The `UserPromptSubmit` hook (`.claude/hooks/context_hooks.py check`) injects a "CONTEXT SIZE" notice once the live context passes 120k tokens. Only then: (1) make sure nothing is uncommitted and no background agent is still running (wait, commit, save handoff), (2) tell the user in one line: "Context is large (~Nk tokens) — type `/clear`, then just say: *continue*." Don't suggest `/clear` otherwise. Claude cannot run `/clear` itself.
+- **On resume after a clear/compact:** the `SessionStart` hook auto-injects `handoff/SESSION_STATE.md` — don't re-read it; read only the specific files/specs the next task needs. Do NOT re-read the whole handoff folder, the codebase analysis, or big source files "for context".
 - **Keep the coordinator's context small:** delegate implementation to agents; ask agents for capped reports; don't paste or re-read large files, diffs, or test output (use `tail`/`grep`, `-q` pytest); view screenshots only when judging a UI deliverable.
 - **Prefer cheap models** for mechanical work (scribe/haiku, reviewers/sonnet); use opus only for design-heavy UI or algorithm work.
 

@@ -1,6 +1,5 @@
 {
   "permissions": {
-    "defaultMode": "acceptEdits",
     "allow": [
       "Bash",
       "PowerShell",
@@ -14,7 +13,65 @@
       "Skill",
       "ToolSearch",
       "WebFetch",
-      "WebSearch"
+      "WebSearch",
+      "PowerShell(cd \"C:\\\\Users\\\\saman\\\\GRAIN ANALYSIS TOOL\"; .venv\\\\Scripts\\\\python -m pytest tests\\\\test_offline.py -v -p no:cacheprovider --no-header 2>&1 | Select-String \"PASSED|FAILED|SKIPPED|ERROR\" | ForEach-Object { $_.Line }; .venv\\\\Scripts\\\\python create_nsis_script.py | Out-Null; Select-String -Path installer.nsi -Pattern \"add rule\" | ForEach-Object { $_.Line.Trim\\(\\) }; Remove-Item installer.nsi)",
+      "Bash(../.venv/Scripts/python -c ' *)",
+      "Bash(git diff *)",
+      "Read(//tmp/**)",
+      "Bash(.venv/Scripts/python -m pytest tests/test_offline.py -q -p no:cacheprovider)",
+      "Bash(QT_QPA_PLATFORM=offscreen .venv/Scripts/python \"C:\\\\Users\\\\saman\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-saman-GRAIN-ANALYSIS-TOOL\\\\f844a6dd-7a00-42fd-8161-681f98032b02\\\\scratchpad\\\\headless_check.py\")",
+      "Bash(python -c \"import yaml,sys; yaml.safe_load\\(open\\('.github/workflows/build.yml'\\)\\); print\\('YAML OK'\\)\")",
+      "Bash(.venv/Scripts/python -c \"import yaml; yaml.safe_load\\(open\\('.github/workflows/build.yml'\\)\\); print\\('YAML OK'\\)\")",
+      "Bash(sed -i '0,/^import ast$/s//import ast\\\\nimport re/' tests/test_offline.py)",
+      "Bash(sed -i 's#dist/SEMGrainAnalyzer.app#dist/GrainAnalyzer.app#g; s#SEMGrainAnalyzer.dmg#GrainAnalyzer.dmg#g; s#'\"'\"'SEM Grain Analyzer'\"'\"'#'\"'\"'Grain Analyzer'\"'\"'#' BUILD_MAC.sh)",
+      "Bash(git commit -q -m ' *)",
+      "Bash(.venv/Scripts/python -c \"import xlsxwriter, pptx, openpyxl; print\\(xlsxwriter.__version__, pptx.__version__, openpyxl.__version__\\)\")",
+      "Bash(git commit *)",
+      "PowerShell(.venv\\\\Scripts\\\\python -c \"import pytestqt; print\\('pytestqt ok'\\)\")",
+      "PowerShell(.venv\\\\Scripts\\\\python -c \"import qtawesome as qta; print\\(len\\(qta._resource['iconic'].charmap\\) if hasattr\\(qta,'_resource'\\) else ''\\)\")",
+      "PowerShell(.venv\\\\Scripts\\\\python -c \"import qtawesome, os; print\\(os.listdir\\(os.path.join\\(os.path.dirname\\(qtawesome.__file__\\),'fonts'\\)\\)\\)\")",
+      "PowerShell(git -C . status --short)",
+      "PowerShell(.venv\\\\Scripts\\\\python -c \"from ui.design.tokens import contrast_ratio as c; [print\\(x, round\\(c\\('#FFFFFF',x\\),2\\)\\) for x in ['#2A72D2','#276CC8','#2E78D8','#1F6FD6','#2B74D4','#1B8A5A','#1C8558','#C8353C','#CF3A41','#D0393F']]\")",
+      "Bash(.venv/Scripts/python -c \"import ast; ast.parse\\(open\\('reports/excel_renderer.py'\\).read\\(\\)\\)\")",
+      "Bash(.venv/Scripts/python -c ' *)",
+      "Bash(.venv/Scripts/python -c \"import ast; ast.parse\\(open\\('reports/pptx_renderer.py'\\).read\\(\\)\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(.venv/Scripts/python /tmp/leak_check.py)",
+      "Bash(.venv/Scripts/python \"C:\\\\Users\\\\saman\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-saman-GRAIN-ANALYSIS-TOOL\\\\f844a6dd-7a00-42fd-8161-681f98032b02\\\\scratchpad\\\\adversarial.py\")",
+      "Bash(.venv/Scripts/python -m pytest tests/test_report_model.py tests/test_report_excel.py tests/test_report_pptx.py -q -p no:cacheprovider)",
+      "Bash(.venv/Scripts/python -m pytest tests/test_data_review_fixes.py -q -p no:cacheprovider)",
+      "Bash(.venv/Scripts/python -m pytest tests/test_report_excel.py::test_sample_output_written_to_scratch tests/test_report_pptx.py::test_sample_output_written_to_scratch -q -p no:cacheprovider)",
+      "Bash(.venv/Scripts/python \"C:\\\\Users\\\\saman\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-saman-GRAIN-ANALYSIS-TOOL\\\\f844a6dd-7a00-42fd-8161-681f98032b02\\\\scratchpad\\\\review_reports.py\")",
+      "PowerShell($p='ui\\\\gallery.py'; $s=[IO.File]::ReadAllText\\($p\\); $s=$s.Replace\\('J. Samaniego','A. Operator'\\); [IO.File]::WriteAllText\\($p,$s\\); $env:QT_QPA_PLATFORM='offscreen'; .venv\\\\Scripts\\\\python -m ui.gallery --capture scratch/ui)",
+      "PowerShell($env:QT_QPA_PLATFORM='offscreen'; .venv\\\\Scripts\\\\python -m ui.gallery --capture scratch/ui | Out-Null)",
+      "Bash(.venv/Scripts/python \"C:\\\\Users\\\\saman\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-saman-GRAIN-ANALYSIS-TOOL\\\\f844a6dd-7a00-42fd-8161-681f98032b02\\\\scratchpad\\\\review_reports2.py\")",
+      "PowerShell(.venv\\\\Scripts\\\\python -m pytest tests/test_ui_widgets.py -q -p no:cacheprovider 2>&1)"
+    ],
+    "defaultMode": "acceptEdits"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.venv/Scripts/python.exe\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/context_hooks.py\" resume",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.venv/Scripts/python.exe\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/context_hooks.py\" check",
+            "timeout": 15
+          }
+        ]
+      }
     ]
   }
 }
