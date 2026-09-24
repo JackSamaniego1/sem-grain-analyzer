@@ -69,6 +69,7 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 | HIER-04 | Acceptance check: Excel/PowerPoint export hierarchy labels + export basename vs HIER-01 spec | qa-engineer | todo | Follow-up from HIER-01 UI; re-verify export format |
 | UI-09 | Projects browser file management (user request 2026-09-24): right-click menu on every folder/image (Delete → trash with undo, Move to…, Rename, Open); per-row checkbox to select items; multi-select (checkbox, Ctrl/Shift-click) with a selection action bar "N selected — Delete · Move to… · Clear"; Move to… opens a picker of valid destination folders (same level only, e.g. images → another lot). Deleting must be obvious, not hidden. | ui-designer + data-architect | todo | **Priority: next after HIER-04.** Uses existing data-layer trash/restore. Tests required. |
 | UI-10 | First-run guided tour of a basic SAM analysis: animated spotlight + dimmed overlay, callout cards, Skip, "Don't show on startup", Help → Show tour to replay. Spec: handoff/specs/UI-10.md | ui-designer (opus) | todo | User request 2026-09-24. **Priority: after UI-09.** |
+| UI-11 | Scale-bar calibration modes: Rectangle (editable box, width only, snap to bar ends), Level line (horizontal-locked, loupe, snap; default), Free line (with tilt warning). Spec: handoff/specs/UI-11.md | detection-engineer (core snap) + ui-designer | todo | User request 2026-09-24. **Priority: with/after UI-09**; affects measurement accuracy. |
 
 ## Phase 5 — Innovation (populated from 07_IDEAS_BACKLOG.md)
 | ID | Task | Owner | Status | Notes |
