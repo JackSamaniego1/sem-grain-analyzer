@@ -17,7 +17,11 @@ env/
 # IDE
 .vscode/
 .idea/
-.claude/
+.claude/settings.local.json
+
+# Scratch / QA artefacts
+scratch/
+.pytest_cache/
 
 # OS
 .DS_Store
