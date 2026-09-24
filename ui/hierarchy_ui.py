@@ -83,6 +83,27 @@ def id_label(profile: Optional[HierarchyProfile], kind: str) -> str:
             "session": "Session label"}.get(kind, "Name")
 
 
+def record_word(profile: Optional[HierarchyProfile]) -> str:
+    """What one analysis record is called in running text: the lot label
+    when images live in the lot ("lot", "Work Order"), else "session"."""
+    if not lot_mode(profile):
+        return "session"
+    lab = kind_label(profile, "lot")
+    return lab.lower() if (" " not in lab and lab[:1].isupper() and lab[1:].islower()) else lab
+
+
+def cap_first(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
+def level_chain(profile: Optional[HierarchyProfile]) -> str:
+    """"Job # › Part Number › Lot" (+ " › Session" in session mode)."""
+    parts = [kind_label(profile, k) for k in LEVELS]
+    if not lot_mode(profile):
+        parts.append("Session")
+    return " › ".join(parts)
+
+
 def plural(label: str) -> str:
     s = label.strip()
     if s.endswith(" #"):
@@ -320,6 +341,7 @@ def snake(text: str) -> str:
 
 
 __all__ = [
+    "record_word", "cap_first", "level_chain",
     "LEVELS", "ID_KEYS", "META_FILES", "KIND_ICON", "LEGACY_FIELDS", "SESSION_FIELDS",
     "FIELD_KINDS", "KIND_NAMES", "SEM_META_KEYS", "legacy_profile", "is_legacy_fields",
     "lot_mode", "kind_label", "id_label", "plural", "count_text", "child_kind",

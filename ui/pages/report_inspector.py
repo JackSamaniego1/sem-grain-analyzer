@@ -69,7 +69,13 @@ class ReportInspector(QWidget):
         g.setVerticalSpacing(SPACE.sm)
         g.setColumnStretch(1, 1)
         self.title = QLineEdit()
-        self.title.setToolTip("Report title — cover, sheet headers and slide footers")
+        self.title.setToolTip("Report title — cover, sheet headers and slide footers\n"
+                              "(default from Settings ▸ Folder structure & naming)")
+        self.export_name = QLineEdit()
+        self.export_name.setPlaceholderText("Title and date")
+        self.export_name.setToolTip("File name of the Excel / PowerPoint export (without "
+                                    "extension).\nDefault from Settings ▸ Folder structure & "
+                                    "naming ▸ Export file name")
         self.org = QLineEdit()
         self.org.setPlaceholderText("Organization / laboratory")
         self.org.setToolTip("Printed on the cover and the Overview sheet")
@@ -106,7 +112,8 @@ class ReportInspector(QWidget):
             self.palette.addItem(text, key)
         self.palette.setToolTip("Colour scheme of the exported workbook and deck (navy titles, "
                                 "colour-coded sheet tabs)")
-        rows = [("Title", self.title), ("Organization", self.org), ("Operator", self.operator),
+        rows = [("Title", self.title), ("File name", self.export_name),
+                ("Organization", self.org), ("Operator", self.operator),
                 ("Date", drow), ("Logo", lrow), ("Units", self.units),
                 ("Area bins", self.bins_area), ("Diameter bins", self.bins_diam),
                 ("Palette", self.palette)]
@@ -150,6 +157,7 @@ class ReportInspector(QWidget):
         v.addStretch(1)
 
         self.title.textEdited.connect(lambda t: self._set("title", t))
+        self.export_name.textEdited.connect(lambda t: self._set("export_basename", t.strip()))
         self.org.textEdited.connect(lambda t: self._set("organization", t))
         self.operator.textEdited.connect(lambda t: self._set("operator", t))
         self.date.textEdited.connect(lambda t: self._set("date", t))
@@ -192,7 +200,8 @@ class ReportInspector(QWidget):
         if m is None:
             return
         self._filling = True
-        for w, v in ((self.title, m.title), (self.org, m.organization),
+        for w, v in ((self.title, m.title), (self.export_name, m.export_basename),
+                     (self.org, m.organization),
                      (self.operator, m.operator), (self.date, m.date)):
             if w.text() != (v or ""):
                 w.setText(v or "")
@@ -228,7 +237,9 @@ class ReportInspector(QWidget):
             if img is None:
                 return
             self.sec_sel.setToolTip("")
-            self.sel_lay.addWidget(label(os.path.basename(img.image_path), "body_strong"))
+            name = label(img.display(), "body_strong")
+            name.setToolTip(img.image_path)
+            self.sel_lay.addWidget(name)
             cb = QCheckBox("Include this image")
             cb.setChecked(img.include)
             cb.setToolTip("Untick to leave this image out of every sheet and slide")
@@ -236,8 +247,11 @@ class ReportInspector(QWidget):
             self.sel_lay.addWidget(cb)
             self.include_box = cb
             au = "calibrated" if img.has_calibration else "not calibrated — sizes in px"
-            kv = KeyValueList([("Sample", img.sample_id or "—"), ("Lot", img.lot_number or "—"),
-                               ("Grains", f"{img.grain_count:,}"),
+            levels = [(lab, val or "—") for (_, lab), val in
+                      zip(m.level_columns(), m.row_levels(img))]
+            if os.path.basename(img.image_path) != img.display():
+                levels.append(("File", os.path.basename(img.image_path)))
+            kv = KeyValueList(levels + [("Grains", f"{img.grain_count:,}"),
                                ("Scale", f"{img.px_per_um:.4g} px/µm ({au})"
                                 if img.px_per_um > 0 else au),
                                ("ASTM G", f"{img.astm_g:.2f}" if img.astm_g is not None else "—")])

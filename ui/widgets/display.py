@@ -81,6 +81,16 @@ class EmptyState(QWidget):
             self.action_button = None
         lay.addStretch(1)
 
+    def set_texts(self, title: str, body: Optional[str] = None,
+                  action_text: Optional[str] = None) -> None:
+        """Relabel in place (e.g. when the workspace's level names change)."""
+        self.title_label.setText(title)
+        if body is not None:
+            self.body_label.setText(body)
+            self.body_label.setVisible(bool(body))
+        if action_text is not None and self.action_button is not None:
+            self.action_button.setText(action_text)
+
 
 class Divider(ThemeAware, QWidget):
     """1 px hairline (horizontal or vertical) with an optional overline label."""
@@ -135,6 +145,11 @@ class KeyValueList(QWidget):
         self._mono = set(mono_keys)
         if items:
             self.set_items(items)
+
+    def set_mono_keys(self, keys: Sequence[str]) -> None:
+        """Keys whose values use the monospace role (applies to the next
+        :meth:`set_items`)."""
+        self._mono = set(keys)
 
     def set_items(self, items: Items) -> None:
         """Replace all rows."""

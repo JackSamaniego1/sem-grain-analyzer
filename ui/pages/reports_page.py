@@ -47,6 +47,7 @@ KIND_FILTER = {"xlsx": "Excel workbook (*.xlsx)", "pptx": "PowerPoint presentati
 class ReportsPage(QWidget):
     report_changed = Signal()          # model replaced (built / reloaded / refreshed)
     exported = Signal(list)            # paths written
+    _rec = "session"                   # HIER-01: what one record is called ("lot")
 
     AUTOSAVE_MS = 800
 
@@ -249,6 +250,8 @@ class ReportsPage(QWidget):
             sig.connect(lambda _uid: self._check_timer.start())
         st.images_changed.connect(lambda: (self._check_timer.start(), self._update_view()))
         st.about_to_flush.connect(self.flush)
+        st.profile_changed.connect(self.on_profile_changed)
+        self._relabel()
         st.undo_stack.indexChanged.connect(self._on_undo_index)
         self.empty_build.action_triggered.connect(self.build_from_session)
         self.btn_rebuild.clicked.connect(self._ask_rebuild)
@@ -276,7 +279,7 @@ class ReportsPage(QWidget):
         s = self.state.session
         has_model = self.model is not None
         if s is None:
-            self.header.subtitle.setText("Open a session to design its report")
+            self.header.subtitle.setText(f"Open a {self._rec} to design its report")
             target = self.empty_session
         elif self._busy in ("build", "load") and not has_model:
             target = self.skeleton
@@ -395,12 +398,48 @@ class ReportsPage(QWidget):
         st = self.state
         s = st.session
         defaults = st.ui_state.get("report_defaults", {}) or {}
-        title = f"Grain Analysis Report — {s.title}" if s else "Grain Analysis Report"
-        return dict(title=title, operator=st.operator(),
+        hd = rb.hierarchy_defaults(st)       # HIER-01: labels, title, export name
+        return dict(title=hd["title"], operator=st.operator(),
                     organization=defaults.get("organization", ""),
                     metadata=rb.session_metadata(st),
                     asset_dir=str(s.path / rb.REPORT_ASSETS),
-                    fingerprint=rb.results_fingerprint(st))
+                    fingerprint=rb.results_fingerprint(st),
+                    hierarchy=hd["hierarchy"], export_basename=hd["export_basename"])
+
+    def _relabel(self) -> None:
+        from ui import hierarchy_ui as hui
+        rec = self._rec = hui.record_word(self.state.profile)
+        self.empty_session.set_texts(
+            f"No {rec} open",
+            f"Open a {rec} from Projects to design its report — editable titles, captions, "
+            "sections and image order, exported to Excel and PowerPoint.")
+        self.empty_results.set_texts(
+            "Nothing to report yet",
+            f"Analyse the {rec}'s images first; the report is built from the filtered "
+            "results you see on the Review page.")
+        self.empty_build.set_texts(
+            "Build the report",
+            f"Creates an editable report from this {rec}'s filtered results: an overview "
+            "table with one row per image, summary charts, one page per image, methods and "
+            "raw data (always last). Nothing is exported until you choose to.",
+            f"Build report from {rec}")
+        self.save_badge.setToolTip(f"Report edits are saved to the {rec} automatically")
+        self.btn_xlsx.setToolTip(f"Export the Excel workbook to the {rec}'s exports folder")
+        self.btn_pptx.setToolTip(f"Export the PowerPoint deck to the {rec}'s exports folder")
+
+    def on_profile_changed(self) -> None:
+        """HIER-01: levels renamed / templates edited in Settings — relabel
+        the open report (title and file name only while not hand-edited)."""
+        self._relabel()
+        if self.model is None or self.state.session is None or self._busy:
+            return
+        if rb.apply_profile(self.model, rb.hierarchy_defaults(self.state)):
+            self.inspector.load()
+            self.inspector.show_selection(self._current_key)
+            w = self.preview_stack.currentWidget()
+            if w is not None and hasattr(w, "refresh"):
+                w.refresh()
+            self.edited("profile")
 
     def build_from_session(self, then: Optional[Callable[[], None]] = None) -> None:
         s = self.state.session
@@ -864,6 +903,7 @@ class ReportsPage(QWidget):
             return
         model = self.model
         stem_title = model.title
+        basename = model.export_basename or ""
         if only_uid is not None:
             im = self.state.session.image(only_uid)
             if im is None or im.result is None:
@@ -871,9 +911,11 @@ class ReportsPage(QWidget):
                 return
             model = rb.only_image_model(model, im.filename)
             stem_title = Path(im.filename).stem
+            if basename:
+                basename = f"{basename}_{im.display_name}"
         jobs: List[Tuple[str, str]] = []
         for k in kinds:
-            p = rb.default_export_path(s.path, stem_title, k)
+            p = rb.default_export_path(s.path, stem_title, k, basename=basename)
             if ask:
                 start = self.state.settings.last_export_dir or str(p.parent)
                 chosen, _ = QFileDialog.getSaveFileName(

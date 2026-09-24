@@ -17,7 +17,8 @@ from typing import Dict, List, Optional
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
-    QColor, QCursor, QFontMetricsF, QImage, QPainter, QPainterPath, QPen, QPixmap,
+    QBrush, QColor, QCursor, QFontMetricsF, QImage, QPainter, QPainterPath, QPen, QPixmap,
+    QTransform,
 )
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
@@ -59,6 +60,7 @@ class GrainCanvas(ThemeAware, QWidget):
         self._view = "original"
         self._show_excluded = False
         self._scan_rect = None
+        self._info_bar_rect = None      # DET-05: detected SEM data bar (never analysed)
         self._grains: Dict[int, object] = {}
         self._labels = None
         self._excluded: Dict[int, list] = {}
@@ -168,6 +170,16 @@ class GrainCanvas(ThemeAware, QWidget):
     def set_scan_rect(self, rect) -> None:
         self._scan_rect = tuple(rect) if rect else None
         self.update()
+
+    def set_info_bar_rect(self, rect) -> None:
+        """Shade the detected SEM info bar (hatched: "not analysed")."""
+        r = tuple(int(v) for v in rect) if rect else None
+        if r != self._info_bar_rect:
+            self._info_bar_rect = r
+            self.update()
+
+    def info_bar_rect(self):
+        return self._info_bar_rect
 
     def selected(self) -> List[int]:
         return list(self._selected)
@@ -415,6 +427,18 @@ class GrainCanvas(ThemeAware, QWidget):
             ex = self._pm.get("excluded_layer")
             if ex is not None and not ex.isNull():
                 p.drawPixmap(0, 0, ex)
+        if self._info_bar_rect:
+            x, y, w, h = self._info_bar_rect
+            shade = QColor(qcolor(t.surface.bg))
+            shade.setAlphaF(0.45)
+            p.fillRect(QRectF(x, y, w, h), shade)
+            hatch = QColor(qcolor(t.text.tertiary))
+            hatch.setAlphaF(0.55)
+            br = QBrush(hatch, Qt.BDiagPattern)
+            tr = QTransform()
+            tr.scale(1.0 / max(self._scale, 1e-6), 1.0 / max(self._scale, 1e-6))
+            br.setTransform(tr)
+            p.fillRect(QRectF(x, y, w, h), br)
         if self._scan_rect:
             x, y, w, h = self._scan_rect
             pen = QPen(qcolor(t.accent.text), 1.5, Qt.DashLine)

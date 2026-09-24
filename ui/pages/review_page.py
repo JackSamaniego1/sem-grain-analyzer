@@ -130,6 +130,8 @@ class ReviewPage(QWidget):
         self._syncing = False
         self._build()
         self._wire()
+        self._relabel()
+        self.state.profile_changed.connect(self._relabel)
 
     # ------------------------------------------------------------------ build
     def _build(self) -> None:
@@ -202,7 +204,7 @@ class ReviewPage(QWidget):
         bottom = QWidget()
         bv = QVBoxLayout(bottom)
         bv.setContentsMargins(SPACE.lg, SPACE.sm, SPACE.lg, SPACE.md)
-        cmp_card = Card("All images in this session",
+        cmp_card = self.cmp_card = Card("All images in this session",
                         "One row per image — click a row to open that image")
         self.btn_export = AnimatedButton("Export report", "excel", "secondary", "sm")
         self.btn_export.setToolTip("Excel report of every analysed image, saved in the session's "
@@ -329,6 +331,19 @@ class ReviewPage(QWidget):
         h.addWidget(side)
         self.stack.addWidget(content)
 
+    def _relabel(self) -> None:
+        """HIER-01: the workspace's words ("lot" instead of "session")."""
+        from ui import hierarchy_ui as hui
+        rec = hui.record_word(self.state.profile)
+        self.empty.set_texts("Nothing to review yet",
+                             f"Open a {rec} from Projects, or analyse images on the Analyze "
+                             "page — results appear here.")
+        self.cmp_card.set_title(f"All images in this {rec}",
+                                "One row per image — click a row to open that image")
+        self.btn_export.setToolTip(f"Excel report of every analysed image, saved in the {rec}'s "
+                                   "exports folder (Ctrl+E). Edit it on the Reports page.")
+        self.cmp.setToolTip(f"Every image of the {rec} side by side")
+
     @staticmethod
     def _wrap(w: QWidget) -> QWidget:
         host = QWidget()
@@ -422,7 +437,8 @@ class ReviewPage(QWidget):
             return
         if not image_changed:
             self.canvas.set_result(im.result, raw=im.raw, excluded=im.excluded)
-        self.img_title.setText(im.filename)
+        self.img_title.setText(im.display_name)
+        self.img_title.setToolTip(im.tooltip())
         kind, text = status_text(im)
         extra = []
         if im.excluded:
@@ -518,7 +534,7 @@ class ReviewPage(QWidget):
         for row, im in enumerate(imgs):
             r = im.result
             kind, text = status_text(im)
-            vals = [im.filename, text if r is None else "Analysed"]
+            vals = [im.display_name, text if r is None else "Analysed"]
             if r is not None:
                 au, am, du, dm = units_for(r)
                 g = astm_g(r)

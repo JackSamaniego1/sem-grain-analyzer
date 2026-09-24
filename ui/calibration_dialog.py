@@ -23,6 +23,26 @@ def _bgr_to_qpixmap(arr: np.ndarray) -> QPixmap:
     return QPixmap.fromImage(qi)
 
 
+def suggest_bar_length_um(length_px: float, px_per_um: float) -> float | None:
+    """Real length of a scale bar ``length_px`` long at ``px_per_um``,
+    snapped to the "nice" value printed on SEM bars (1/2/2.5/5 × 10^n)
+    when within 4 %, else rounded to 3 significant figures."""
+    import math
+    if not length_px or not px_per_um or length_px <= 0 or px_per_um <= 0:
+        return None
+    raw = float(length_px) / float(px_per_um)
+    exp = math.floor(math.log10(raw))
+    best = None
+    for e in (exp - 1, exp, exp + 1):
+        for m in (1.0, 2.0, 2.5, 5.0, 10.0):
+            v = m * 10.0 ** e
+            if best is None or abs(v - raw) < abs(best - raw):
+                best = v
+    if best is not None and abs(best - raw) / raw <= 0.04:
+        return float(f"{best:.6g}")
+    return float(f"{raw:.3g}")
+
+
 class ZoomableCalibCanvas(QWidget):
     """
     Zoomable, pannable canvas for picking 2 calibration points.
@@ -60,6 +80,12 @@ class ZoomableCalibCanvas(QWidget):
     def reset_points(self):
         self._points = []
         self.update()
+
+    def set_points(self, p1: tuple[int, int], p2: tuple[int, int]) -> None:
+        """Place both points programmatically (auto-detected scale bar)."""
+        self._points = [(int(p1[0]), int(p1[1])), (int(p2[0]), int(p2[1]))]
+        self.update()
+        self.point_placed.emit()
 
     def pixel_distance(self) -> float | None:
         if len(self._points) < 2:
@@ -206,6 +232,9 @@ class CalibrationDialog(QDialog):
         self._image_bgr = image_bgr
         self._px_distance: float | None = None
         self._build_ui()
+        self.auto_bar = None
+        if auto_bar_px is not None:
+            self.prefill(auto_bar_px)
 
     def _build_ui(self):
         lay = QVBoxLayout(self)
@@ -221,6 +250,11 @@ class CalibrationDialog(QDialog):
         inst.setProperty("tone", "secondary")  # styled by the v3 theme tokens
         inst.setWordWrap(True)
         lay.addWidget(inst)
+        self.lbl_auto = QLabel("")
+        self.lbl_auto.setProperty("tone", "accent")
+        self.lbl_auto.setWordWrap(True)
+        self.lbl_auto.hide()
+        lay.addWidget(self.lbl_auto)
 
         # Zoomable canvas
         self.canvas = ZoomableCalibCanvas()
@@ -283,6 +317,34 @@ class CalibrationDialog(QDialog):
         btn_row.addWidget(self.btn_apply)
 
         lay.addLayout(btn_row)
+
+    def prefill(self, bar: dict | None, length_um: float | None = None) -> bool:
+        """Pre-place the two points on an automatically found scale bar
+        (``core.scale_bar.find_scale_bar_line`` result) and, when the
+        image's metadata gives the pixel size, the bar's real length.
+        The user only checks and presses Apply."""
+        if not bar or not bar.get("rect"):
+            return False
+        x, y, w, h = (int(v) for v in bar["rect"])
+        if w < 4:
+            return False
+        cy = y + h // 2
+        self.auto_bar = dict(bar)
+        self.canvas.set_points((x, cy), (x + w - 1, cy))
+        msg = (f"Scale bar found automatically ({w} px) — check the two points, "
+               "then enter the length printed on the label.")
+        if length_um and length_um > 0:
+            if length_um < 1.0:
+                self.unit_combo.setCurrentText("nm")
+                self.length_spin.setValue(round(length_um * 1000.0, 3))
+            else:
+                self.unit_combo.setCurrentText("µm")
+                self.length_spin.setValue(round(length_um, 3))
+            msg = (f"Scale bar found automatically ({w} px); its length was filled in from "
+                   "the image metadata — check it against the label, then Apply.")
+        self.lbl_auto.setText(msg)
+        self.lbl_auto.show()
+        return True
 
     def _on_point_placed(self):
         n = self.canvas.point_count()

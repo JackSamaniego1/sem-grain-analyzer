@@ -267,7 +267,7 @@ def test_excluding_grain_from_report_matches_review(analysed, qtbot):
     shell.go("review")
     shell.review._fill_comparison()
     r = [i for i in range(shell.review.cmp.rowCount())
-         if shell.review.cmp.item(i, 0).text() == doc.filename][0]
+         if shell.review.cmp.item(i, 0).text() == doc.display_name][0]
     assert shell.review.cmp.item(r, 2).text() == str(before - 1)
     # undo (Ctrl+Z) puts it back everywhere
     st.undo_stack.undo()

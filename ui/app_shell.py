@@ -121,6 +121,11 @@ class AppShell(QMainWindow):
         self.setMinimumSize(1180, 720)
         self.resize(1600, 960)
         self._search_gen = 0
+        self._meta_cal: list = []                 # INN-05 toasts, batched
+        self._meta_cal_timer = QTimer(self)
+        self._meta_cal_timer.setSingleShot(True)
+        self._meta_cal_timer.setInterval(350)
+        self._meta_cal_timer.timeout.connect(self._flush_metadata_calibration)
         self._build()
         self._build_menus()
         self._wire()
@@ -283,6 +288,7 @@ class AppShell(QMainWindow):
         self.op_btn.clicked.connect(lambda: (self.go("settings"), self.settings_page.operator.setFocus()))
         st.node_changed.connect(lambda _n: self._update_breadcrumb())
         st.profile_changed.connect(self._on_profile_changed)
+        st.metadata_calibration.connect(self._on_metadata_calibration)
         st.session_opened.connect(self._on_session_opened)
         st.session_closed.connect(self._on_session_closed)
         st.save_state_changed.connect(self._on_save_state)
@@ -525,8 +531,14 @@ class AppShell(QMainWindow):
         im = self._need_image()
         if im is None:
             return
-        from ui.calibration_dialog import CalibrationDialog
+        from ui.calibration_dialog import CalibrationDialog, suggest_bar_length_um
         dlg = CalibrationDialog(image_bgr=im.image_bgr, parent=self)
+        bar = self._find_scale_bar(im)
+        if bar:
+            sug = im.cal_suggestion
+            length = suggest_bar_length_um(bar.get("length_px", 0), float(sug[0])) \
+                if sug else None
+            dlg.prefill(bar, length)
         per_image = self.analyze.cal_override.isChecked()
         dlg.btn_apply.setText("Apply to this image" if per_image else "Apply to all images")
 
@@ -540,6 +552,66 @@ class AppShell(QMainWindow):
                 self.analyze_all if analysed else None)
         dlg.calibration_set.connect(apply)
         dlg.exec()
+
+    @staticmethod
+    def _find_scale_bar(im) -> Optional[dict]:
+        """Scale-bar line inside the detected SEM info bar (DET-05)."""
+        if im is None or im.image_bgr is None:
+            return None
+        try:
+            from core.scale_bar import find_scale_bar_line
+            return find_scale_bar_line(im.image_bgr)
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------------ INN-05
+    def _on_metadata_calibration(self, uid, px: float, src: str, conf: str,
+                                 prev: float) -> None:
+        """Collect metadata scales for a moment, then one toast for all
+        (applied → Undo; medium confidence → "Use")."""
+        self._meta_cal.append((uid, float(px), src, conf, float(prev)))
+        self._meta_cal_timer.start()
+
+    def _flush_metadata_calibration(self) -> None:
+        items, self._meta_cal = self._meta_cal, []
+        applied = [x for x in items if x[3] == "high"]
+        offered = [x for x in items if x[3] == "medium"]
+        st = self.state
+
+        def n_img(n):
+            return f"{n} image{'s' if n != 1 else ''}"
+        if applied:
+            srcs = sorted({x[2] for x in applied})
+            pxs = sorted({round(x[1], 4) for x in applied})
+            px_txt = f"{pxs[0]:.4f} px/µm" if len(pxs) == 1 else f"{len(pxs)} scales"
+
+            def undo(items=applied):
+                for uid, _px, _s, _c, prev in items:
+                    if prev > 0:
+                        st.set_calibration(prev, uid)
+                    else:
+                        st.reset_image_calibration(uid)
+                self.toasts.show_toast("Metadata scale undone",
+                                       f"{n_img(len(items))} use the previous scale again.",
+                                       "info")
+            self.toasts.show_toast(
+                "Scale read from image metadata",
+                f"{px_txt} ({', '.join(srcs)}) applied to {n_img(len(applied))}. "
+                "Read locally from the image files.",
+                "success", "Undo", undo, timeout_ms=9000)
+        if offered:
+            def use(items=offered):
+                for uid, px, _s, _c, _prev in items:
+                    st.set_calibration(px, uid)
+                self.toasts.show_toast("Metadata scale applied",
+                                       f"{n_img(len(items))} calibrated from metadata.",
+                                       "success")
+            pxs = sorted({round(x[1], 4) for x in offered})
+            self.toasts.show_toast(
+                "Scale found in image metadata",
+                (f"{pxs[0]:.4f} px/µm" if len(pxs) == 1 else f"{len(pxs)} scales")
+                + f" for {n_img(len(offered))} — please check before using it.",
+                "info", "Use it", use, timeout_ms=9000)
 
     def open_scan_area(self) -> None:
         im = self._need_image()

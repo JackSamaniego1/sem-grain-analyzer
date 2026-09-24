@@ -287,8 +287,11 @@ class AnalyzePage(QWidget):
         self.queue = AnalysisQueue(self)
         self._batch_total = 0
         self._batch_uids: List = []
+        self._rec = "session"            # HIER-01: "lot" when images live in the lot
+        self._scale_key = "Session scale"
         self._build()
         self._wire()
+        self._relabel()
 
     # ------------------------------------------------------------------ build
     def _build(self) -> None:
@@ -409,6 +412,20 @@ class AnalyzePage(QWidget):
         self.sec_cal.header_trailing().addWidget(self.cal_badge)
         self.cal_kv = KeyValueList(mono_keys=("Session scale", "This image"))
         self.sec_cal.add_widget(self.cal_kv)
+        # INN-05: scale read from the image file's own SEM metadata
+        self.meta_row = QWidget()
+        mr = QHBoxLayout(self.meta_row)
+        mr.setContentsMargins(0, 0, 0, 0)
+        mr.setSpacing(SPACE.sm)
+        self.meta_lbl = label("", "caption")
+        self.meta_lbl.setWordWrap(True)
+        self.btn_meta_cal = AnimatedButton("Use", "calibrate", "ghost", "sm")
+        self.btn_meta_cal.setToolTip("Use the pixel size stored in this image file by the "
+                                     "microscope as this image's scale")
+        mr.addWidget(self.meta_lbl, 1)
+        mr.addWidget(self.btn_meta_cal, 0, Qt.AlignTop)
+        self.meta_row.hide()
+        self.sec_cal.add_widget(self.meta_row)
         self.btn_cal = AnimatedButton("Set scale bar…", "calibrate", "secondary")
         self.btn_cal.setToolTip("Click the two ends of the scale bar and enter its length (Ctrl+K)")
         self.sec_cal.add_widget(self.btn_cal)
@@ -433,6 +450,22 @@ class AnalyzePage(QWidget):
         self.scan_lbl = label("Full image", "caption")
         self.scan_lbl.setWordWrap(True)
         self.sec_scan.add_widget(self.scan_lbl)
+        # DET-05: SEM data bar found in the frame (always left out of the analysis)
+        self.ib_row = QWidget()
+        ir = QHBoxLayout(self.ib_row)
+        ir.setContentsMargins(0, 0, 0, 0)
+        ir.setSpacing(SPACE.sm)
+        self.ib_chip = Badge("Info bar excluded", "info", dot=True)
+        self.ib_chip.setToolTip("The microscope's data bar (text and scale bar) was found in "
+                                "this image.\nIt is never analysed — shown hatched on the image.")
+        self.btn_ib_scan = AnimatedButton("Use as scan area", "scan_area", "ghost", "sm")
+        self.btn_ib_scan.setToolTip("Set the scan area to the micrograph above the info bar "
+                                    "(border grains at its edge are then excluded too)")
+        ir.addWidget(self.ib_chip)
+        ir.addStretch(1)
+        ir.addWidget(self.btn_ib_scan)
+        self.ib_row.hide()
+        self.sec_scan.add_widget(self.ib_row)
         sr = QHBoxLayout()
         self.btn_scan = AnimatedButton("Set scan area…", "scan_area", "secondary")
         self.btn_scan.setToolTip("Draw the rectangle to analyse, e.g. to leave out the info bar (Ctrl+R)")
@@ -491,6 +524,12 @@ class AnalyzePage(QWidget):
         self.btn_cal_reset.clicked.connect(self._reset_cal)
         self.btn_scan_reset.clicked.connect(self._reset_scan)
         self.cal_spin.valueChanged.connect(self._on_cal_spin)
+        self.btn_meta_cal.clicked.connect(self._use_meta_cal)
+        self.btn_ib_scan.clicked.connect(self._use_info_bar_scan)
+        st.info_bar_ready.connect(lambda uid: uid == st.current_uid and self._refresh_info_bar())
+        st.sem_metadata_ready.connect(
+            lambda uid: uid == st.current_uid and self._refresh_calibration())
+        st.profile_changed.connect(self._relabel)
         self.params.changed.connect(lambda: st.set_params(self.params.get_params()))
         self.params.show_excluded_regions.connect(self.canvas.set_show_excluded_regions)
         self.filters.options_changed.connect(self._on_filter_options)
@@ -554,6 +593,7 @@ class AnalyzePage(QWidget):
         self._update_title(im)
         self._refresh_calibration()
         self._refresh_filters()
+        self._refresh_info_bar()
 
     def _show_result(self) -> None:
         im = self.state.current_image()
@@ -565,6 +605,7 @@ class AnalyzePage(QWidget):
             self.canvas.set_view("overlay")
         self._update_title(im)
         self._refresh_filters()
+        self._refresh_info_bar()
 
     def _sync_view_seg(self, view: str) -> None:
         idx = {"original": 0, "overlay": 1, "excluded": 2}.get(view)
@@ -573,8 +614,115 @@ class AnalyzePage(QWidget):
             self.view_seg.set_current_index(idx)
             self.view_seg.blockSignals(False)
 
+    # ------------------------------------------------------------------ HIER-01 labels
+    def _relabel(self) -> None:
+        """Use the workspace's own words (e.g. "lot" instead of "session")."""
+        from ui import hierarchy_ui as hui
+        p = self.state.profile
+        rec = hui.record_word(p)
+        Rec = hui.cap_first(rec)
+        self._rec = rec
+        self._scale_key = f"{Rec} scale"
+        if hui.lot_mode(p):
+            lot = hui.kind_label(p, "lot")
+            self.empty.set_texts(f"No {rec} open",
+                                 f"Create a {hui.level_chain(p)} and add SEM images — they are "
+                                 f"stored in the {rec} folder — or open a {rec} from Projects.",
+                                 f"New {lot}")
+        else:
+            self.empty.set_texts("No session open",
+                                 f"Start a new session ({hui.level_chain(p).lower()}) and add "
+                                 "SEM images, or open an existing session from Projects.",
+                                 "New session")
+        self.st_grains.set_label(f"Grains ({rec})")
+        self.cal_kv.set_mono_keys((self._scale_key, "This image"))
+        self.btn_cal_reset.setText(f"Reset to {rec} scale")
+        self.btn_cal_reset.setToolTip(f"Drop this image's own scale — it uses the {rec} "
+                                      "scale again")
+        self.btn_scan_reset.setText(f"Reset to {rec} scan area")
+        self.btn_scan_reset.setToolTip(f"Drop this image's own scan area — it uses the "
+                                       f"{rec}'s again")
+        self.btn_all.setToolTip(f"Analyse every image of the {rec} (F5)")
+        if self.state.session is not None:
+            self._refresh_calibration()
+            self._set_idle()
+
+    # ------------------------------------------------------------------ DET-05 / INN-05
+    def _refresh_info_bar(self) -> None:
+        im = self.state.current_image()
+        info = self.state.info_bar_for(im)
+        if im is not None and info is None and im.info_bar is None:
+            self.state.probe_info_bar(im.uid)
+        self.canvas.set_info_bar_rect(info.get("bar_rect") if info else None)
+        self.ib_row.setVisible(bool(info))
+        if info:
+            ar = tuple(info.get("analysis_rect") or ())
+            cur = self.state.scan_for(im)
+            self.btn_ib_scan.setEnabled(bool(ar) and (cur is None or tuple(cur) != ar))
+            conf = float(info.get("confidence", 0.0) or 0.0)
+            self.ib_chip.set_text("Info bar excluded" + (" (check)" if conf < 0.7 else ""))
+            self.ib_chip.set_kind("info" if conf >= 0.7 else "warning")
+
+    def _use_info_bar_scan(self) -> None:
+        im = self.state.current_image()
+        if im is None:
+            return
+        this_only = self.scan_this.isChecked()
+        undo = self.state.use_info_bar_as_scan_area(im.uid, this_only)
+        if undo is None:
+            return
+        prev = undo[0]
+        uid = im.uid if this_only else None
+        self._refresh_info_bar()
+        analysed = any(x.result is not None for x in self.state.images())
+        self._toast_action("Scan area set above the info bar",
+                           ("This image" if this_only else "All images")
+                           + (" — re-analyse to apply it to existing results." if analysed
+                              else "."),
+                           "success", "Undo",
+                           lambda: (self.state.set_scan_rect(prev, uid), self._refresh_info_bar()))
+
+    def _use_meta_cal(self) -> None:
+        im = self.state.current_image()
+        if im is None or not im.cal_suggestion:
+            return
+        prev = im.px_override
+        px = float(im.cal_suggestion[0])
+        self.state.set_calibration(px, im.uid)
+
+        def undo():
+            if prev > 0:
+                self.state.set_calibration(prev, im.uid)
+            else:
+                self.state.reset_image_calibration(im.uid)
+        self._toast_action("Scale from image metadata", f"{px:.4f} px/µm for {im.filename}",
+                           "success", "Undo", undo)
+
+    def _refresh_meta_row(self, im) -> None:
+        sug = im.cal_suggestion if im is not None else None
+        if not sug:
+            self.meta_row.hide()
+            return
+        px, src, conf = float(sug[0]), str(sug[1]), str(sug[2])
+        eff = self.state.px_for(im)
+        using = eff > 0 and abs(eff - px) / px < 1e-3
+        conf_txt = {"high": "", "medium": " — please check", "low": " — low confidence"}.get(
+            conf, "")
+        self.meta_lbl.setText(f"Image metadata ({src}): {px:.4g} px/µm{conf_txt}"
+                              + ("  ✓ in use" if using else ""))
+        self.meta_lbl.setToolTip("Pixel size written into the image file by the microscope "
+                                 f"software ({src}, {conf} confidence). Read locally — nothing "
+                                 "leaves this PC.")
+        self.btn_meta_cal.setVisible(not using)
+        self.meta_row.show()
+
+    def _toast_action(self, title, body, sev, action, fn) -> None:
+        if self.toasts is not None:
+            self.toasts.show_toast(title, body, sev, action, fn)
+
     def _update_title(self, im) -> None:
-        self.img_title.setText(im.filename)
+        self.img_title.setText(im.display_name)
+        self.img_title.setToolTip(im.tooltip())
         parts = []
         if im.image_bgr is not None:
             h, w = im.image_bgr.shape[:2]
@@ -604,7 +752,7 @@ class AnalyzePage(QWidget):
         im = self.state.current_image()
         if s is None:
             return
-        rows = [("Session scale", fmt_px_per_um(s.px_per_um))]
+        rows = [(self._scale_key, fmt_px_per_um(s.px_per_um))]
         if im is not None and im.px_override > 0:
             rows.append(("This image", fmt_px_per_um(im.px_override)))
         self.cal_kv.set_items(rows)
@@ -627,6 +775,7 @@ class AnalyzePage(QWidget):
             self.scan_lbl.setText("Full image (nothing excluded)")
         self.canvas.set_scan_rect(rect)
         self.btn_cal_reset.setVisible(im is not None and im.px_override > 0)
+        self._refresh_meta_row(im)
         self.btn_scan_reset.setVisible(im is not None and im.scan_rect is not None)
 
     def _refresh_filters(self) -> None:
@@ -649,7 +798,8 @@ class AnalyzePage(QWidget):
     def _apply_filters_all(self, opts) -> None:
         self.state.apply_filters_to_all(opts)
         self._toast("Filters applied to all images",
-                    "Every image of the session now uses the same grain filters.", "success")
+                    f"Every image of the {self._rec} now uses the same grain filters.",
+                    "success")
 
     def _on_cal_override(self, on: bool) -> None:
         im = self.state.current_image()
@@ -697,7 +847,8 @@ class AnalyzePage(QWidget):
 
     def _start(self, images) -> None:
         if self.state.session is None or not images:
-            self._toast("Nothing to analyse", "Add images to the session first.", "warning")
+            self._toast("Nothing to analyse", f"Add images to the {self._rec} first.",
+                        "warning")
             return
         if self.queue.is_running():
             self._toast("Analysis already running", "Wait for it to finish or press Cancel.", "info")
@@ -780,7 +931,8 @@ class AnalyzePage(QWidget):
         self.ring.set_caption("done")
         self.run_title.setText("Analysis complete")
         self.run_sub.setText(f"{len(ok)} image{'s' if len(ok) != 1 else ''} · "
-                             f"{fmt_int(grains)} grains · saved to the session automatically")
+                             f"{fmt_int(grains)} grains · saved to the {self._rec} "
+                             "automatically")
         if self.toasts is not None:
             self.toasts.show_toast("Analysis complete",
                                    f"{len(ok)} image{'s' if len(ok) != 1 else ''} · "
@@ -799,7 +951,7 @@ class AnalyzePage(QWidget):
         n = len(self.state.images())
         done = sum(1 for im in self.state.images() if im.result is not None)
         self.run_title.setText("Ready to analyse" if n else "Add images to begin")
-        self.run_sub.setText(f"{n} image{'s' if n != 1 else ''} in this session"
+        self.run_sub.setText(f"{n} image{'s' if n != 1 else ''} in this {self._rec}"
                              + (f" · {done} already analysed" if done else ""))
 
     def _toast(self, title, body="", sev="info") -> None:

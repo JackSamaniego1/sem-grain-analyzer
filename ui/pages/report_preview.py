@@ -143,7 +143,8 @@ class OverviewPreview(SectionPreview):
                f"Date: {m.date}   |   {len(rows)} image(s)   |   Grain Analyzer v{__version__}")
         sec = m.get_section("overview_table")
         self.sheet.set_table(m.title or "Grain Analysis Report", sub, header, rows, total,
-                             enabled=sec.enabled if sec else True)
+                             enabled=sec.enabled if sec else True,
+                             hier_line=m.hierarchy_header())
         self.sheet.resize(self.sheet.sizeHint())
         imgs = m.ordered_images(included_only=True)
         self.k_imgs.set_metric(len(imgs), "", 0, animate=False)
@@ -155,8 +156,9 @@ class OverviewPreview(SectionPreview):
                             animate=False)
         self.wrap.setFixedHeight(self.sheet.sizeHint().height() + 16)
         self.note.setText("First sheet of the workbook (navy tab). Image names link to each "
-                          "image's sheet. The same rows appear on the PowerPoint executive "
-                          "summary slide.")
+                          "image's sheet" + ("; the File column links to the image file on "
+                                             "disk" if m.hierarchy else "") +
+                          ". The same rows appear on the PowerPoint executive summary slide.")
 
     def rows(self) -> int:
         return len(self.sheet.rows)

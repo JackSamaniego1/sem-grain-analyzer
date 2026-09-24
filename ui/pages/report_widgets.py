@@ -175,10 +175,14 @@ class CoverSlide(Paper):
         p.fillRect(QRectF(0, 18, w, 6), TEAL)
         _text(p, QRectF(80, 250, w - 160, 120), m.title or "Grain Analysis Report", 44, NAVY, 700,
               Qt.AlignLeft | Qt.AlignBottom)
-        samples = sorted({i.sample_id for i in m.images if i.sample_id}) or ["—"]
-        lots = sorted({i.lot_number for i in m.images if i.lot_number}) or ["—"]
-        _text(p, QRectF(80, 380, w - 160, 44),
-              f"Sample/Lot: {', '.join(samples)} / {', '.join(lots)}    |    {m.date}", 18, GREY)
+        if m.hierarchy:
+            where = "    ·    ".join(f"{h.get('label', '')}: {h.get('value', '') or '—'}"
+                                    for h in m.hierarchy)
+        else:
+            samples = sorted({i.sample_id for i in m.images if i.sample_id}) or ["—"]
+            lots = sorted({i.lot_number for i in m.images if i.lot_number}) or ["—"]
+            where = f"Sample/Lot: {', '.join(samples)} / {', '.join(lots)}"
+        _text(p, QRectF(80, 380, w - 160, 44), f"{where}    |    {m.date}", 18, GREY)
         _text(p, QRectF(80, 428, w - 160, 44),
               f"Operator: {m.operator or '—'}    |    Organization: {m.organization or '—'}", 18, GREY)
         if m.logo_path != self._logo_path:
@@ -301,21 +305,37 @@ class OverviewSheet(ThemeAware, QWidget):
         self.rows: List[List[str]] = []
         self.total: Optional[List[str]] = None
         self.table_enabled = True
+        self.hier_line = ""
         self._connect_theme()
 
-    def set_table(self, title, subtitle, header, rows, total, enabled=True) -> None:
+    def set_table(self, title, subtitle, header, rows, total, enabled=True,
+                  hier_line: str = "") -> None:
+        """``hier_line`` (HIER-01): "Job #: 24-117 | Part Number: 7718-A |
+        Lot: L-44A" band under the sub-title, as the workbook prints it."""
         self.title, self.subtitle = title, subtitle
         self.header, self.rows, self.total = header, rows, total
         self.table_enabled = enabled
+        self.hier_line = hier_line or ""
         self.updateGeometry()
         self.update()
 
+    def _has_file_col(self) -> bool:
+        return len(self.header) > 2 and self.header[2] == "File"
+
     def _cols(self) -> List[float]:
-        return [max(34.0, c * self.CHAR + 10) for c in self.WIDTHS]
+        widths = list(self.WIDTHS)
+        if self._has_file_col():
+            n_levels = len(self.header) - 3 - (len(self.WIDTHS) - 4)
+            widths = widths[:2] + [24] + [13] * max(0, n_levels) + widths[4:]
+        return [max(34.0, c * self.CHAR + 10) for c in widths]
+
+    def _band_h(self) -> int:
+        return 22 + (22 if self.hier_line else 0)
 
     def sizeHint(self) -> QSize:
         n = len(self.rows) + (1 if self.total else 0)
-        return QSize(int(sum(self._cols())) + 2, int(30 + 22 + 16 + 42 + 24 * n + 30))
+        return QSize(int(sum(self._cols())) + 2,
+                     int(30 + self._band_h() + 16 + 42 + 24 * n + 30))
 
     def minimumSizeHint(self) -> QSize:
         return self.sizeHint()
@@ -331,7 +351,11 @@ class OverviewSheet(ThemeAware, QWidget):
         _text(p, QRectF(12, 0, W - 24, 30), self.title, 16, WHITE, 700)
         p.fillRect(QRectF(0, 30, W, 22), QColor(TAB_COLORS["overview"]))
         _text(p, QRectF(8, 30, W - 16, 22), self.subtitle, 10.5, WHITE)
-        y = 30 + 22 + 16
+        if self.hier_line:
+            p.fillRect(QRectF(0, 52, W, 22), QColor(TAB_COLORS["overview"]))
+            _text(p, QRectF(8, 52, W - 16, 22), self.hier_line, 10.5, WHITE, 700)
+        y = 30 + self._band_h() + 16
+        links = {1, 2} if self._has_file_col() else {1}
         if not self.table_enabled or not self.rows:
             msg = ("Overview table is switched off — the sheet keeps only its header."
                    if not self.table_enabled else "No images are included in the report.")
@@ -357,7 +381,7 @@ class OverviewSheet(ThemeAware, QWidget):
                 p.fillRect(r, bg)
                 p.setPen(QPen(GRID, 1))
                 p.drawRect(r)
-                if c == 1 and not is_total:
+                if c in links and not is_total:
                     f = _font(11.5)
                     f.setUnderline(True)
                     p.setFont(f)

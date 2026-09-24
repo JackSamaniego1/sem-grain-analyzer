@@ -17,6 +17,7 @@ from ui.app_state import params_from_dict, params_to_dict
 from ui.design.theme import current_mode, reduced_motion, set_reduced_motion
 from ui.design.tokens import SPACE
 from ui.pages.common import PageHeader, scroll
+from ui.pages.naming_settings import NamingCard
 from ui.widgets import AnimatedButton, Card, KeyValueList, SegmentedControl, label
 from ui.workers import run_task
 from version import APP_NAME, APP_PUBLISHER, __version__
@@ -134,6 +135,11 @@ class SettingsPage(QWidget):
         grid.setColumnStretch(1, 1)
         v.addLayout(grid)
 
+        # HIER-01: folder structure & naming (full width)
+        self.naming = NamingCard(state, toasts)
+        self.naming.rename_requested.connect(self.open_rename_dialog)
+        v.addWidget(self.naming)
+
         lic = Card("Third-party licences", "Open-source components bundled with this application")
         self.lic = QPlainTextEdit(licences_text())
         self.lic.setReadOnly(True)
@@ -211,6 +217,49 @@ class SettingsPage(QWidget):
             self._toast("Could not rebuild the index", msg.splitlines()[0], "danger")
 
         run_task(lambda: Catalog(root).rebuild(), on_done=done, on_error=failed)
+
+    # ------------------------------------------------------------------ HIER-01 renames
+    def open_rename_dialog(self) -> None:
+        from ui.dialogs.rename_folders_dialog import RenameFoldersDialog
+        if self.naming.is_dirty():
+            self._toast("Save the folder settings first",
+                        "Renaming uses the saved folder-name settings.", "warning")
+            return
+        dlg = RenameFoldersDialog(self.state, self)
+        dlg.renamed.connect(lambda applied: self._after_rename(applied, undo=False))
+        self._rename_dlg = dlg
+        dlg.open()
+
+    def _after_rename(self, applied, undo: bool) -> None:
+        """Keep an open session pointing at its (moved) folder, refresh the
+        tree, and offer Undo (the reverse plan)."""
+        from ui.dialogs.rename_folders_dialog import apply_plan, remap
+        st = self.state
+        if st.session is not None and applied:
+            new = remap(st.session.path, applied)
+            if new != st.session.path:
+                st.close_session()
+                st.open_session(new)
+        st.workspace_changed.emit()
+        n = len(applied)
+        if undo:
+            self._toast("Rename undone", f"{n} folder{'s' if n != 1 else ''} restored.", "info")
+            return
+        if not n:
+            return
+        reverse = [(new, old) for old, new in applied]
+
+        def do_undo():
+            if st.session is not None:
+                st.flush()
+            run_task(apply_plan, st.root, reverse,
+                     on_done=lambda back: self._after_rename(back, undo=True),
+                     on_error=lambda m: self._toast("Could not undo", m.splitlines()[0],
+                                                    "danger"))
+        if self.toasts is not None:
+            self.toasts.show_toast("Folders renamed",
+                                   f"{n} folder{'s' if n != 1 else ''} now match the naming "
+                                   "settings.", "success", "Undo", do_undo, timeout_ms=10000)
 
     def _toast(self, title, body="", sev="info") -> None:
         if self.toasts is not None:

@@ -169,6 +169,7 @@ class ImageDoc:
     original_name: str = ""               # source file name before template renaming
     sem_meta: Optional[dict] = None       # INN-05: read_sem_metadata(path).to_dict()
     cal_suggestion: Optional[tuple] = None  # (px_per_um, source, confidence)
+    info_bar: Optional[dict] = None       # DET-05: detect_info_bar().to_dict(); {} = none
     uid: int = field(default_factory=lambda: next(_uid_counter))
 
     @property
@@ -364,6 +365,18 @@ def _add_images_worker(session_path: Path, root: Path, paths: List[str], known: 
     return _load_new_images(session_path, known)
 
 
+def detect_info_bar_dict(image_bgr) -> dict:
+    """Worker-thread (DET-05): the SEM data bar of a full frame, or {}."""
+    from core.infobar import detect_info_bar
+    if image_bgr is None:
+        return {}
+    try:
+        info = detect_info_bar(image_bgr)
+    except Exception:
+        return {}
+    return info.to_dict() if info is not None and info.bars else {}
+
+
 def probe_sem_metadata(path) -> Optional[dict]:
     """Worker-thread (INN-05): SEM acquisition metadata + calibration."""
     from core.sem_metadata import calibration_from_metadata, read_sem_metadata
@@ -498,6 +511,7 @@ class AppState(QObject):
     profile_changed = Signal()                   # HIER-01: labels / fields / templates edited
     sem_metadata_ready = Signal(object)          # uid: SEM metadata / calibration read
     metadata_calibration = Signal(object, float, str, str, float)  # uid, px, src, conf, prev
+    info_bar_ready = Signal(object)              # uid: info bar detected (or not)
 
     def __init__(self, settings_path: Optional[Path] = None,
                  parent: Optional[QObject] = None) -> None:
@@ -743,6 +757,46 @@ class AppState(QObject):
                                                    str(cal[2]), float(im.px_override))
                 self.sem_metadata_ready.emit(im.uid)
             run_task(probe_sem_metadata, str(im.path), on_done=done)
+
+    # ------------------------------------------------------------------ SEM info bar (DET-05)
+    def info_bar_for(self, im: Optional[ImageDoc]) -> Optional[dict]:
+        """The image's detected data bar: from its analysis result when
+        analysed (full-frame coordinates), else from a background probe
+        (:meth:`probe_info_bar`).  ``None`` = unknown / none."""
+        if im is None:
+            return None
+        for src in (getattr(im.result, "info_bar", None), getattr(im.raw, "info_bar", None),
+                    im.info_bar):
+            if src and src.get("bar_rect"):
+                return src
+        return None
+
+    def probe_info_bar(self, uid) -> None:
+        """Detect the data bar of a not-yet-analysed image off-thread."""
+        doc = self.session
+        im = doc.image(uid) if doc is not None else None
+        if im is None or im.info_bar is not None or im.image_bgr is None:
+            return
+        im.info_bar = {}          # probing; never probe twice
+
+        def done(d, im=im):
+            if self.session is not doc:
+                return
+            im.info_bar = d or {}
+            self.info_bar_ready.emit(im.uid)
+
+        run_task(detect_info_bar_dict, im.image_bgr, on_done=done)
+
+    def use_info_bar_as_scan_area(self, uid, this_image: bool = False) -> Optional[tuple]:
+        """Scan area = the micrograph without its data bar.  Returns the
+        previous rectangle (for Undo) or ``None`` when nothing was done."""
+        im = self.session.image(uid) if self.session is not None else None
+        info = self.info_bar_for(im)
+        if im is None or not info or not info.get("analysis_rect"):
+            return None
+        prev = im.scan_rect if this_image else self.session.scan_rect
+        self.set_scan_rect(tuple(info["analysis_rect"]), uid if this_image else None)
+        return (prev,)
 
     def _fill_acquisition(self, doc: "SessionDoc", md: dict) -> None:
         m = doc.meta

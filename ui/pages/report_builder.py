@@ -137,7 +137,10 @@ def session_metadata(state) -> dict:
 
 
 def collect_inputs(state) -> List[ReportImageInput]:
-    """GUI-thread snapshot of every analysed image (filtered results)."""
+    """GUI-thread snapshot of every analysed image (filtered results).
+
+    HIER-01: each image carries its display name (the stem of the file name
+    the profile's image-name template produced on import)."""
     from ui.workers import snapshot_result
     sample, lot = _session_ids(state)
     out: List[ReportImageInput] = []
@@ -147,23 +150,95 @@ def collect_inputs(state) -> List[ReportImageInput]:
         res = snapshot_result(im.result)
         path = str(im.path) if im.path else im.filename
         out.append(ReportImageInput(image_path=path, result=res, overlay_bgr=res.overlay_image,
-                                    sample_id=sample, lot_number=lot))
+                                    sample_id=sample, lot_number=lot,
+                                    display_name=im.display_name))
     return out
+
+
+# ======================================================================
+# HIER-01: hierarchy labels / names from the workspace profile
+# ======================================================================
+
+def report_context(state) -> dict:
+    """Template context of the open session / lot record."""
+    from ui import hierarchy_ui as hui
+    s = state.session
+    prof = state.profile
+    ctx = hui.context_for_path(s.path if s is not None else None, prof)
+    if s is not None:
+        sample, lot = _session_ids(state)
+        proj = s.meta.project or (s.project_meta or {}).get("name", "")
+        for k, v in (("project", proj), ("sample", sample), ("lot", lot)):
+            if v and not ctx.get(k):
+                ctx[k] = v
+        if not ctx.get("operator"):
+            ctx["operator"] = s.meta.operator or state.operator()
+    return ctx
+
+
+def hierarchy_defaults(state) -> dict:
+    """``hierarchy`` rows, ``export_basename`` and default ``title`` for a
+    report of the open session, rendered from the workspace profile."""
+    from ui import hierarchy_ui as hui
+    prof = state.profile
+    ctx = report_context(state)
+    s = state.session
+    title = hui.report_title(prof, ctx) or (f"Grain Analysis Report — {s.title}" if s
+                                            else "Grain Analysis Report")
+    return {"hierarchy": hui.hierarchy_rows(prof, ctx),
+            "export_basename": hui.export_basename(prof, ctx),
+            "title": title}
+
+
+def apply_profile(model: ReportModel, defaults: dict) -> bool:
+    """Profile edited (levels renamed, templates changed): relabel the
+    report.  The title and export name follow the profile only while the
+    user has not typed their own (the last automatic value is remembered in
+    ``metadata``).  Returns True when anything changed."""
+    changed = False
+    new_h = [dict(h) for h in defaults.get("hierarchy") or []]
+    if new_h and new_h != model.hierarchy:
+        model.hierarchy = new_h
+        changed = True
+    meta = model.metadata
+    for fld, key in (("export_basename", "auto_export_basename"), ("title", "auto_title")):
+        new = defaults.get(fld, "")
+        if not new:
+            continue
+        cur = getattr(model, fld) or ""
+        auto = meta.get(key)
+        follows = auto is None or cur == auto or not cur
+        if not follows:
+            continue
+        if cur != new:
+            setattr(model, fld, new)
+            if fld == "title":
+                sec = model.get_section("cover")
+                if sec is not None:
+                    sec.title = new
+            changed = True
+        meta[key] = new
+    return changed
 
 
 def build_model(inputs: Sequence[ReportImageInput], *, title: str, operator: str,
                 organization: str = "", logo_path: Optional[str] = None,
                 metadata: Optional[dict] = None, asset_dir: Optional[str] = None,
-                fingerprint: str = "") -> ReportModel:
+                fingerprint: str = "", hierarchy: Optional[list] = None,
+                export_basename: str = "") -> ReportModel:
     """Pool-thread: ReportModel from snapshots (writes overlay PNGs)."""
     if asset_dir:
         os.makedirs(asset_dir, exist_ok=True)
     meta = dict(metadata or {})
     meta["results_fingerprint"] = fingerprint
     meta.setdefault("exports", [])
+    meta["auto_title"] = title
+    if export_basename:
+        meta["auto_export_basename"] = export_basename
     model = ReportModel.from_results(list(inputs), title=title, operator=operator,
                                      organization=organization, logo_path=logo_path,
-                                     metadata=meta, asset_dir=asset_dir)
+                                     metadata=meta, asset_dir=asset_dir,
+                                     hierarchy=hierarchy, export_basename=export_basename)
     normalize(model)
     return model
 
@@ -233,7 +308,7 @@ def normalize(model: ReportModel) -> None:
     for img in model.images:
         if img.id not in have:
             model.sections.append(Section(id=f"image_{img.id}", type="image",
-                                          title=os.path.basename(img.image_path) or img.id,
+                                          title=img.display() or img.id,
                                           order=10_000 + img.order,
                                           payload={"image_id": img.id}))
     for fixed, title in (("parameters", "Methods"), ("raw_data", "Raw Data")):
@@ -276,8 +351,12 @@ def merge_refresh(old: ReportModel, new: ReportModel) -> ReportModel:
     """``new`` numbers + every edit made to ``old``.  Image ids of matched
     images are preserved so the page's selection survives a refresh."""
     out = new
-    for f in ("title", "operator", "organization", "logo_path", "date", "units", "theme"):
+    defaults = {"hierarchy": list(new.hierarchy), "export_basename": new.export_basename,
+                "title": new.metadata.get("auto_title", "")}
+    for f in ("title", "operator", "organization", "logo_path", "date", "units", "theme",
+              "export_basename"):
         setattr(out, f, getattr(old, f))
+    out.hierarchy = [dict(h) for h in old.hierarchy]
     out.bins = dict(old.bins)
     meta = dict(old.metadata)
     for k in ("detection_mode", "detection_params", "instrument", "magnification", "session",
@@ -285,6 +364,7 @@ def merge_refresh(old: ReportModel, new: ReportModel) -> ReportModel:
         if k in new.metadata:
             meta[k] = new.metadata[k]
     out.metadata = meta
+    apply_profile(out, defaults)
 
     old_by_key = {_key(i): i for i in old.images}
     used_ids = {i.id for i in old.images}
@@ -324,7 +404,7 @@ def merge_refresh(old: ReportModel, new: ReportModel) -> ReportModel:
     for img in out.images:
         prev = old_img_secs.get(img.id)
         secs.append(Section(id=f"image_{img.id}", type="image",
-                            title=prev.title if prev else os.path.basename(img.image_path),
+                            title=prev.title if prev else img.display(),
                             enabled=prev.enabled if prev else True,
                             order=prev.order if prev else 10_000 + img.order,
                             payload={"image_id": img.id}))
@@ -393,10 +473,17 @@ def slug(text: str, fallback: str = "report") -> str:
 
 
 def default_export_path(session_path: Path, title: str, kind: str,
-                        stamp: Optional[str] = None) -> Path:
-    stamp = stamp or datetime.now().strftime("%Y%m%d-%H%M")
+                        stamp: Optional[str] = None, basename: str = "") -> Path:
+    """``<session>/exports/<name>.<kind>``, never overwriting.  HIER-01: a
+    profile-rendered ``basename`` ("24-117_7718-A_L-44A_Grain_Report_20260924")
+    is used as-is; otherwise ``<title>_<stamp>``."""
     d = Path(session_path) / "exports"
-    base = f"{slug(title)}_{stamp}"
+    if basename.strip():
+        from data.models import sanitize_name
+        base = sanitize_name(basename.strip())
+    else:
+        stamp = stamp or datetime.now().strftime("%Y%m%d-%H%M")
+        base = f"{slug(title)}_{stamp}"
     p = d / f"{base}.{kind}"
     n = 2
     while p.exists():
@@ -455,15 +542,20 @@ def overview_table(model: ReportModel):
 
     images = model.ordered_images(included_only=True)
     au, du = _combined_unit(model, images)
-    header = ["#", "Image", "Sample", "Lot", "Grains", f"Mean Area ({au})*",
+    hier = bool(model.hierarchy)
+    lead = (["#", "Image", "File"] + [lab for _, lab in model.level_columns()]) if hier \
+        else ["#", "Image", "Sample", "Lot"]
+    header = lead + ["Grains", f"Mean Area ({au})*",
               f"Median Area ({au})*", f"Std Area ({au})*", f"Mean Diameter ({du})*",
               f"Std Diameter ({du})*", "Units", "Coverage %", "Invalid %", "Mean Circularity",
               "Mean Aspect Ratio", "ASTM G"]
     rows = []
     for n, img in enumerate(sorted(images, key=lambda i: i.order), 1):
         au_i, du_i, mean_a, med_a, std_a, mean_d, std_d = _row_size_stats(model, img)
-        rows.append([str(n), os.path.basename(img.image_path), img.sample_id, img.lot_number,
-                     str(img.grain_count), f"{mean_a:.2f}", f"{med_a:.2f}", f"{std_a:.2f}",
+        lead_v = ([str(n), img.display(), os.path.basename(img.image_path)]
+                  + [v or "" for v in model.row_levels(img)]) if hier \
+            else [str(n), img.display(), img.sample_id, img.lot_number]
+        rows.append(lead_v + [str(img.grain_count), f"{mean_a:.2f}", f"{med_a:.2f}", f"{std_a:.2f}",
                      f"{mean_d:.2f}", f"{std_d:.2f}", f"{au_i} / {du_i}",
                      f"{img.grain_coverage_pct:.1f}%", f"{img.invalid_area_pct:.1f}%",
                      f"{img.mean_circularity:.4f}", f"{img.mean_aspect_ratio:.4f}",
@@ -479,7 +571,7 @@ def overview_table(model: ReportModel):
         else:
             areas = np.array([g["area_px"] for g in grains], dtype=float)
             diams = np.array([g["diameter_px"] for g in grains], dtype=float)
-        total = ["", "Combined (all images)", "", "", str(len(grains)),
+        total = ["", "Combined (all images)"] + [""] * (len(lead) - 2) + [str(len(grains)),
                  f"{np.mean(areas):.2f}", f"{np.median(areas):.2f}", f"{np.std(areas):.2f}",
                  f"{np.mean(diams):.2f}", f"{np.std(diams):.2f}",
                  f"{au} / {du}" if cal else "px² / px",
