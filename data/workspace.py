@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Union
 
 from data.models import (
     LotMeta, ProjectMeta, SampleMeta, SessionMeta,
     dedupe_name, read_json, sanitize_name, utc_now_iso, write_json_atomic,
 )
+
+_TRASH_ORIGIN_FILENAME = "_trash_origin.json"
 
 ProjectLike = Union[str, Path]
 
@@ -302,3 +304,117 @@ class Workspace:
         dest = trash_root / dest_name
         shutil.move(str(session_path), str(dest))
         return dest
+
+    def _trash_dir(self, path: Path, catalog=None) -> Path:
+        """Move a project/sample/lot directory (and everything under it)
+        into ``<root>/.trash/<UTC timestamp>__<relative path, '/' -> '__'>``,
+        recording its original location so it can be restored later, and
+        (if a ``Catalog`` is given) dropping every session that was under it
+        from the index."""
+        path = self._require_within_root(Path(path))
+        root_resolved = self.root.resolve()
+        if path.resolve() == root_resolved:
+            raise ValueError("Refusing to trash the workspace root")
+
+        orig_session_dirs = ([mp.parent for mp in path.rglob("manifest.json")]
+                              if catalog is not None else [])
+
+        rel = path.resolve().relative_to(root_resolved)
+        flat = "__".join(rel.parts)
+        trash_root = self.root / ".trash"
+        trash_root.mkdir(parents=True, exist_ok=True)
+        stamp = utc_now_iso().replace(":", "").replace("-", "")
+        dest = trash_root / dedupe_name(trash_root, f"{stamp}__{flat}")
+
+        origin_rel = str(rel)
+        shutil.move(str(path), str(dest))
+        write_json_atomic(dest / _TRASH_ORIGIN_FILENAME, {"origin_relpath": origin_rel})
+
+        if catalog is not None:
+            for sp in orig_session_dirs:
+                catalog.remove(str(sp))
+        return dest
+
+    def trash_project(self, name_or_path: ProjectLike, catalog=None) -> Path:
+        """Move a whole project into the trash. If ``catalog`` is given,
+        every session that was under it is removed from the index."""
+        path = self.resolve_project(name_or_path)
+        return self._trash_dir(path, catalog=catalog)
+
+    def trash_sample(self, project: ProjectLike, sample: ProjectLike, catalog=None) -> Path:
+        """Move a whole sample (all its lots/sessions) into the trash."""
+        path = self.resolve_sample(project, sample)
+        return self._trash_dir(path, catalog=catalog)
+
+    def trash_lot(self, project: ProjectLike, sample: ProjectLike,
+                  lot: ProjectLike, catalog=None) -> Path:
+        """Move a whole lot (all its sessions) into the trash."""
+        path = self.resolve_lot(project, sample, lot)
+        return self._trash_dir(path, catalog=catalog)
+
+    def list_trash(self) -> List[Dict[str, object]]:
+        """List everything currently in ``<root>/.trash``. Each entry has
+        ``path`` (the trashed directory), ``name``, and ``origin_relpath``
+        (the path it was trashed from, relative to the workspace root, or
+        ``None`` if it predates the ``_trash_origin.json`` marker / has none
+        recorded)."""
+        trash_root = self.root / ".trash"
+        if not trash_root.exists():
+            return []
+        out: List[Dict[str, object]] = []
+        for child in sorted(trash_root.iterdir()):
+            if not child.is_dir():
+                continue
+            origin_relpath = None
+            origin_file = child / _TRASH_ORIGIN_FILENAME
+            if origin_file.exists():
+                try:
+                    origin_relpath = read_json(origin_file).get("origin_relpath")
+                except (OSError, ValueError):
+                    origin_relpath = None
+            out.append({"path": child, "name": child.name, "origin_relpath": origin_relpath})
+        return out
+
+    def restore_from_trash(self, trash_path: Union[str, Path], catalog=None) -> Path:
+        """Move a directory previously trashed by ``trash_project`` /
+        ``trash_sample`` / ``trash_lot`` back to its recorded original
+        location.
+
+        Raises ``ValueError`` if ``trash_path`` isn't a direct child of
+        ``<root>/.trash`` or has no recorded origin (e.g. something the user
+        dropped into ``.trash`` manually, or a session trashed via
+        ``delete_session``, which doesn't record one). Raises
+        ``FileExistsError`` (with ``.suggested_alternative`` set to a free
+        path from ``dedupe_name``) if the original location is occupied
+        again -- restoring never silently overwrites existing data."""
+        trash_path = self._require_within_root(Path(trash_path))
+        trash_root = (self.root / ".trash").resolve()
+        if trash_path.resolve().parent != trash_root:
+            raise ValueError(f"{trash_path} is not a direct child of the trash folder")
+
+        origin_file = trash_path / _TRASH_ORIGIN_FILENAME
+        if not origin_file.exists():
+            raise ValueError(f"No origin recorded for {trash_path}; cannot auto-restore")
+        origin_rel = read_json(origin_file).get("origin_relpath")
+        if not origin_rel:
+            raise ValueError(f"No origin recorded for {trash_path}; cannot auto-restore")
+
+        target = self.root / Path(origin_rel)
+        if target.exists():
+            suggestion = target.parent / dedupe_name(target.parent, target.name)
+            exc = FileExistsError(
+                f"Original location {target} already exists; "
+                f"suggested alternative: {suggestion}")
+            exc.suggested_alternative = suggestion  # type: ignore[attr-defined]
+            raise exc
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(trash_path), str(target))
+        marker = target / _TRASH_ORIGIN_FILENAME
+        if marker.exists():
+            marker.unlink()
+
+        if catalog is not None:
+            for manifest_path in target.rglob("manifest.json"):
+                catalog.index_session(manifest_path.parent)
+        return target

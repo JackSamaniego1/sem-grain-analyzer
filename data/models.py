@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-from dataclasses import dataclass, field, fields as dc_fields, asdict
+from dataclasses import MISSING, dataclass, field, fields as dc_fields, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -25,6 +25,44 @@ from typing import Any, Dict, List, Optional, Tuple
 from core.grain_detector import AnalysisResult, GrainResult
 
 SCHEMA_VERSION = 1
+
+
+class _ClearSentinel:
+    """Unique marker passed to ``update_session`` to explicitly clear a
+    field back to its default ("use the session default" / "unset"),
+    distinct from ``None`` which means "leave this field unchanged"."""
+
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "CLEAR"
+
+    def __reduce__(self):
+        # Never actually pickled (kept in-memory only), but keep the
+        # singleton identity if it ever is.
+        return (_ClearSentinel, ())
+
+
+CLEAR = _ClearSentinel()
+
+
+def field_default(cls, name: str) -> Any:
+    """The dataclass default for ``cls.<name>`` (evaluating a
+    ``default_factory`` if that's how it's declared). Used to resolve what
+    ``CLEAR`` means for an arbitrary field."""
+    for f in dc_fields(cls):
+        if f.name == name:
+            if f.default_factory is not MISSING:  # type: ignore[misc]
+                return f.default_factory()
+            if f.default is not MISSING:
+                return f.default
+            return None
+    return None
 
 
 # ======================================================================
@@ -253,6 +291,8 @@ class ImageManifestEntry:
     scan_rect: Optional[list] = None  # [x, y, w, h] or None
     notes: str = ""
     source_path: str = ""  # informational: where it was copied from
+    filters_override: Optional[dict] = None  # None -> use session-level filters
+    manual_excluded: List[int] = field(default_factory=list)  # hand-removed grain ids
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -284,6 +324,7 @@ class SessionMeta:
     software_version: str = ""
     notes: str = ""
     tags: List[str] = field(default_factory=list)
+    filters: dict = field(default_factory=dict)  # session-level grain-filter options
     images: List[ImageManifestEntry] = field(default_factory=list)
     path: Optional[str] = None
 
@@ -313,14 +354,25 @@ class SessionRef:
 
 @dataclass
 class ImageEntry:
-    """One image to be added to a session by ``save_session``."""
+    """One image to be added/updated in a session by ``save_session`` /
+    ``update_session``.
+
+    For ``update_session`` specifically: ``scan_rect``, ``px_per_um``,
+    ``notes``, ``filters_override`` and ``manual_excluded`` each follow the
+    same convention — ``None`` (or, for ``px_per_um``, ``0.0``) means "leave
+    the stored value unchanged"; the sentinel ``data.models.CLEAR`` means
+    "clear it back to the session default / unset"; any other value sets it
+    explicitly.
+    """
     source_path: Optional[str] = None
     image_bgr: Optional[Any] = None  # np.ndarray, optional if source_path readable
     result: Optional[AnalysisResult] = None
-    scan_rect: Optional[Tuple[int, int, int, int]] = None
-    px_per_um: float = 0.0
-    notes: str = ""
+    scan_rect: Optional[Tuple[int, int, int, int]] = None  # or CLEAR
+    px_per_um: float = 0.0  # or CLEAR
+    notes: str = ""  # or CLEAR
     filename: Optional[str] = None  # override the destination filename
+    filters_override: Optional[Any] = None  # dict, None (leave), or CLEAR
+    manual_excluded: Optional[Any] = None  # list[int], None (leave), or CLEAR
 
 
 # ======================================================================

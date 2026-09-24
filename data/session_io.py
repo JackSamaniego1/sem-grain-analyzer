@@ -23,11 +23,11 @@ logger = logging.getLogger(__name__)
 
 from core.grain_detector import AnalysisResult
 from data.models import (
-    ImageEntry, ImageManifestEntry, SessionMeta, SessionRef,
+    CLEAR, ImageEntry, ImageManifestEntry, SessionMeta, SessionRef,
     analysis_summary_from_dict, analysis_summary_to_dict, dedupe_name,
-    default_operator, grains_from_list, grains_to_list, local_now_display,
-    read_json, sanitize_name, session_timestamp_id, sha256_bytes,
-    sha256_file, utc_now_iso, write_json_atomic,
+    default_operator, field_default, grains_from_list, grains_to_list,
+    local_now_display, read_json, sanitize_name, session_timestamp_id,
+    sha256_bytes, sha256_file, utc_now_iso, write_json_atomic,
 )
 from data.workspace import Workspace
 
@@ -341,11 +341,17 @@ def _build_manifest_images(images_dir: Path, results_dir: Path, thumbs_dir: Path
             width=w, height=h,
             grain_count=len(entry.result.grains) if has_result else 0,
             has_result=has_result,
-            px_per_um=entry.px_per_um or (entry.result.px_per_um if has_result else 0.0),
+            px_per_um=(entry.px_per_um if entry.px_per_um and entry.px_per_um is not CLEAR
+                       else (entry.result.px_per_um if has_result else 0.0)),
             has_calibration=bool(entry.result.has_calibration) if has_result else False,
-            scan_rect=list(entry.scan_rect) if entry.scan_rect else None,
-            notes=entry.notes,
+            scan_rect=(list(entry.scan_rect)
+                       if entry.scan_rect and entry.scan_rect is not CLEAR else None),
+            notes=entry.notes if (entry.notes and entry.notes is not CLEAR) else "",
             source_path=str(entry.source_path) if entry.source_path else "",
+            filters_override=(entry.filters_override
+                               if isinstance(entry.filters_override, dict) else None),
+            manual_excluded=(list(entry.manual_excluded)
+                              if isinstance(entry.manual_excluded, (list, set, tuple)) else []),
         ))
     return manifest_images
 
@@ -395,6 +401,7 @@ def save_session(lot_path: Union[str, Path], session_meta: Optional[dict],
         software_version=session_meta.get("software_version", ""),
         notes=session_meta.get("notes", ""),
         tags=list(session_meta.get("tags", []) or []),
+        filters=dict(session_meta.get("filters", {}) or {}),
         images=manifest_images,
     )
     write_json_atomic(session_dir / "manifest.json", meta.to_dict())
@@ -439,12 +446,39 @@ def update_session(session_path: Union[str, Path], *,
                                         stem, entry.result, image_bgr)
                     existing.has_result = True
                     existing.grain_count = len(entry.result.grains)
-                    existing.px_per_um = entry.px_per_um or entry.result.px_per_um
                     existing.has_calibration = bool(entry.result.has_calibration)
-                if entry.scan_rect:
+
+                # Per-image calibration/scan-rect/notes: settable (and
+                # persisted) independently of whether a result is attached
+                # -- e.g. calibrating an image before it has been analyzed
+                # (DATA-09 item 3) -- and explicitly clearable back to "use
+                # the session default" via the CLEAR sentinel (item 2).
+                if entry.px_per_um is CLEAR:
+                    existing.px_per_um = 0.0
+                elif entry.px_per_um:
+                    existing.px_per_um = entry.px_per_um
+                elif entry.result is not None:
+                    existing.px_per_um = entry.result.px_per_um
+
+                if entry.scan_rect is CLEAR:
+                    existing.scan_rect = None
+                elif entry.scan_rect:
                     existing.scan_rect = list(entry.scan_rect)
-                if entry.notes:
+
+                if entry.notes is CLEAR:
+                    existing.notes = ""
+                elif entry.notes:
                     existing.notes = entry.notes
+
+                if entry.filters_override is CLEAR:
+                    existing.filters_override = None
+                elif entry.filters_override is not None:
+                    existing.filters_override = entry.filters_override
+
+                if entry.manual_excluded is CLEAR:
+                    existing.manual_excluded = []
+                elif entry.manual_excluded is not None:
+                    existing.manual_excluded = list(entry.manual_excluded)
             else:
                 new_entries = _build_manifest_images(
                     session_dir / "images", session_dir / "results",
@@ -453,7 +487,11 @@ def update_session(session_path: Union[str, Path], *,
 
     if meta_updates:
         for k, v in meta_updates.items():
-            if hasattr(meta, k):
+            if not hasattr(meta, k):
+                continue
+            if v is CLEAR:
+                setattr(meta, k, field_default(SessionMeta, k))
+            elif v is not None:
                 setattr(meta, k, v)
 
     write_json_atomic(manifest_path, meta.to_dict())
@@ -468,12 +506,38 @@ def update_session(session_path: Union[str, Path], *,
     return ref
 
 
+def _apply_legacy_post_filters(manifest: SessionMeta) -> None:
+    """Back-compat: before DATA-09, the grain-filter UI stashed its options
+    in ``detection_params["post_filters"]`` (``{"options": {...}, "images":
+    {filename: {"excluded": ..., "manual": [...], "options": ...}}}``)
+    instead of the first-class ``filters`` / ``filters_override`` /
+    ``manual_excluded`` manifest keys. If a manifest only has the legacy
+    shape (first-class fields still empty), lift it into the new fields so
+    every caller can read one shape. Never overwrites an already-populated
+    first-class field."""
+    pf = (manifest.detection_params or {}).get("post_filters")
+    if not pf:
+        return
+    if not manifest.filters and pf.get("options"):
+        manifest.filters = dict(pf["options"])
+    pf_images = pf.get("images") or {}
+    for img in manifest.images:
+        info = pf_images.get(img.filename)
+        if not info:
+            continue
+        if img.filters_override is None and info.get("options"):
+            img.filters_override = dict(info["options"])
+        if not img.manual_excluded and info.get("manual"):
+            img.manual_excluded = [int(i) for i in info["manual"]]
+
+
 def load_session(path: Union[str, Path]) -> LoadedSession:
     """Reconstruct a full session: manifest, per-image lazy results, and
     the report dict. Cheap except for whatever result data the caller
     actually touches via ``SessionImage.result``."""
     session_dir = Path(path)
     manifest = SessionMeta.from_dict(read_json(session_dir / "manifest.json"))
+    _apply_legacy_post_filters(manifest)
     images = [SessionImage(session_dir, entry) for entry in manifest.images]
 
     report_path = session_dir / "report.json"
