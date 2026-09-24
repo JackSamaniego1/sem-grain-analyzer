@@ -208,3 +208,20 @@ def test_scan_area_turns_border_filter_on_by_default(env, qtbot):
     st.set_scan_rect(None)
     assert st.filter_options().exclude_border is False
     shell.close()
+
+
+def test_close_window_mid_analysis_exits_cleanly(env, qtbot, capfd):
+    """Closing while analysis and background tasks run must not raise
+    'Signal source has been deleted' from a pool thread."""
+    from ui.workers import pending_tasks
+    path = make_session(env, n=3)
+    shell = _open_shell(qtbot, path)
+    shell.analyze.analyze_all()
+    qtbot.waitUntil(lambda: shell.analyze.queue.is_running(), timeout=10000)
+    shell.close()
+    qtbot.wait(300)
+    err = capfd.readouterr().err
+    assert "Signal source has been deleted" not in err
+    assert "Error calling Python override" not in err
+    assert not shell.analyze.queue.is_running()
+    assert pending_tasks() >= 0

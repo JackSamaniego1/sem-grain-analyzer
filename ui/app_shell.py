@@ -660,9 +660,17 @@ class AppShell(QMainWindow):
 
     def closeEvent(self, e) -> None:
         if self.analyze.queue.is_running():
+            # The detector call in flight cannot be interrupted; tell the user
+            # why closing takes a moment instead of appearing frozen.
+            self.statusBar().showMessage("Finishing the current analysis before closing…")
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            QApplication.processEvents()
             self.analyze.queue.cancel()
             self.analyze.queue.wait(20000)
+            QApplication.restoreOverrideCursor()
         self.state.flush()
+        from ui.workers import shutdown_tasks
+        shutdown_tasks()
         self.state.ui_state["geometry"] = bytes(self.saveGeometry().toBase64()).decode("ascii")
         self.state.ui_state["last_page"] = self.current_page()
         self.state.persist_ui_state()

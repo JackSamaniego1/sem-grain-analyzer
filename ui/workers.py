@@ -379,6 +379,9 @@ class AnalysisQueue(QObject):
 # ======================================================================
 
 _LIVE: set = set()
+# Set once the main window is closing: finished tasks then drop their result
+# instead of emitting into widgets that are being destroyed.
+_SHUTTING_DOWN = False
 
 
 class _TaskSignals(QObject):
@@ -451,6 +454,20 @@ def run_task(fn: Callable, *args, on_done=None, on_error=None,
     return task
 
 
+def shutdown_tasks(timeout_ms: int = 10000) -> None:
+    """Called when the main window closes: stop delivering results to the UI
+    and wait for running background tasks (saves included) to finish."""
+    global _SHUTTING_DOWN
+    _SHUTTING_DOWN = True
+    try:
+        QThreadPool.globalInstance().waitForDone(timeout_ms)
+        serial_pool().waitForDone(timeout_ms)
+    finally:
+        # Tasks that finished while we waited dropped their results; reset
+        # so a new window in the same process (tests) works normally.
+        _SHUTTING_DOWN = False
+
+
 def pending_tasks() -> int:
     """Number of tasks whose callbacks have not been delivered yet (tests)."""
     return len(_LIVE)
@@ -460,5 +477,5 @@ __all__ = [
     "IMAGE_FILTER", "IMAGE_EXTS", "read_image", "bgr_to_qimage", "thumb_qimage",
     "load_thumb_file", "analyze_image", "snapshot_result", "redraw_overlay",
     "mask_to_display", "AnalysisWorker", "AnalysisJob", "AnalysisQueue",
-    "Task", "run_task", "serial_pool", "pending_tasks",
+    "Task", "run_task", "serial_pool", "shutdown_tasks", "pending_tasks",
 ]
