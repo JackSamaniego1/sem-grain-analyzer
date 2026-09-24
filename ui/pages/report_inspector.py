@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from reports.charts import palette_choices
 from ui.design import icons
 from ui.design.tokens import SPACE
 from ui.pages.report_builder import SECTION_LABELS, SECTION_TARGETS
@@ -28,7 +29,9 @@ from ui.widgets import (
 from ui.widgets._base import tokens
 
 UNITS = ("auto", "um", "nm")
-PALETTES = [("default", "Corporate navy")]
+# Single source of truth: reports/charts.py (shared with the Excel/PowerPoint
+# renderers so the palette a user picks here is exactly what they get).
+PALETTES = palette_choices()
 
 
 def _cap(text: str):

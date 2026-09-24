@@ -15,8 +15,9 @@ import cv2
 
 from tests.conftest import make_mosaic
 from core.grain_detector import GrainDetector, DetectionParams
-from reports.model import ReportModel, ReportImageInput
+from reports.model import ReportModel, ReportImageInput, Section
 from reports.excel_renderer import render_excel
+from reports.charts import PALETTES, TAB_COLORS
 
 
 def _build_model(tmp_path, n=3, px_per_um=8.0, seeds=None):
@@ -263,6 +264,130 @@ def test_no_temp_files_leaked(tmp_path):
     assert leaked == []
 
 
+def _add_custom_text(model, order, title, body):
+    sec = Section(id=f"text_{title}", type="custom_text", title=title, enabled=True,
+                  order=order, payload={"body": body})
+    model.sections.append(sec)
+    return sec
+
+
+# ---------------------------------------------------------------------------
+# REP-08: designer edits the renderer must honour
+# ---------------------------------------------------------------------------
+
+def test_reordering_top_level_sections_reorders_sheets(tmp_path):
+    """Move Methods before Summary Charts purely via ``Section.order``."""
+    model = _build_model(tmp_path, n=2)
+    model.get_section("parameters").order = 1.5   # between overview(1) and charts(2)
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    wb = openpyxl.load_workbook(out)
+    names = wb.sheetnames
+    assert names.index("Methods") < names.index("Summary Charts")
+    # Raw data is still strictly last, regardless of reordering elsewhere.
+    raw_sheets = [n for n in names if n.startswith("Raw")]
+    assert min(names.index(n) for n in raw_sheets) == len(names) - len(raw_sheets)
+
+
+def test_renamed_section_titles_become_sheet_names(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    model.get_section("combined_distribution").title = "Grain Size Trends"
+    model.get_section("parameters").title = "Lab Procedure"
+    model.get_section("overview_table").title = "Summary"
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    names = openpyxl.load_workbook(out).sheetnames
+    assert "Summary" in names
+    assert "Grain Size Trends" in names
+    assert "Lab Procedure" in names
+    assert "Summary Charts" not in names
+    assert "Methods" not in names
+
+
+def test_disabling_cover_and_overview_table(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    model.get_section("cover").enabled = False
+    model.get_section("overview_table").enabled = False
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    wb = openpyxl.load_workbook(out)
+    ws = wb["Overview"]
+    # No banner, no table — the sheet exists but is essentially empty.
+    values = [c.value for row in ws.iter_rows(min_row=1, max_row=4) for c in row]
+    assert not any(v for v in values)
+
+
+def test_disabling_overview_table_keeps_cover_banner(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    model.get_section("overview_table").enabled = False
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    ws = openpyxl.load_workbook(out)["Overview"]
+    assert model.title in [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
+
+
+@pytest.mark.parametrize("theme_id", list(PALETTES.keys()))
+def test_each_palette_recolours_headers(tmp_path, theme_id):
+    model = _build_model(tmp_path, n=1)
+    model.theme = theme_id
+    out = str(tmp_path / f"report_{theme_id}.xlsx")
+    render_excel(model, out)
+    wb = openpyxl.load_workbook(out)
+    ws = wb["Overview"]
+    title_cell = ws.cell(row=1, column=1)
+    fill_hex = "#" + title_cell.fill.fgColor.rgb[-6:]
+    assert fill_hex == PALETTES[theme_id]["accent"]
+    # Tab colour never changes with the palette — it stays kind-coded.
+    assert "#" + ws.sheet_properties.tabColor.rgb[-6:] == TAB_COLORS["overview"]
+
+
+def test_custom_text_sections_render_as_notes_sheets_in_order(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    _add_custom_text(model, 1.1, "Sample Prep", "Etched per ASTM E407.")
+    _add_custom_text(model, 1.2, "Acceptance Criteria", "Grain size must be G >= 5.")
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    wb = openpyxl.load_workbook(out)
+    names = wb.sheetnames
+    assert "Notes - Sample Prep" in names
+    assert "Notes - Acceptance Criteria" in names
+    # Positioned between Overview and Summary Charts, per their order.
+    assert names.index("Overview") < names.index("Notes - Sample Prep") < names.index("Notes - Acceptance Criteria")
+    assert names.index("Notes - Acceptance Criteria") < names.index("Summary Charts")
+    ws = wb["Notes - Sample Prep"]
+    assert any("Etched per ASTM E407" in str(c.value) for row in ws.iter_rows() for c in row if c.value)
+    assert "#" + ws.sheet_properties.tabColor.rgb[-6:] == TAB_COLORS["custom_text"]
+    # Raw data is still last even though the notes sections were appended
+    # after everything else in the model's section list.
+    raw_sheets = [n for n in names if n.startswith("Raw")]
+    assert min(names.index(n) for n in raw_sheets) == len(names) - len(raw_sheets)
+
+
+def test_disabled_custom_text_section_is_not_rendered(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    sec = _add_custom_text(model, 1.1, "Draft", "not ready")
+    sec.enabled = False
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    names = openpyxl.load_workbook(out).sheetnames
+    assert "Notes - Draft" not in names
+
+
+def test_per_grain_notes_appear_as_note_column_in_raw_sheet(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    model.images[0].grains[0]["note"] = "Possible twin boundary"
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    wb = openpyxl.load_workbook(out)
+    raw_name = [n for n in wb.sheetnames if n.startswith("Raw")][0]
+    ws = wb[raw_name]
+    header = [c.value for c in next(ws.iter_rows(min_row=2, max_row=2))]
+    assert header[-1] == "Note"
+    note_col = len(header)
+    values = [r[note_col - 1] for r in ws.iter_rows(min_row=3, values_only=True)]
+    assert "Possible twin boundary" in values
+
+
 def test_sample_output_written_to_scratch():
     """Definition-of-done artifact for the coordinator to open."""
     scratch = os.path.join(ROOT, "scratch", "reports")
@@ -282,6 +407,13 @@ def test_sample_output_written_to_scratch():
         items, title="Sample Grain Report", operator="Jack", organization="Acme",
         metadata={"detection_mode": "boundary"}, asset_dir=os.path.join(tmp_root, "assets"),
     )
+    model.theme = "slate_teal"
+    model.images[0].grains[0]["note"] = "Edge artifact — verify"
+    _add_custom_text(model, 1.1, "Sample Preparation", "Mounted, polished, etched per ASTM E407.")
+    _add_custom_text(model, 20_001, "Conclusions", "Grain size meets the acceptance criterion.")
     out = os.path.join(scratch, "sample.xlsx")
     render_excel(model, out)
     assert os.path.exists(out)
+    names = openpyxl.load_workbook(out).sheetnames
+    assert "Notes - Sample Preparation" in names
+    assert "Notes - Conclusions" in names

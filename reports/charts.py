@@ -8,7 +8,7 @@ users see familiar bin edges.
 from __future__ import annotations
 
 import math
-from typing import List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 
@@ -22,6 +22,7 @@ TAB_COLORS = {
     "image": "#00796B",      # teal
     "methods": "#F9A825",    # amber
     "raw": "#757575",        # grey
+    "custom_text": "#6A1B9A",  # purple — Notes sheets (Excel) / text slides (PowerPoint)
 }
 
 # Chart series / accent colours (hex, no leading # stripped where needed).
@@ -41,6 +42,91 @@ SERIES = {
     "band_alt": "#EEF3FF",
     "gridline": "#D9D9D9",
 }
+
+# ---------------------------------------------------------------------------
+# Theme palettes — chosen from the report designer's "Document ▸ Palette"
+# combo (``ReportModel.theme``).  Note tab colours are NOT part of a palette
+# — they stay kind-coded (``TAB_COLORS`` above) so a workbook always reads
+# the same way regardless of theme. A palette only re-colours: chart series
+# (bars/line), section/title header backgrounds, and PowerPoint accents.
+# Single source of truth: ``ui/pages/report_inspector.py`` reads
+# ``palette_choices()`` to populate the combo, so the UI never hardcodes ids.
+# ---------------------------------------------------------------------------
+
+PALETTES: Dict[str, Dict[str, str]] = {
+    "default": {
+        "name": "Corporate navy",
+        "header": "#2E5FA3",
+        "accent": "#1A2B4A",
+        "accent2": "#00796B",
+        "area_bar": "#6478DC",
+        "diameter_bar": "#48B07A",
+        "normal_fit": "#DC3278",
+        "count_bar": "#1A2B4A",
+    },
+    "slate_teal": {
+        "name": "Slate teal",
+        "header": "#0E7C86",
+        "accent": "#0B4F57",
+        "accent2": "#1AA6B0",
+        "area_bar": "#1AA6B0",
+        "diameter_bar": "#5FBF8F",
+        "normal_fit": "#E0708C",
+        "count_bar": "#0B4F57",
+    },
+    "forge_amber": {
+        "name": "Forge amber",
+        "header": "#B4650A",
+        "accent": "#7A4404",
+        "accent2": "#E08A2B",
+        "area_bar": "#E08A2B",
+        "diameter_bar": "#4F8F5B",
+        "normal_fit": "#C0392B",
+        "count_bar": "#7A4404",
+    },
+    "graphite_mono": {
+        "name": "Graphite mono",
+        "header": "#4A4A4A",
+        "accent": "#2B2B2B",
+        "accent2": "#7A7A7A",
+        "area_bar": "#7A7A7A",
+        "diameter_bar": "#9E9E9E",
+        "normal_fit": "#2B2B2B",
+        "count_bar": "#4A4A4A",
+    },
+}
+
+DEFAULT_PALETTE_ID = "default"
+
+
+def palette_ids() -> List[str]:
+    return list(PALETTES.keys())
+
+
+def palette_choices() -> List[Tuple[str, str]]:
+    """``[(id, display name), ...]`` — what the palette combo box shows."""
+    return [(k, v["name"]) for k, v in PALETTES.items()]
+
+
+def resolve_palette(theme_id: str) -> Dict[str, str]:
+    return PALETTES.get(theme_id, PALETTES[DEFAULT_PALETTE_ID])
+
+
+def series_for(theme_id: str) -> Dict[str, str]:
+    """``SERIES`` with the chart-series/header/accent entries swapped for
+    the chosen palette. ``navy``/``header_bg``/``accent2`` are the
+    section-background and PowerPoint-accent colours; everything else
+    (typography, bands, gridlines) stays constant across palettes."""
+    p = resolve_palette(theme_id)
+    out = dict(SERIES)
+    out["area_bar"] = p["area_bar"]
+    out["diameter_bar"] = p["diameter_bar"]
+    out["normal_fit"] = p["normal_fit"]
+    out["count_bar"] = p["count_bar"]
+    out["navy"] = p["accent"]
+    out["accent2"] = p["accent2"]
+    out["header_bg"] = p["header"]
+    return out
 
 
 def _unit(ppu: float) -> Tuple[str, float, str, float]:

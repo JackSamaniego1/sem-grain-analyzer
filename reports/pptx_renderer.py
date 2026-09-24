@@ -1,9 +1,17 @@
 """PowerPoint renderer (python-pptx) for ``ReportModel``.
 
-16:9 deck: title slide, executive summary table, combined distribution
-slides with NATIVE (editable) charts, one slide per included image
-(original + overlay side by side with key-metric callouts), a methods
-slide, and an appendix slide pointing at the Excel workbook for raw data.
+16:9 deck built in ``Section.order`` (the designer's outline order), with
+two structural rules always enforced (matching the Excel renderer and the
+designer): a ``cover`` section (if enabled) is the title slide and an
+``overview_table`` section (if enabled) is the executive summary — combined
+distribution slides (NATIVE, editable charts), one slide per included image
+(original + overlay side by side with key-metric callouts, in
+``ImageSummary.order``), a methods slide and ``custom_text`` slides can
+appear in any order/mix the designer picked; the appendix slide (pointing at
+the Excel workbook for raw data) is always last, mirroring "raw data always
+last" in Excel. Every section's ``enabled``/``title`` is honoured. Chart
+colours and navy accents follow the designer's palette (``ReportModel.theme``
+— see ``reports.charts.PALETTES``), the same one the Excel renderer uses.
 
 Supports an optional corporate ``template_path`` (``Presentation(template)``)
 — when given, its layouts are reused; slide content is still built with
@@ -13,7 +21,7 @@ from __future__ import annotations
 
 import os
 import tempfile
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from pptx import Presentation
@@ -24,8 +32,8 @@ from pptx.enum.text import PP_ALIGN
 from pptx.dml.color import RGBColor
 from pptx.util import Emu, Inches, Pt
 
-from reports.charts import SERIES, build_bins, normal_fit, resolve_units
-from reports.model import ReportModel, ImageSummary
+from reports.charts import SERIES, build_bins, normal_fit, resolve_units, resolve_palette, series_for
+from reports.model import ReportModel, ImageSummary, Section
 from reports.excel_renderer import _resized_png, _row_size_stats
 
 try:
@@ -44,11 +52,57 @@ TEXT_DARK = RGBColor(0x1A, 0x1A, 0x2E)
 LIGHT_BAND = RGBColor(0xF2, 0xF4, 0xF7)
 
 
+def _hexrgb(h: str) -> RGBColor:
+    h = h.lstrip("#")
+    return RGBColor(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+
 def _blank_layout(prs: Presentation):
     for layout in prs.slide_layouts:
         if layout.name.lower() in ("blank",):
             return layout
     return prs.slide_layouts[min(6, len(prs.slide_layouts) - 1)]
+
+
+def _build_plan(model: ReportModel, images: List[ImageSummary]) -> List[Tuple[str, Optional[Section]]]:
+    """Slide order following ``Section.order`` (the designer's outline).
+
+    ``raw_data`` (→ the appendix slide) is excluded here and always added
+    last by ``render_pptx`` — the same "raw data at the end" rule the Excel
+    renderer enforces. Per-image slides are one ``("images", None)`` entry
+    at the position of the first ``image`` section; ``ImageSummary.order``
+    governs the order within that block.
+    """
+    plan: List[Tuple[str, Optional[Section]]] = []
+    images_emitted = False
+    for s in sorted(model.sections, key=lambda s: s.order):
+        if s.type == "raw_data":
+            continue
+        if s.type == "cover":
+            if s.enabled:
+                plan.append(("cover", s))
+            continue
+        if s.type == "overview_table":
+            if s.enabled:
+                plan.append(("overview_table", s))
+            continue
+        if s.type == "image":
+            if not images_emitted:
+                plan.append(("images", None))
+                images_emitted = True
+            continue
+        if s.type == "combined_distribution":
+            if s.enabled and images:
+                plan.append(("charts", s))
+        elif s.type == "parameters":
+            if s.enabled:
+                plan.append(("methods", s))
+        elif s.type == "custom_text":
+            if s.enabled:
+                plan.append(("custom_text", s))
+    if images and not images_emitted:
+        plan.append(("images", None))
+    return plan
 
 
 def render_pptx(model: ReportModel, output_path: str, template_path: Optional[str] = None) -> str:
@@ -61,8 +115,13 @@ def render_pptx(model: ReportModel, output_path: str, template_path: Optional[st
     layout = _blank_layout(prs)
 
     images = model.ordered_images(included_only=True)
-    want_charts = model.is_enabled("combined_distribution", default=True) and bool(images)
-    want_methods = model.is_enabled("parameters", default=True)
+    want_raw = model.is_enabled("raw_data", default=True)
+    plan = _build_plan(model, images)
+
+    palette = resolve_palette(model.theme)
+    navy = _hexrgb(palette["accent"])
+    accent2 = _hexrgb(palette["accent2"])
+    series = series_for(model.theme)
 
     with tempfile.TemporaryDirectory(prefix="grain_report_pptx_") as tmpdir:
         page = [0]
@@ -72,28 +131,32 @@ def render_pptx(model: ReportModel, output_path: str, template_path: Optional[st
             page[0] += 1
             return s
 
-        _title_slide(new_slide(), model)
-        _add_footer(prs.slides[-1], model, page[0])
+        for kind, sec in plan:
+            if kind == "cover":
+                _title_slide(new_slide(), model, navy, accent2)
+                _add_footer(prs.slides[-1], model, page[0], navy)
+            elif kind == "overview_table":
+                _exec_summary_slide(new_slide(), model, images, navy)
+                _add_footer(prs.slides[-1], model, page[0], navy)
+            elif kind == "charts":
+                _distribution_slide(new_slide(), model, images, kind="area", series=series, navy=navy)
+                _add_footer(prs.slides[-1], model, page[0], navy)
+                _distribution_slide(new_slide(), model, images, kind="diameter", series=series, navy=navy)
+                _add_footer(prs.slides[-1], model, page[0], navy)
+            elif kind == "images":
+                for img in images:
+                    _image_slide(new_slide(), model, img, tmpdir, navy)
+                    _add_footer(prs.slides[-1], model, page[0], navy)
+            elif kind == "methods":
+                _methods_slide(new_slide(), model, navy)
+                _add_footer(prs.slides[-1], model, page[0], navy)
+            elif kind == "custom_text":
+                _text_slide(new_slide(), model, sec, navy)
+                _add_footer(prs.slides[-1], model, page[0], navy)
 
-        _exec_summary_slide(new_slide(), model, images)
-        _add_footer(prs.slides[-1], model, page[0])
-
-        if want_charts:
-            _distribution_slide(new_slide(), model, images, kind="area")
-            _add_footer(prs.slides[-1], model, page[0])
-            _distribution_slide(new_slide(), model, images, kind="diameter")
-            _add_footer(prs.slides[-1], model, page[0])
-
-        for img in images:
-            _image_slide(new_slide(), model, img, tmpdir)
-            _add_footer(prs.slides[-1], model, page[0])
-
-        if want_methods:
-            _methods_slide(new_slide(), model)
-            _add_footer(prs.slides[-1], model, page[0])
-
-        _appendix_slide(new_slide(), model)
-        _add_footer(prs.slides[-1], model, page[0])
+        if want_raw:
+            _appendix_slide(new_slide(), model, navy)
+            _add_footer(prs.slides[-1], model, page[0], navy)
 
     prs.save(output_path)
     return output_path
@@ -127,18 +190,18 @@ def _fill_rect(slide, left, top, width, height, color):
     return shape
 
 
-def _add_footer(slide, model: ReportModel, page_num: int) -> None:
-    _fill_rect(slide, 0, SLIDE_H - Inches(0.32), SLIDE_W, Inches(0.32), NAVY)
+def _add_footer(slide, model: ReportModel, page_num: int, navy: RGBColor = NAVY) -> None:
+    _fill_rect(slide, 0, SLIDE_H - Inches(0.32), SLIDE_W, Inches(0.32), navy)
     _textbox(slide, Inches(0.3), SLIDE_H - Inches(0.32), Inches(9), Inches(0.32),
               model.title or "Grain Analysis Report", size=10, color=WHITE, align=PP_ALIGN.LEFT)
     _textbox(slide, SLIDE_W - Inches(1.3), SLIDE_H - Inches(0.32), Inches(1.0), Inches(0.32),
               str(page_num), size=10, color=WHITE, align=PP_ALIGN.RIGHT)
 
 
-def _metric_callout(slide, left, top, width, height, value: str, label: str):
+def _metric_callout(slide, left, top, width, height, value: str, label: str, navy: RGBColor = NAVY):
     _fill_rect(slide, left, top, width, height, LIGHT_BAND)
     _textbox(slide, left, top + Inches(0.06), width, Inches(0.5), value, size=22, bold=True,
-              color=NAVY, align=PP_ALIGN.CENTER)
+              color=navy, align=PP_ALIGN.CENTER)
     _textbox(slide, left, top + height - Inches(0.35), width, Inches(0.3), label, size=10,
               color=GREY, align=PP_ALIGN.CENTER)
 
@@ -147,12 +210,12 @@ def _metric_callout(slide, left, top, width, height, value: str, label: str):
 # Slides
 # ---------------------------------------------------------------------------
 
-def _title_slide(slide, model: ReportModel) -> None:
+def _title_slide(slide, model: ReportModel, navy: RGBColor = NAVY, accent2: RGBColor = TEAL) -> None:
     _fill_rect(slide, 0, 0, SLIDE_W, SLIDE_H, WHITE)
-    _fill_rect(slide, 0, 0, SLIDE_W, Inches(0.18), NAVY)
-    _fill_rect(slide, 0, Inches(0.18), SLIDE_W, Inches(0.06), TEAL)
+    _fill_rect(slide, 0, 0, SLIDE_W, Inches(0.18), navy)
+    _fill_rect(slide, 0, Inches(0.18), SLIDE_W, Inches(0.06), accent2)
     _textbox(slide, Inches(0.8), Inches(2.6), Inches(11.7), Inches(1.2), model.title or "Grain Analysis Report",
-              size=40, bold=True, color=NAVY)
+              size=40, bold=True, color=navy)
     meta = f"Sample/Lot: {_sample_lot_summary(model)}    |    {model.date}"
     _textbox(slide, Inches(0.8), Inches(3.7), Inches(11.7), Inches(0.5), meta, size=16, color=GREY)
     who = f"Operator: {model.operator or '—'}    |    Organization: {model.organization or '—'}"
@@ -172,8 +235,8 @@ def _sample_lot_summary(model: ReportModel) -> str:
     return f"{s} / {l}"
 
 
-def _exec_summary_slide(slide, model: ReportModel, images: List[ImageSummary]) -> None:
-    _slide_heading(slide, "Executive Summary")
+def _exec_summary_slide(slide, model: ReportModel, images: List[ImageSummary], navy: RGBColor = NAVY) -> None:
+    _slide_heading(slide, "Executive Summary", navy)
     if not images:
         _textbox(slide, Inches(0.8), Inches(1.5), Inches(11), Inches(0.5), "No images included.", size=14)
         return
@@ -186,7 +249,7 @@ def _exec_summary_slide(slide, model: ReportModel, images: List[ImageSummary]) -
     for c, h in enumerate(headers):
         cell = table.cell(0, c)
         cell.text = h
-        _style_header_cell(cell)
+        _style_header_cell(cell, navy)
 
     all_grains = []
     for r, img in enumerate(images, start=1):
@@ -225,9 +288,9 @@ def _exec_summary_slide(slide, model: ReportModel, images: List[ImageSummary]) -
         _style_total_cell(cell)
 
 
-def _style_header_cell(cell) -> None:
+def _style_header_cell(cell, navy: RGBColor = NAVY) -> None:
     cell.fill.solid()
-    cell.fill.fore_color.rgb = NAVY
+    cell.fill.fore_color.rgb = navy
     for p in cell.text_frame.paragraphs:
         p.alignment = PP_ALIGN.CENTER
         for run in p.runs:
@@ -245,14 +308,15 @@ def _style_total_cell(cell) -> None:
             run.font.size = Pt(11)
 
 
-def _slide_heading(slide, text: str) -> None:
-    _fill_rect(slide, 0, 0, SLIDE_W, Inches(0.9), NAVY)
+def _slide_heading(slide, text: str, navy: RGBColor = NAVY) -> None:
+    _fill_rect(slide, 0, 0, SLIDE_W, Inches(0.9), navy)
     _textbox(slide, Inches(0.5), Inches(0.15), Inches(12), Inches(0.6), text, size=26, bold=True, color=WHITE)
 
 
-def _distribution_slide(slide, model: ReportModel, images: List[ImageSummary], kind: str) -> None:
+def _distribution_slide(slide, model: ReportModel, images: List[ImageSummary], kind: str,
+                         series: Dict[str, str] = SERIES, navy: RGBColor = NAVY) -> None:
     label = "Grain Area" if kind == "area" else "Grain Diameter"
-    _slide_heading(slide, f"Combined {label} Distribution")
+    _slide_heading(slide, f"Combined {label} Distribution", navy)
 
     all_grains = [g for img in images for g in img.grains]
     calibrated_all = all(i.has_calibration for i in images)
@@ -297,14 +361,14 @@ def _distribution_slide(slide, model: ReportModel, images: List[ImageSummary], k
     val_axis.has_major_gridlines = True
     try:
         chart.plots[0].series[0].format.fill.solid()
-        chart.plots[0].series[0].format.fill.fore_color.rgb = RGBColor(
-            *(int(SERIES["area_bar" if kind == "area" else "diameter_bar"][i:i + 2], 16) for i in (1, 3, 5)))
+        chart.plots[0].series[0].format.fill.fore_color.rgb = _hexrgb(
+            series["area_bar" if kind == "area" else "diameter_bar"])
     except Exception:
         pass
 
 
-def _image_slide(slide, model: ReportModel, img: ImageSummary, tmpdir: str) -> None:
-    _slide_heading(slide, f"Image {img.order}: {os.path.basename(img.image_path)}")
+def _image_slide(slide, model: ReportModel, img: ImageSummary, tmpdir: str, navy: RGBColor = NAVY) -> None:
+    _slide_heading(slide, f"Image {img.order}: {os.path.basename(img.image_path)}", navy)
 
     orig = _resized_png(tmpdir, img.image_path, max_w=900)
     ovl = _resized_png(tmpdir, img.overlay_path, max_w=900)
@@ -331,15 +395,15 @@ def _image_slide(slide, model: ReportModel, img: ImageSummary, tmpdir: str) -> N
     top = Inches(4.85)
     cw = Inches(1.95)
     for i, (val, lbl) in enumerate(metrics):
-        _metric_callout(slide, Inches(0.5) + cw * i, top, cw - Inches(0.08), Inches(0.9), val, lbl)
+        _metric_callout(slide, Inches(0.5) + cw * i, top, cw - Inches(0.08), Inches(0.9), val, lbl, navy)
 
     cap = (img.caption + ("\n" + img.notes if img.notes else "")).strip()
     if cap:
         _textbox(slide, Inches(0.5), top + Inches(1.05), Inches(11.7), Inches(0.8), cap, size=12, color=GREY)
 
 
-def _methods_slide(slide, model: ReportModel) -> None:
-    _slide_heading(slide, "Methods & Parameters")
+def _methods_slide(slide, model: ReportModel, navy: RGBColor = NAVY) -> None:
+    _slide_heading(slide, "Methods & Parameters", navy)
     params = model.metadata.get("detection_params") or {}
     lines = [f"Detection mode: {model.metadata.get('detection_mode', '—')}"]
     for k, v in params.items():
@@ -351,9 +415,29 @@ def _methods_slide(slide, model: ReportModel) -> None:
     _textbox(slide, Inches(0.8), Inches(1.3), Inches(11.5), Inches(5.5), "\n".join(lines), size=16)
 
 
-def _appendix_slide(slide, model: ReportModel) -> None:
-    _slide_heading(slide, "Appendix")
+def _appendix_slide(slide, model: ReportModel, navy: RGBColor = NAVY) -> None:
+    _slide_heading(slide, "Appendix", navy)
     _textbox(slide, Inches(0.8), Inches(1.5), Inches(11.5), Inches(2.0),
               "Full per-grain raw measurement data for every image is provided in the "
               "companion Excel workbook (sheets named \"Raw - <image>\"), not duplicated here.",
               size=16)
+
+
+def _text_slide(slide, model: ReportModel, sec: Section, navy: RGBColor = NAVY) -> None:
+    """Native rendering of a designer ``custom_text`` section — a clean
+    heading + word-wrapped body, one paragraph per line. Replaces the old
+    post-processing hack (``ui.pages.report_builder.add_custom_text_slides``)
+    that poked this module's private helpers from the UI layer."""
+    _slide_heading(slide, sec.title or "Notes", navy)
+    box = slide.shapes.add_textbox(Inches(0.8), Inches(1.3), Inches(11.7), Inches(5.4))
+    tf = box.text_frame
+    tf.word_wrap = True
+    body = str(sec.payload.get("body", "") or "")
+    lines = body.split("\n") or [""]
+    for n, line in enumerate(lines):
+        p = tf.paragraphs[0] if n == 0 else tf.add_paragraph()
+        run = p.add_run()
+        run.text = line
+        run.font.size = Pt(16)
+        run.font.name = "Calibri"
+        run.font.color.rgb = TEXT_DARK

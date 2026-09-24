@@ -1,12 +1,25 @@
 """Excel renderer (xlsxwriter) for ``ReportModel``.
 
-Sheet order (raw data always last):
-  1. Overview          (navy)   — header block + one row per image + combined row
-  2. Summary Charts     (green)  — combined histograms, per-image mean-diameter
-                                    bar w/ error bars, grain-count-per-image bar
-  3. Img n - <name>      (teal)   — original + overlay, stats, per-image histograms
-  4. Methods            (amber)  — detection mode/params, calibration, version
-  5. Raw - <name>        (grey)   — full per-grain data, autofilter, freeze panes
+Sheet order follows the designer's ``Section.order`` (drag order in the
+outline), with two structural rules always enforced (matching the designer
+and the PowerPoint renderer):
+  * Overview       (navy)   — always first; folds the ``cover`` banner and
+                               the ``overview_table`` grid into one sheet,
+                               each independently toggle-able.
+  * Raw - <name>    (grey)   — always last (the lab manager's requirement).
+Between those, any mix/order of:
+  * Summary Charts  (green)  — combined histograms, per-image mean-diameter
+                                bar w/ error bars, grain-count-per-image bar.
+  * Img n - <name>  (teal)   — original + overlay, stats, per-image histograms,
+                                in ``ImageSummary.order``.
+  * Methods         (amber)  — detection mode/params, calibration, version.
+  * Notes - <title> (purple, #6A1B9A) — one per enabled ``custom_text``
+                                section, word-wrapped body.
+Every section's user-edited ``title`` is used where the model allows one
+(Overview/Summary Charts/Methods/Notes sheet names); a disabled section is
+skipped entirely. Chart colours, header bands and title bars follow the
+designer's palette (``ReportModel.theme`` — see ``reports.charts.PALETTES``);
+tab colours stay fixed/kind-coded regardless of palette.
 
 Every embedded/resized image goes through a ``tempfile.TemporaryDirectory``
 that is cleaned up before this function returns (D-14 — no leaked temp
@@ -29,8 +42,8 @@ try:
 except Exception:  # pragma: no cover
     cv2 = None
 
-from reports.charts import SERIES, TAB_COLORS, build_bins, normal_fit, resolve_units
-from reports.model import ReportModel, ImageSummary
+from reports.charts import SERIES, TAB_COLORS, build_bins, normal_fit, resolve_units, series_for
+from reports.model import ReportModel, ImageSummary, Section
 
 try:
     from version import __version__ as APP_VERSION
@@ -77,48 +90,94 @@ def _resized_png(tmpdir: str, src_path: Optional[str], max_w: int = 800, _seq: L
     return out_path, w, h
 
 
+def _build_plan(model: ReportModel, images: List[ImageSummary]) -> List[Tuple[str, Optional[Section]]]:
+    """Sheets between Overview and Raw data, in ``Section.order``.
+
+    ``cover``/``overview_table`` fold into the Overview sheet (handled by
+    ``_write_overview``) and ``raw_data`` is always pinned last (the lab
+    manager's requirement) — both are excluded here. Per-image sheets are
+    emitted as one ``("images", None)`` block at the position of the first
+    ``image`` section encountered, since ``ImageSummary.order`` (kept in
+    sync with the image sections by ``ui.pages.report_builder.apply_order``)
+    governs the order *within* that block.
+    """
+    plan: List[Tuple[str, Optional[Section]]] = []
+    images_emitted = False
+    for s in sorted(model.sections, key=lambda s: s.order):
+        if s.type in ("cover", "overview_table", "raw_data"):
+            continue
+        if s.type == "image":
+            if not images_emitted:
+                plan.append(("images", None))
+                images_emitted = True
+            continue
+        if s.type == "combined_distribution":
+            if s.enabled and images:
+                plan.append(("charts", s))
+        elif s.type == "parameters":
+            if s.enabled:
+                plan.append(("methods", s))
+        elif s.type == "custom_text":
+            if s.enabled:
+                plan.append(("custom_text", s))
+    if images and not images_emitted:
+        plan.append(("images", None))
+    return plan
+
+
 def render_excel(model: ReportModel, output_path: str) -> str:
     with tempfile.TemporaryDirectory(prefix="grain_report_xlsx_") as tmpdir:
         wb = xlsxwriter.Workbook(output_path)
-        fmts = _build_formats(wb)
+        series = series_for(model.theme)
+        fmts = _build_formats(wb, series)
         used_names: Dict[str, int] = {}
 
         images = model.ordered_images(included_only=True)
-        want_charts = model.is_enabled("combined_distribution", default=True) and bool(images)
-        want_methods = model.is_enabled("parameters", default=True)
         want_raw = model.is_enabled("raw_data", default=True)
+        plan = _build_plan(model, images)
 
         # Precompute every sheet name up front (in final sheet order) so
         # Overview can hyperlink to the correct, already-unique names.
-        overview_name = _safe_sheet_name("Overview", used_names)
-        charts_name = _safe_sheet_name("Summary Charts", used_names) if want_charts else None
+        overview_name = _safe_sheet_name(
+            model.section_title("overview_table", default="Overview") or "Overview", used_names)
+        sheet_names: Dict[int, str] = {}
         image_sheet_names: Dict[str, str] = {}
-        for img in images:
-            image_sheet_names[img.id] = _safe_sheet_name(
-                f"Img {img.order} - {os.path.splitext(os.path.basename(img.image_path))[0]}", used_names)
-        methods_name = _safe_sheet_name("Methods", used_names) if want_methods else None
+        for kind, sec in plan:
+            if kind == "charts":
+                sheet_names[id(sec)] = _safe_sheet_name(sec.title or "Summary Charts", used_names)
+            elif kind == "methods":
+                sheet_names[id(sec)] = _safe_sheet_name(sec.title or "Methods", used_names)
+            elif kind == "custom_text":
+                sheet_names[id(sec)] = _safe_sheet_name(f"Notes - {sec.title or 'Notes'}", used_names)
+            elif kind == "images":
+                for img in images:
+                    image_sheet_names[img.id] = _safe_sheet_name(
+                        f"Img {img.order} - {os.path.splitext(os.path.basename(img.image_path))[0]}",
+                        used_names)
         raw_sheet_names: Dict[str, str] = {}
         if want_raw:
             for img in images:
                 raw_sheet_names[img.id] = _safe_sheet_name(
                     f"Raw - {os.path.splitext(os.path.basename(img.image_path))[0]}", used_names)
 
-        # 1. Overview (always first)
+        # 1. Overview (always first; cover banner + overview table, each
+        #    independently toggle-able)
         _write_overview(wb, model, images, fmts, overview_name, image_sheet_names)
 
-        # 2. Summary Charts
-        if want_charts:
-            _write_summary_charts(wb, model, images, fmts, charts_name)
+        # 2. Everything in designer order: Summary Charts / per-image sheets
+        #    / Methods / Notes — any mix, any order the user picked.
+        for kind, sec in plan:
+            if kind == "charts":
+                _write_summary_charts(wb, model, images, fmts, series, sheet_names[id(sec)])
+            elif kind == "methods":
+                _write_methods(wb, model, fmts, sheet_names[id(sec)])
+            elif kind == "custom_text":
+                _write_custom_text_sheet(wb, sec, fmts, sheet_names[id(sec)])
+            elif kind == "images":
+                for img in images:
+                    _write_image_sheet(wb, model, img, image_sheet_names[img.id], fmts, series, tmpdir)
 
-        # 3. Per-image sheets
-        for img in images:
-            _write_image_sheet(wb, model, img, image_sheet_names[img.id], fmts, tmpdir)
-
-        # 4. Methods
-        if want_methods:
-            _write_methods(wb, model, fmts, methods_name)
-
-        # 5. Raw data (last, always)
+        # 3. Raw data (last, always — lab manager requirement)
         if want_raw:
             for img in images:
                 _write_raw_sheet(wb, img, fmts, raw_sheet_names[img.id])
@@ -131,17 +190,21 @@ def render_excel(model: ReportModel, output_path: str) -> str:
 # Formats
 # ---------------------------------------------------------------------------
 
-def _build_formats(wb: "xlsxwriter.Workbook") -> Dict[str, "xlsxwriter.format.Format"]:
+def _build_formats(wb: "xlsxwriter.Workbook", series: Dict[str, str] = SERIES
+                    ) -> Dict[str, "xlsxwriter.format.Format"]:
+    """``series`` is ``reports.charts.series_for(model.theme)`` — the palette
+    the user picked in Document ▸ Palette. Tab colours (``TAB_COLORS``) are
+    NOT part of this — they always stay kind-coded."""
     f = {}
     f["title"] = wb.add_format({"bold": True, "font_size": 18, "font_color": SERIES["white"],
-                                 "bg_color": SERIES["navy"], "align": "center", "valign": "vcenter"})
+                                 "bg_color": series["navy"], "align": "center", "valign": "vcenter"})
     f["subtitle"] = wb.add_format({"font_size": 10, "font_color": SERIES["white"],
                                     "bg_color": TAB_COLORS["overview"], "align": "left", "valign": "vcenter"})
     f["section"] = wb.add_format({"bold": True, "font_size": 12, "font_color": SERIES["white"],
-                                   "bg_color": SERIES["navy"], "align": "left", "valign": "vcenter", "indent": 1})
+                                   "bg_color": series["navy"], "align": "left", "valign": "vcenter", "indent": 1})
     f["header"] = wb.add_format({"bold": True, "font_size": 10, "font_color": SERIES["white"],
-                                  "bg_color": "#2E5FA3", "align": "center", "valign": "vcenter", "border": 1,
-                                  "text_wrap": True})
+                                  "bg_color": series["header_bg"], "align": "center", "valign": "vcenter",
+                                  "border": 1, "text_wrap": True})
     f["band0"] = wb.add_format({"bg_color": SERIES["band_alt"], "border": 1, "align": "center"})
     f["band1"] = wb.add_format({"bg_color": SERIES["band"], "border": 1, "align": "center"})
     f["band0_num2"] = wb.add_format({"bg_color": SERIES["band_alt"], "border": 1, "align": "center", "num_format": "0.00"})
@@ -211,11 +274,14 @@ def _write_overview(wb, model: ReportModel, images: List[ImageSummary], fmts, na
     ws.hide_gridlines(2)
 
     ncols = len(_OVERVIEW_COLS)
-    ws.merge_range(0, 0, 0, ncols - 1, model.title or "Grain Analysis Report", fmts["title"])
-    ws.set_row(0, 30)
-    sub = (f"Operator: {model.operator or '—'}   |   Organization: {model.organization or '—'}   |   "
-           f"Date: {model.date}   |   {len(images)} image(s)   |   Grain Analyzer v{APP_VERSION}")
-    ws.merge_range(1, 0, 1, ncols - 1, sub, fmts["subtitle"])
+    header_row = 0
+    if model.is_enabled("cover", default=True):
+        ws.merge_range(0, 0, 0, ncols - 1, model.title or "Grain Analysis Report", fmts["title"])
+        ws.set_row(0, 30)
+        sub = (f"Operator: {model.operator or '—'}   |   Organization: {model.organization or '—'}   |   "
+               f"Date: {model.date}   |   {len(images)} image(s)   |   Grain Analyzer v{APP_VERSION}")
+        ws.merge_range(1, 0, 1, ncols - 1, sub, fmts["subtitle"])
+        header_row = 3
 
     if not model.is_enabled("overview_table", default=True) or not images:
         ws.set_column(0, ncols - 1, 16)
@@ -227,7 +293,6 @@ def _write_overview(wb, model: ReportModel, images: List[ImageSummary], fmts, na
         f"Std Area ({au})*", f"Mean Diameter ({du})*", f"Std Diameter ({du})*", "Units", "Coverage %",
         "Invalid %", "Mean Circularity", "Mean Aspect Ratio", "ASTM G",
     ]
-    header_row = 3
     for c, h in enumerate(header):
         ws.write(header_row, c, h, fmts["header"])
     ws.set_row(header_row, 30)
@@ -310,7 +375,8 @@ def _write_overview(wb, model: ReportModel, images: List[ImageSummary], fmts, na
 # Summary Charts
 # ---------------------------------------------------------------------------
 
-def _write_summary_charts(wb, model: ReportModel, images: List[ImageSummary], fmts, name: str) -> None:
+def _write_summary_charts(wb, model: ReportModel, images: List[ImageSummary], fmts, series: Dict[str, str],
+                           name: str) -> None:
     ws = wb.add_worksheet(name)
     ws.set_tab_color(TAB_COLORS["charts"])
     ws.hide_gridlines(2)
@@ -331,11 +397,11 @@ def _write_summary_charts(wb, model: ReportModel, images: List[ImageSummary], fm
         diam_vals = [g["diameter_px"] for g in all_grains]
 
     row = 2
-    row = _write_hist_block(ws, fmts, wb, row, area_vals, n_bins_area, au, "Grain Area", SERIES["area_bar"],
-                             chart_anchor="J2")
+    row = _write_hist_block(ws, fmts, wb, row, area_vals, n_bins_area, au, "Grain Area", series["area_bar"],
+                             chart_anchor="J2", fit_color=series["normal_fit"])
     row += 2
-    row = _write_hist_block(ws, fmts, wb, row, diam_vals, n_bins_diam, du, "Grain Diameter", SERIES["diameter_bar"],
-                             chart_anchor="J22")
+    row = _write_hist_block(ws, fmts, wb, row, diam_vals, n_bins_diam, du, "Grain Diameter", series["diameter_bar"],
+                             chart_anchor="J22", fit_color=series["normal_fit"])
 
     # Per-image mean diameter bar w/ error bars + grain count bar.
     row += 2
@@ -359,7 +425,7 @@ def _write_summary_charts(wb, model: ReportModel, images: List[ImageSummary], fm
         "name": f"Mean Diameter ({du})",
         "categories": [name, tbl_row + 1, 0, last, 0],
         "values": [name, tbl_row + 1, 1, last, 1],
-        "fill": {"color": SERIES["diameter_bar"]},
+        "fill": {"color": series["diameter_bar"]},
         "y_error_bars": {
             "type": "custom",
             "plus_values": [name, tbl_row + 1, 2, last, 2],
@@ -381,7 +447,7 @@ def _write_summary_charts(wb, model: ReportModel, images: List[ImageSummary], fm
         "name": "Grain Count",
         "categories": [name, tbl_row + 1, 0, last, 0],
         "values": [name, tbl_row + 1, 3, last, 3],
-        "fill": {"color": SERIES["count_bar"]},
+        "fill": {"color": series["count_bar"]},
         "gap": 40,
     })
     count_chart.set_title({"name": "Grain Count per Image"})
@@ -397,7 +463,8 @@ def _write_summary_charts(wb, model: ReportModel, images: List[ImageSummary], fm
     ws.set_column(1, 3, 16)
 
 
-def _write_hist_block(ws, fmts, wb, start_row, values, n_bins, unit, label, color, chart_anchor) -> int:
+def _write_hist_block(ws, fmts, wb, start_row, values, n_bins, unit, label, color, chart_anchor,
+                       fit_color: str = SERIES["normal_fit"]) -> int:
     if isinstance(chart_anchor, tuple):
         chart_anchor = xl_rowcol_to_cell(chart_anchor[0], chart_anchor[1])
     labels, counts, edges = build_bins(values, n_bins)
@@ -428,7 +495,7 @@ def _write_hist_block(ws, fmts, wb, start_row, values, n_bins, unit, label, colo
         "name": "Normal Fit",
         "categories": [ws.get_name(), start_row + 1, 0, start_row + nb, 0],
         "values": [ws.get_name(), start_row + 1, 2, start_row + nb, 2],
-        "line": {"color": SERIES["normal_fit"], "width": 2.25},
+        "line": {"color": fit_color, "width": 2.25},
         "smooth": True,
     })
     bar.combine(line)
@@ -450,7 +517,8 @@ def _write_hist_block(ws, fmts, wb, start_row, values, n_bins, unit, label, colo
 # Per-image sheet
 # ---------------------------------------------------------------------------
 
-def _write_image_sheet(wb, model: ReportModel, img: ImageSummary, sheet_name, fmts, tmpdir) -> None:
+def _write_image_sheet(wb, model: ReportModel, img: ImageSummary, sheet_name, fmts,
+                        series: Dict[str, str], tmpdir) -> None:
     ws = wb.add_worksheet(sheet_name)
     ws.set_tab_color(TAB_COLORS["image"])
     ws.hide_gridlines(2)
@@ -508,10 +576,12 @@ def _write_image_sheet(wb, model: ReportModel, img: ImageSummary, sheet_name, fm
         area_vals = [g["area_px"] for g in img.grains]
         diam_vals = [g["diameter_px"] for g in img.grains]
     hist_row = _write_hist_block(ws, fmts, wb, hist_row, area_vals, model.bins.get("area", 0), au,
-                                  "Grain Area", SERIES["area_bar"], chart_anchor=(hist_row, 5))
+                                  "Grain Area", series["area_bar"], chart_anchor=(hist_row, 5),
+                                  fit_color=series["normal_fit"])
     hist_row += 2
     hist_row = _write_hist_block(ws, fmts, wb, hist_row, diam_vals, model.bins.get("diameter", 0), du,
-                                  "Grain Diameter", SERIES["diameter_bar"], chart_anchor=(hist_row, 5))
+                                  "Grain Diameter", series["diameter_bar"], chart_anchor=(hist_row, 5),
+                                  fit_color=series["normal_fit"])
 
     note_row = hist_row + 2
     ws.merge_range(note_row, 0, note_row, 2, "Caption / Notes", fmts["section"])
@@ -561,6 +631,26 @@ def _write_methods(wb, model: ReportModel, fmts, name: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Custom text ("Notes") sheets — the designer's ``custom_text`` sections.
+# Tab colour is a dedicated purple (``TAB_COLORS["custom_text"]``, #6A1B9A)
+# — distinct from the five structural kinds so a Notes sheet is recognisable
+# at a glance without being confused with Methods (amber) or Raw (grey).
+# ---------------------------------------------------------------------------
+
+def _write_custom_text_sheet(wb, sec: Section, fmts, name: str) -> None:
+    ws = wb.add_worksheet(name)
+    ws.set_tab_color(TAB_COLORS["custom_text"])
+    ws.hide_gridlines(2)
+    ws.merge_range(0, 0, 0, 6, sec.title or "Notes", fmts["title"])
+    ws.set_row(0, 26)
+
+    body_fmt = wb.add_format({"text_wrap": True, "valign": "top", "font_size": 11, "border": 0})
+    body = str(sec.payload.get("body", "") or "").strip() or "—"
+    ws.merge_range(2, 0, 30, 6, body, body_fmt)
+    ws.set_column(0, 6, 18)
+
+
+# ---------------------------------------------------------------------------
 # Raw data
 # ---------------------------------------------------------------------------
 
@@ -571,14 +661,14 @@ def _write_raw_sheet(wb, img: ImageSummary, fmts, name: str) -> None:
 
     if img.has_calibration:
         headers = ["ID", "Area (µm²)", "Diameter (µm)", "Major (µm)", "Minor (µm)", "Perimeter (µm)",
-                   "Circularity", "Aspect Ratio", "Eccentricity", "Cx", "Cy"]
+                   "Circularity", "Aspect Ratio", "Eccentricity", "Cx", "Cy", "Note"]
         keys = ["id", "area_um2", "diameter_um", "major_um", "minor_um", "perimeter_um",
-                "circularity", "aspect_ratio", "eccentricity", "centroid_x", "centroid_y"]
+                "circularity", "aspect_ratio", "eccentricity", "centroid_x", "centroid_y", "note"]
     else:
         headers = ["ID", "Area (px²)", "Diameter (px)", "Perimeter (px)", "Circularity", "Aspect Ratio",
-                   "Eccentricity", "Cx", "Cy"]
+                   "Eccentricity", "Cx", "Cy", "Note"]
         keys = ["id", "area_px", "diameter_px", "perimeter_px", "circularity", "aspect_ratio",
-                "eccentricity", "centroid_x", "centroid_y"]
+                "eccentricity", "centroid_x", "centroid_y", "note"]
 
     ws.merge_range(0, 0, 0, len(headers) - 1, f"Grain Data - {os.path.basename(img.image_path)}", fmts["title"])
     for c, h in enumerate(headers):
@@ -588,15 +678,17 @@ def _write_raw_sheet(wb, img: ImageSummary, fmts, name: str) -> None:
     for ri, g in enumerate(img.grains):
         r = 2 + ri
         for c, k in enumerate(keys):
-            v = g.get(k)
+            v = g.get(k, "" if k == "note" else None)
             fmt = _band(fmts, ri, "num4" if k in ("circularity", "aspect_ratio", "eccentricity") else
                         ("num2" if isinstance(v, float) else "band"))
             if isinstance(v, (int, float)):
                 ws.write_number(r, c, v, fmt)
             else:
-                ws.write(r, c, v, fmt)
+                ws.write(r, c, v or "", fmt)
 
     last_row = 1 + len(img.grains)
     ws.autofilter(1, 0, max(last_row, 1), len(headers) - 1)
+    last_col = len(headers) - 1
     for c in range(len(headers)):
-        ws.set_column(c, c, 14 if c else 8)
+        width = 30 if c == last_col else (14 if c else 8)
+        ws.set_column(c, c, width)

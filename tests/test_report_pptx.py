@@ -14,8 +14,11 @@ import cv2
 
 from tests.conftest import make_mosaic
 from core.grain_detector import GrainDetector, DetectionParams
-from reports.model import ReportModel, ReportImageInput
+import pytest
+
+from reports.model import ReportModel, ReportImageInput, Section
 from reports.pptx_renderer import render_pptx
+from reports.charts import PALETTES
 
 
 def _build_model(tmp_path, n=3, px_per_um=8.0, seeds=None):
@@ -230,6 +233,112 @@ def test_no_temp_files_leaked(tmp_path):
     assert leaked == []
 
 
+def _all_text(slide):
+    return "\n".join(
+        run.text for shape in slide.shapes if shape.has_text_frame
+        for p in shape.text_frame.paragraphs for run in p.runs)
+
+
+def _add_custom_text(model, order, title, body):
+    sec = Section(id=f"text_{title}", type="custom_text", title=title, enabled=True,
+                  order=order, payload={"body": body})
+    model.sections.append(sec)
+    return sec
+
+
+# ---------------------------------------------------------------------------
+# REP-08: designer edits the renderer must honour
+# ---------------------------------------------------------------------------
+
+def test_reordering_top_level_sections_reorders_slides(tmp_path):
+    """Move Methods before the distribution slides purely via ``Section.order``."""
+    model = _build_model(tmp_path, n=1)
+    model.get_section("parameters").order = 1.5   # between overview(1) and charts(2)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    titles = [_all_text(s).split("\n")[0] for s in prs.slides]
+    methods_idx = next(i for i, t in enumerate(titles) if "Methods" in t)
+    area_idx = next(i for i, t in enumerate(titles) if "Area Distribution" in t)
+    assert methods_idx < area_idx
+    # Appendix (raw data) is still strictly last.
+    assert "Appendix" in titles[-1]
+
+
+def test_renamed_custom_text_title_used_as_slide_heading(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    sec = _add_custom_text(model, 1.1, "Sample Preparation", "Etched per ASTM E407.")
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    joined = "\n".join(_all_text(s) for s in prs.slides)
+    assert "Sample Preparation" in joined
+    assert "Etched per ASTM E407." in joined
+
+
+def test_disabling_cover_removes_title_slide(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    model.get_section("cover").enabled = False
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    assert len(prs.slides) == _expected_slide_count(1) - 1
+    assert "Executive Summary" in _all_text(prs.slides[0])
+
+
+def test_disabling_overview_table_removes_exec_summary_slide(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    model.get_section("overview_table").enabled = False
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    assert len(prs.slides) == _expected_slide_count(1) - 1
+    assert not any(sh.has_table for sh in prs.slides[1].shapes)
+
+
+@pytest.mark.parametrize("theme_id", list(PALETTES.keys()))
+def test_each_palette_recolours_title_slide(tmp_path, theme_id):
+    from pptx.dml.color import RGBColor
+    model = _build_model(tmp_path, n=1)
+    model.theme = theme_id
+    out = str(tmp_path / f"deck_{theme_id}.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    title_shape = next(sh for sh in prs.slides[0].shapes if sh.has_text_frame
+                        and model.title in sh.text_frame.text)
+    run = title_shape.text_frame.paragraphs[0].runs[0]
+    expected = RGBColor.from_string(PALETTES[theme_id]["accent"].lstrip("#"))
+    assert run.font.color.rgb == expected
+
+
+def test_two_custom_text_sections_render_native_text_slides_in_order(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    _add_custom_text(model, 1.1, "Sample Prep", "Etched per ASTM E407.")
+    _add_custom_text(model, 1.2, "Acceptance Criteria", "Grain size must be G >= 5.")
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    titles = [_all_text(s).split("\n")[0] for s in prs.slides]
+    assert titles.count("") == 0
+    prep_idx = titles.index("Sample Prep")
+    accept_idx = titles.index("Acceptance Criteria")
+    exec_idx = titles.index("Executive Summary")
+    area_idx = next(i for i, t in enumerate(titles) if "Area Distribution" in t)
+    assert exec_idx < prep_idx < accept_idx < area_idx
+    assert len(prs.slides) == _expected_slide_count(1) + 2
+
+
+def test_disabled_custom_text_section_is_not_rendered(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    sec = _add_custom_text(model, 1.1, "Draft", "not ready")
+    sec.enabled = False
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    assert len(prs.slides) == _expected_slide_count(1)
+    assert "Draft" not in "\n".join(_all_text(s) for s in prs.slides)
+
+
 def test_sample_output_written_to_scratch():
     scratch = os.path.join(ROOT, "scratch", "reports")
     os.makedirs(scratch, exist_ok=True)
@@ -247,6 +356,13 @@ def test_sample_output_written_to_scratch():
         items, title="Sample Grain Report", operator="Jack", organization="Acme",
         metadata={"detection_mode": "boundary"}, asset_dir=os.path.join(scratch, "assets2"),
     )
+    model.theme = "slate_teal"
+    _add_custom_text(model, 1.1, "Sample Preparation", "Mounted, polished, etched per ASTM E407.")
+    _add_custom_text(model, 20_001, "Conclusions", "Grain size meets the acceptance criterion.")
     out = os.path.join(scratch, "sample.pptx")
     render_pptx(model, out)
     assert os.path.exists(out)
+    prs = Presentation(out)
+    joined = "\n".join(_all_text(s) for s in prs.slides)
+    assert "Sample Preparation" in joined
+    assert "Conclusions" in joined

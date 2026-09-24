@@ -61,7 +61,7 @@ SECTION_TARGETS = {
     "image": ("One sheet per image", "One slide per image"),
     "parameters": ("Methods sheet", "Methods slide"),
     "raw_data": ("Raw sheets — always last", "Appendix slide"),
-    "custom_text": ("— (PowerPoint only for now)", "Text slide"),
+    "custom_text": ("Notes sheet (purple tab)", "Text slide"),
 }
 
 
@@ -352,76 +352,14 @@ def prepare_render_model(model: ReportModel) -> ReportModel:
     return rm
 
 
-def pptx_insert_plan(model: ReportModel) -> List[Tuple[int, Section]]:
-    """(slide index, section) for each enabled custom text section, based on
-    the slides ``reports.pptx_renderer`` produces for everything before it."""
-    included = {i.id for i in model.ordered_images(included_only=True)}
-    has_images = bool(included)
-    count = 0
-    plan: List[Tuple[int, Section]] = []
-    for s in sorted(model.sections, key=lambda s: s.order):
-        if s.type == "cover":
-            count += 1
-        elif s.type == "overview_table":
-            count += 1
-        elif s.type == "combined_distribution":
-            count += 2 if (s.enabled and has_images) else 0
-        elif s.type == "image":
-            count += 1 if s.payload.get("image_id") in included else 0
-        elif s.type == "parameters":
-            count += 1 if s.enabled else 0
-        elif s.type == "custom_text" and s.enabled:
-            plan.append((count, s))
-            count += 1
-    return plan
-
-
-def add_custom_text_slides(pptx_path: str, model: ReportModel) -> int:
-    """Insert the designer's text sections as slides and renumber footers.
-    (Interim: belongs in ``reports.pptx_renderer`` once it renders
-    ``custom_text``.)"""
-    plan = pptx_insert_plan(model)
-    if not plan:
-        return 0
-    from pptx import Presentation
-    from pptx.util import Inches, Pt
-    from reports import pptx_renderer as pr
-
-    prs = Presentation(pptx_path)
-    layout = pr._blank_layout(prs)
-    sld_ids = prs.slides._sldIdLst  # noqa: SLF001 — python-pptx has no public reorder API
-    for idx, sec in plan:
-        slide = prs.slides.add_slide(layout)
-        pr._slide_heading(slide, sec.title or "Notes")
-        box = slide.shapes.add_textbox(Inches(0.8), Inches(1.3), Inches(11.7), Inches(5.4))
-        tf = box.text_frame
-        tf.word_wrap = True
-        body = str(sec.payload.get("body", "") or "")
-        for n, line in enumerate(body.split("\n") or [""]):
-            p = tf.paragraphs[0] if n == 0 else tf.add_paragraph()
-            run = p.add_run()
-            run.text = line
-            run.font.size = Pt(16)
-            run.font.name = "Calibri"
-            run.font.color.rgb = pr.TEXT_DARK
-        pr._add_footer(slide, model, 0)
-        el = list(sld_ids)[-1]
-        sld_ids.remove(el)
-        sld_ids.insert(idx, el)
-    footer_top = pr.SLIDE_H - Inches(0.4)
-    for n, slide in enumerate(prs.slides, 1):
-        for shp in slide.shapes:
-            if shp.has_text_frame and shp.top is not None and shp.top >= footer_top \
-                    and shp.text_frame.text.strip().isdigit():
-                runs = shp.text_frame.paragraphs[0].runs
-                if runs:
-                    runs[0].text = str(n)
-    prs.save(pptx_path)
-    return len(plan)
-
-
 def render_outputs(model_dict: dict, jobs: Sequence[Tuple[str, str]]) -> List[str]:
-    """Pool-thread: render ``[(kind, path), ...]`` (kind = xlsx | pptx)."""
+    """Pool-thread: render ``[(kind, path), ...]`` (kind = xlsx | pptx).
+
+    ``reports.excel_renderer``/``reports.pptx_renderer`` render everything
+    the designer can edit natively — including ``custom_text`` sections and
+    section order/enabled/title — so no UI-side post-processing is needed
+    (REP-08 removed the old ``add_custom_text_slides`` hack that used to
+    reach into ``reports.pptx_renderer``'s private helpers from here)."""
     from reports.excel_renderer import render_excel
     from reports.pptx_renderer import render_pptx
     rm = prepare_render_model(ReportModel.from_dict(model_dict))
@@ -432,7 +370,6 @@ def render_outputs(model_dict: dict, jobs: Sequence[Tuple[str, str]]) -> List[st
             render_excel(rm, path)
         else:
             render_pptx(rm, path)
-            add_custom_text_slides(path, rm)
         done.append(path)
     return done
 
@@ -606,8 +543,8 @@ __all__ = [
     "REPORT_ASSETS", "SECTION_COLORS", "SECTION_LABELS", "SECTION_TARGETS",
     "results_fingerprint", "analysed_count", "session_metadata", "collect_inputs",
     "build_model", "outline_order", "apply_order", "normalize", "add_custom_text",
-    "remove_section", "merge_refresh", "prepare_render_model", "pptx_insert_plan",
-    "add_custom_text_slides", "render_outputs", "only_image_model", "slug",
+    "remove_section", "merge_refresh", "prepare_render_model",
+    "render_outputs", "only_image_model", "slug",
     "default_export_path", "copy_logo", "record_export", "save_report", "load_report",
     "problem_hints", "image_sections",
 ]
