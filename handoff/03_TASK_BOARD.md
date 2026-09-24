@@ -20,7 +20,7 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 | DET-02 | Coverage % / `total_analyzed_area` over valid area; add `valid_area_um2`, `invalid_area_pct` to `AnalysisResult`; scan-border discard must go through core | detection-engineer | done | fc412c0 |
 | DET-03 | Move stats recompute into `core/metrics.py` (single function); fix binary-view overflow (B2) | detection-engineer | done | core/metrics.compute_statistics; UI overflow fixed 04a65b7 |
 | DET-04 | ASTM E112 G-number (planimetric + intercept) in results and reports | detection-engineer | done | b45fb7f |
-| DET-05 | Extend `_auto_crop` to black info bars/borders | detection-engineer | doing | auto-detect SEM info bar |
+| DET-05 | Extend `_auto_crop` to black info bars/borders | detection-engineer | done | 1d6df50: info-bar hatch + chip + "Use as scan area" |
 | DET-06 | Add `auto` mode to combo; fix reset inconsistency; fix bin spinbox clamp | ui-designer | done | 04a65b7 |
 | DET-07 | Per-image calibration and scan rect (model + UI override) | detection-engineer + ui-designer | done | 173a8cf |
 | DET-08 | Dark-grain regression fixture (legit dark grains must survive DET-01) | qa-engineer | done | fc412c0 |
@@ -64,13 +64,16 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 | UI-07 | Settings page, onboarding/empty states, shortcut overlay (`?`) | ui-designer | doing | settings page + shortcut overlay done; onboarding polish remains |
 | UI-08 | Splash, About, icon/branding, DPI checks | ui-designer | todo | splash restyled; About/icon/branding + DPI 150/200% check remain |
 | UI-09 | Delete `ui/main_window.py` after parity | ui-designer | done | 173a8cf — legacy UI modules deleted |
+| HIER-02 | Fix: New Session wizard doesn't relabel when Settings "Folder structure" change | ui-designer | todo | Follow-up from HIER-01 UI |
+| HIER-03 | Fix: New Session wizard date-field dropdown arrow slightly clipped | ui-designer | todo | Follow-up from HIER-01 UI |
+| HIER-04 | Acceptance check: Excel/PowerPoint export hierarchy labels + export basename vs HIER-01 spec | qa-engineer | todo | Follow-up from HIER-01 UI; re-verify export format |
 
 ## Phase 5 — Innovation (populated from 07_IDEAS_BACKLOG.md)
 | ID | Task | Owner | Status | Notes |
 |----|------|-------|--------|-------|
 | INN-run | Run innovator at session start; approve ≥1 idea per session | coordinator | done | 06493ff: 07_IDEAS_BACKLOG.md rewritten (40 ideas, top 25 active); INN-02, INN-26, INN-27, INN-29, INN-30 specs approved |
 | INN-02 | Spec limits PASS/FAIL/INCONCLUSIVE | data-architect + ui-designer | todo | |
-| INN-05 | Calibration from SEM TIFF metadata (Zeiss/FEI/JEOL/Hitachi/TESCAN) | detection-engineer | doing | |
+| INN-05 | Calibration from SEM TIFF metadata (Zeiss/FEI/JEOL/Hitachi/TESCAN) | detection-engineer | done | 1d6df50: metadata auto-calibration with undo toast |
 | INN-26 | ASTM E112/E1382 compliance engine (detection-engineer, depends DET-04) | detection-engineer | done | b45fb7f |
 | INN-27 | Lot statistics + 95% CI + fields-needed (report-engineer+data-architect, depends DATA-03, INN-26) | report-engineer + data-architect | todo | |
 | INN-29 | Calibration verification vs reference standard | detection-engineer | todo | |

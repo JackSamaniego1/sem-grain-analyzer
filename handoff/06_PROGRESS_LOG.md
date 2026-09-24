@@ -29,3 +29,12 @@
 - Committed: REP-08 exports honour designer edits (fb09964); DET-05 info-bar + INN-05 metadata calibration core (e6d0e1d); HIER-01 reports (b50751d) and data layer (a916add) — user request: Job # › Part Number › Lot, images in the lot, user-editable naming; session trash undo (19a20be); context/usage discipline rules in CLAUDE.md (17855db).
 - User set autoContinueAtUsageLimit=true (user settings) and asked for frequent handoff saves + context clears.
 - HIER-01 UI agent hit the usage limit; partial work checkpointed as 93937b1 (tests may fail). Resume per SESSION_STATE.md.
+
+## 2026-09-24 — HIER-01 UI completion (scribe commit)
+- **HIER-01 UI + DET-05/INN-05 UI finished** (Opus coordinator continued). Three commits:
+  - 1d6df50: hierarchy-aware reports, Settings "Folder structure & naming" card + rename-to-template dialog with undo, level labels in breadcrumb/Analyze/Review/Reports/wizard, in-lot image storage, info-bar hatch + chip + "Use as scan area", metadata auto-calibration with undo toast, scale-bar prefill.
+  - 525fc9f: 16 tests in tests/test_ui_hierarchy.py.
+  - 92b6093: demo workspace Job 24-117 › Part 7718-A › Lot L-44A; display names in report outline.
+- Full test suite verified: **412 passed / 0 failed**.
+- Screenshots captured: 15 PNGs in scratch/ui/.
+- Three follow-ups identified for next sprint: (a) open wizard doesn't relabel when Settings change, (b) wizard date-field arrow slightly clipped, (c) Excel/PowerPoint export not re-verified against HIER-01 acceptance criteria (hierarchy labels, export basename).
