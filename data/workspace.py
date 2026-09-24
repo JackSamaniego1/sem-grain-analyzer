@@ -302,7 +302,10 @@ class Workspace:
         stamp = utc_now_iso().replace(":", "").replace("-", "")
         dest_name = dedupe_name(trash_root, f"{stamp}__{session_path.name}")
         dest = trash_root / dest_name
+        origin_rel = str(session_path.resolve().relative_to(self.root.resolve()))
         shutil.move(str(session_path), str(dest))
+        # Record the origin so the session can be restored (Undo / Trash view).
+        write_json_atomic(dest / _TRASH_ORIGIN_FILENAME, {"origin_relpath": origin_rel})
         return dest
 
     def _trash_dir(self, path: Path, catalog=None) -> Path:

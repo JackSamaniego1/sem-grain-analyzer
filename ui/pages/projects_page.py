@@ -1216,7 +1216,7 @@ class ProjectsPage(QWidget):
             return trash_node(ws, root, node.kind, node.path)
 
         def done(dest):
-            can_undo = node.kind in ("project", "sample", "lot")   # origin recorded
+            can_undo = node.kind in ("project", "sample", "lot", "session")
             self._toast("Moved to trash", node.path.name, "success",
                         "Undo" if can_undo else None,
                         (lambda: self.restore_from_trash(dest)) if can_undo else None)

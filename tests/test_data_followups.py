@@ -2,6 +2,7 @@
 sentinel for update_session, per-image calibration before analysis, and
 first-class grain-filter persistence (with legacy-shape read compat)."""
 import pytest
+from pathlib import Path
 
 from core.grain_detector import GrainDetector
 from data.catalog import Catalog
@@ -288,3 +289,17 @@ def test_first_class_filters_take_priority_over_legacy_shape(tmp_path, mosaic_bg
     loaded = load_session(ref.path)
     # first-class value wins; legacy shape is only a fallback for empty fields
     assert loaded.manifest.filters == {"min_area_um2": 1.0}
+
+
+def test_trashed_session_can_be_restored(tmp_path):
+    from data.workspace import Workspace
+    from data.session_io import save_session
+    ws = Workspace(tmp_path / "ws")
+    ws.create_project("P"); ws.create_sample("P", "S"); lot = ws.create_lot("P", "S", "L")
+    ref = save_session(lot, {"operator": "t"}, [])
+    orig = Path(ref.path) if hasattr(ref, "path") else Path(ref)
+    trashed = ws.delete_session(orig)
+    assert not orig.exists()
+    restored = ws.restore_from_trash(trashed)
+    assert Path(restored).resolve() == orig.resolve()
+    assert (Path(restored) / "manifest.json").exists()
