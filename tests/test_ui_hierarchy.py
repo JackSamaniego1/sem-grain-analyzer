@@ -169,6 +169,57 @@ def test_settings_rename_level_relabels_everything_live(shell, env, qtbot):
     assert wiz.step_titles()[0] == "Work Order"
 
 
+def test_open_wizard_relabels_after_settings_change(shell, env, qtbot, tmp_path):
+    """HIER-02: a wizard that already exists picks up renamed levels / id
+    labels / fields without losing what the operator typed."""
+    from ui.dialogs.new_session_wizard import NEW, NewSessionWizard
+    wiz = NewSessionWizard(shell.state)
+    qtbot.addWidget(wiz)
+    wiz.show()
+    wiz.fill(project="24-117", sample="7718-A", lot="L-44Z", heat_number="HT-1")
+    img = mosaic_png(tmp_path / "SEM_0001.png", seed=5)
+    wiz.add_images([img])
+    wiz._go(1)
+    assert wiz.step_titles()[0] == "Job #"
+    card = shell.settings_page.naming
+    card.levels[0].name.setText("Work Order")
+    card.levels[0].name.textEdited.emit("Work Order")
+    le = card.levels[2]
+    n = le.table.rowCount()
+    le.add_field()
+    le.table.item(n, 0).setText("Hardness HRC")
+    assert card.save()
+    # relabelled live
+    assert wiz.step_titles()[0] == "Work Order"
+    assert wiz.steps.steps[0][0] == "Work Order"
+    assert "Work Order" in wiz.project_combo.itemText(wiz.project_combo.count() - 1)
+    assert "hardness_hrc" in wiz.levels["lot"].edits
+    # entries kept
+    assert wiz._step == 1
+    assert wiz.project_combo.currentData() == NEW and wiz.f_project.text() == "24-117"
+    assert wiz.f_lot.text() == "L-44Z"
+    assert wiz.values()["fields"]["lot"]["heat_number"] == "HT-1"
+    assert wiz.images() == [img] and wiz.img_list.count() == 1
+    assert wiz.title.text() == wiz.step_titles()[1]
+
+
+def test_hidden_wizard_relabels_on_show(env, qtbot):
+    """HIER-02: a profile change while the wizard is hidden is applied when
+    it is shown again."""
+    from ui.app_state import AppState
+    from ui.dialogs.new_session_wizard import NewSessionWizard
+    state = AppState()
+    wiz = NewSessionWizard(state)
+    qtbot.addWidget(wiz)
+    prof = state.profile
+    prof.levels[1].label = "Specimen"
+    state.set_profile(prof)          # same object mutated in place
+    assert wiz.step_titles()[1] == "Part Number"    # hidden: not rebuilt yet
+    wiz.show()
+    assert wiz.step_titles()[1] == "Specimen"
+    assert wiz.refresh_profile() is False            # up to date: no rebuild
+
+
 def test_settings_template_validation_blocks_save(shell):
     card = shell.settings_page.naming
     card.t_export.edit.setText("{project}_{nonsense}")

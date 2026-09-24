@@ -390,6 +390,14 @@ QAbstractSpinBox::up-arrow {{ image: url({up}); width: 10px; height: 10px; }}
 QAbstractSpinBox::down-arrow {{ image: url({chev}); width: 10px; height: 10px; }}
 QAbstractSpinBox::up-arrow:disabled, QAbstractSpinBox::up-arrow:off {{ image: none; }}
 QAbstractSpinBox::down-arrow:disabled, QAbstractSpinBox::down-arrow:off {{ image: none; }}
+/* date edits with a calendar popup draw a combo-style drop-down (HIER-03) */
+QDateTimeEdit[calendarPopup="true"] {{ padding-right: 28px; }}
+QDateTimeEdit::drop-down {{ subcontrol-origin: padding; subcontrol-position: center right;
+    width: 24px; border: none; background: transparent;
+    border-top-right-radius: {r.md}px; border-bottom-right-radius: {r.md}px; }}
+QDateTimeEdit::drop-down:hover {{ background: {s.surface3}; }}
+QDateTimeEdit::down-arrow {{ image: url({chev}); width: 12px; height: 12px; }}
+QDateTimeEdit::down-arrow:disabled {{ image: url({chev_dis}); }}
 
 /* ---- combo box ---- */
 QComboBox {{

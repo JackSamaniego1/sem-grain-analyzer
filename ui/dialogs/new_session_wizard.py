@@ -18,6 +18,7 @@ copies are created off the GUI thread through the data layer;
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -281,12 +282,7 @@ class NewSessionWizard(QDialog):
                  images: Optional[List[str]] = None, parent=None) -> None:
         super().__init__(parent)
         self.state = state
-        self.profile = state.profile
-        self.lot_mode = hui.lot_mode(self.profile)
-        self.steps_def = wizard_steps(self.profile)
-        L = lambda k: hui.kind_label(self.profile, k)  # noqa: E731
-        self.setWindowTitle(f"Add images to a {L('lot')}" if self.lot_mode
-                            else "New analysis session")
+        self._take_profile()
         self.setModal(True)
         self.resize(920, 640)
         self.setMinimumSize(780, 560)
@@ -298,12 +294,89 @@ class NewSessionWizard(QDialog):
         mem = dict(state.ui_state.get("wizard", {}))
         self._mem = mem
         self.levels: Dict[str, _LevelPage] = {k: _LevelPage(k) for k in hui.LEVELS}
+        self._outer = QHBoxLayout(self)
+        self._outer.setContentsMargins(0, 0, 0, 0)
+        self._outer.setSpacing(0)
+        self._body: Optional[QWidget] = None
         self._build()
         self._load_projects()
         self._apply_memory(mem, prefill or {})
         if images:
             self.add_images(images)
         self._go(0)
+        # HIER-02: follow Settings ▸ Folder structure edits (labels, fields,
+        # storage mode) while the wizard exists
+        sig = getattr(state, "profile_changed", None)
+        if sig is not None:
+            sig.connect(self._on_profile_changed)   # auto-disconnected on destroy
+
+    # ------------------------------------------------------------------ profile (HIER-02)
+    @staticmethod
+    def _profile_signature(profile) -> str:
+        try:
+            return json.dumps(profile.to_dict(), sort_keys=True, default=str)
+        except Exception:   # noqa: BLE001 — unknown profile object: always rebuild
+            return repr(id(profile))
+
+    def _take_profile(self) -> None:
+        self.profile = self.state.profile
+        self._profile_sig = self._profile_signature(self.profile)
+        self.lot_mode = hui.lot_mode(self.profile)
+        self.steps_def = wizard_steps(self.profile)
+        L = lambda k: hui.kind_label(self.profile, k)  # noqa: E731
+        self.setWindowTitle(f"Add images to a {L('lot')}" if self.lot_mode
+                            else "New analysis session")
+
+    def _profile_stale(self) -> bool:
+        return self._profile_signature(self.state.profile) != self._profile_sig
+
+    def _on_profile_changed(self) -> None:
+        try:
+            if self.isVisible():
+                self.refresh_profile()
+        except RuntimeError:
+            pass    # C++ side already gone
+
+    def showEvent(self, e) -> None:
+        self.refresh_profile()
+        super().showEvent(e)
+
+    def refresh_profile(self) -> bool:
+        """Rebuild the steps with the workspace's current hierarchy profile,
+        keeping everything already entered.  Returns True when rebuilt."""
+        if self._busy or not self._profile_stale():
+            return False
+        v = self.values()
+        step, images, auto = self._step, list(self._images), self._acq_auto
+        self._take_profile()
+        self.levels = {k: _LevelPage(k) for k in hui.LEVELS}
+        self._build()
+        self._load_projects()
+        for kind, path_key, text_key in (("project", "project_path", "project_name"),
+                                         ("sample", "sample_path", "sample_id"),
+                                         ("lot", "lot_path", "lot_number")):
+            lp = self.levels[kind]
+            if not (v[path_key] and self._select_data(lp.combo, v[path_key])):
+                self._select_data(lp.combo, NEW)
+            lp.id_edit.setText(v[text_key])
+            for key, val in (v["fields"].get(kind) or {}).items():
+                if key in lp.edits and val:
+                    set_editor_value(lp.edits[key], val)
+        self.f_label.setText(v["label"])
+        self.f_operator.setText(v["operator"])
+        self.f_instrument.setText(v["instrument"])
+        self.f_mag.setText(v["magnification"])
+        self.f_kv.setValue(float(v["kv"] or 0.0))
+        self.f_wd.setValue(float(v["wd"] or 0.0))
+        self.f_notes.setPlainText(v["notes"])
+        self._images, self._acq_auto = [], auto
+        for p in images:            # no metadata re-read: already done
+            self._images.append(p)
+            it = QListWidgetItem(icons.icon("image"), Path(p).name)
+            it.setToolTip(p)
+            self.img_list.addItem(it)
+        self._go(step)
+        return True
 
     # ------------------------------------------------------------------ compat
     @property
@@ -335,7 +408,14 @@ class NewSessionWizard(QDialog):
 
     # ------------------------------------------------------------------ build
     def _build(self) -> None:
-        root = QHBoxLayout(self)
+        if self._body is not None:
+            old = self._body
+            self._outer.removeWidget(old)
+            old.hide()
+            old.deleteLater()
+        self._body = QWidget(self)
+        self._outer.addWidget(self._body)
+        root = QHBoxLayout(self._body)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         L = lambda k: hui.kind_label(self.profile, k)  # noqa: E731
