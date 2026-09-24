@@ -177,6 +177,26 @@ def _grain_row(g: Any) -> Dict[str, Any]:
     }
 
 
+def lot_statistics_from_items(items: List[ReportImageInput], cfg: Any = None) -> List[Dict[str, Any]]:
+    """INN-27: one ``SampleStatistics`` dict per lot number among ``items``
+    (all items form one group when none carries a lot number).  Every item
+    counts as an included field; for audited include/exclude use
+    ``data.catalog.fields_for_lot`` + ``core.metrics.sample_statistics``
+    and pass the result as ``from_results(sample_statistics=[...])``."""
+    from core.metrics import FieldResult, sample_statistics as _stats
+    groups: Dict[str, List[Any]] = {}
+    for idx, it in enumerate(items, 1):
+        fid = os.path.basename(it.image_path or "") or f"image_{idx}"
+        groups.setdefault(it.lot_number or "", []).append(
+            FieldResult.from_analysis(it.result, field_id=fid))
+    out = []
+    for lot, fields in groups.items():
+        st = _stats(fields, cfg)
+        st.label = lot or "All images"
+        out.append(st.to_dict())
+    return out
+
+
 def _save_bgr(bgr: np.ndarray, asset_dir: str, name: str) -> str:
     os.makedirs(asset_dir, exist_ok=True)
     path = os.path.join(asset_dir, name)
@@ -214,6 +234,13 @@ class ReportModel:
     # extension, supplied by the UI from the workspace's hierarchy profile.
     # Empty means "use the legacy default" (see ``reports.suggest_filename``).
     export_basename: str = ""
+    # INN-27: one ``core.metrics.SampleStatistics.to_dict()`` per lot (the
+    # "sample_statistics" section). Empty -> no lot block is rendered, so
+    # legacy/single-image reports are unchanged. Rendered as a lot summary
+    # block above the Excel Overview table and a "G ± CI" tile on the PPTX
+    # summary slide; hide it with a disabled Section of type
+    # "sample_statistics" (``is_enabled`` defaults to True).
+    sample_statistics: List[Dict[str, Any]] = field(default_factory=list)
 
     # ------------------------------------------------------------------
     # Construction from analysis results
@@ -235,6 +262,7 @@ class ReportModel:
         asset_dir: Optional[str] = None,
         hierarchy: Optional[List[Dict[str, str]]] = None,
         export_basename: str = "",
+        sample_statistics: Any = None,
     ) -> "ReportModel":
         """Build a model from freshly-analysed images.
 
@@ -314,6 +342,11 @@ class ReportModel:
 
         model.images = images
         model.sections = model._default_sections()
+        if isinstance(sample_statistics, str) and sample_statistics == "auto":
+            model.sample_statistics = lot_statistics_from_items(items)
+        elif sample_statistics:
+            model.sample_statistics = [
+                s.to_dict() if hasattr(s, "to_dict") else dict(s) for s in sample_statistics]
         return model
 
     def _default_sections(self) -> List[Section]:
@@ -406,6 +439,7 @@ class ReportModel:
             "images": [i.to_dict() for i in self.images],
             "hierarchy": [dict(h) for h in self.hierarchy],
             "export_basename": self.export_basename,
+            "sample_statistics": [dict(s) for s in self.sample_statistics],
         }
 
     def to_json(self, *, indent: int = 2) -> str:
@@ -428,6 +462,7 @@ class ReportModel:
             images=[ImageSummary.from_dict(i) for i in d.get("images", [])],
             hierarchy=[dict(h) for h in (d.get("hierarchy") or [])],
             export_basename=d.get("export_basename", ""),
+            sample_statistics=[dict(s) for s in (d.get("sample_statistics") or [])],
         )
 
     @classmethod

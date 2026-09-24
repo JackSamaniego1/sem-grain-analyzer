@@ -328,6 +328,9 @@ def _write_overview(wb, model: ReportModel, images: List[ImageSummary], fmts, na
             ws.merge_range(2, 0, 2, ncols - 1, model.hierarchy_header(), fmts["subtitle"])
         header_row = 3
 
+    if model.sample_statistics and model.is_enabled("sample_statistics", default=True):
+        header_row = _write_lot_block(ws, model, fmts, header_row, ncols) + 1
+
     if not model.is_enabled("overview_table", default=True) or not images:
         ws.set_column(0, ncols - 1, 16)
         return
@@ -428,6 +431,40 @@ def _write_overview(wb, model: ReportModel, images: List[ImageSummary], fmts, na
         widths = [5, 30, 12, 12, 9, 13, 13, 13, 15, 14, 13, 11, 10, 15, 15, 9]
     for c, w in enumerate(widths):
         ws.set_column(c, c, w)
+
+
+_LOT_COLS = ["Lot", "Fields (n)", "Fields needed", "Mean G", "± 95% CI (G)", "G low", "G high",
+             "%RA", "Mean ECD (µm)", "± 95% CI ECD (µm)", "Status"]
+
+
+def _write_lot_block(ws, model: ReportModel, fmts, top: int, ncols: int) -> int:
+    """INN-27 lot summary block (ASTM E112 sec. 15): one row per
+    ``model.sample_statistics`` entry.  Returns the first free row."""
+    width = max(ncols, len(_LOT_COLS))
+    ws.merge_range(top, 0, top, width - 1,
+                   "Lot statistics — ASTM E112 95 % confidence interval (Student t) and %RA",
+                   fmts["section"])
+    hdr = top + 1
+    for c, h in enumerate(_LOT_COLS):
+        ws.write(hdr, c, h, fmts["header"])
+    ws.set_row(hdr, 30)
+    r = hdr + 1
+    for i, st in enumerate(model.sample_statistics):
+        vals = [st.get("label") or st.get("scope", ""), st.get("n_fields", 0), st.get("n_needed", 0),
+                st.get("G_mean"), st.get("G_ci95"), st.get("G_ci_low"), st.get("G_ci_high"),
+                st.get("RA_pct"), st.get("ecd_mean_um"), st.get("ecd_ci95_um"), st.get("status", "")]
+        for c, v in enumerate(vals):
+            if 3 <= c <= 9:
+                if isinstance(v, (int, float)):
+                    ws.write_number(r, c, float(v), _band(fmts, i, "num2"))
+                else:
+                    ws.write(r, c, "n/a", _band(fmts, i))
+            elif c in (1, 2):
+                ws.write_number(r, c, int(v or 0), _band(fmts, i))
+            else:
+                ws.write(r, c, str(v), _band(fmts, i))
+        r += 1
+    return r
 
 
 # ---------------------------------------------------------------------------

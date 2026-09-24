@@ -12,6 +12,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+from core.metrics import FieldResult
 from data.hierarchy import load_profile
 from data.models import read_json
 
@@ -147,6 +148,82 @@ def _row_from_manifest(session_dir: Path, root: Optional[Path] = None) -> Option
     }
 
 
+# ----------------------------------------------------------------------
+# INN-27: per-lot field collection (always read from the manifests on
+# disk -- the source of truth -- never from the SQLite cache).
+# ----------------------------------------------------------------------
+
+def _session_dirs_of_lot(lot_path: Path) -> List[Path]:
+    """Session dirs of a lot: the lot dir itself when it carries a
+    manifest (HIER-01 images_location == "lot"), plus every direct child
+    run folder with a manifest."""
+    out: List[Path] = []
+    if (lot_path / "manifest.json").exists():
+        out.append(lot_path)
+    try:
+        children = sorted(p for p in lot_path.iterdir() if p.is_dir())
+    except OSError:
+        children = []
+    out.extend(p for p in children if (p / "manifest.json").exists())
+    return out
+
+
+def _field_from_saved(session_dir: Path, session_id: str, img: dict) -> FieldResult:
+    stem = Path(img.get("filename", "")).stem
+    summary: dict = {}
+    try:
+        summary = read_json(session_dir / "results" / f"{stem}.summary.json")
+    except (OSError, ValueError):
+        pass
+    astm = summary.get("astm") if isinstance(summary.get("astm"), dict) else {}
+    g = summary.get("astm_g")
+    if g is None:
+        g = astm.get("G_primary")
+    calibrated = bool(summary.get("has_calibration")) and float(summary.get("px_per_um") or 0) > 0
+    ecds: List[float] = []
+    if calibrated:
+        try:
+            grains = read_json(session_dir / "results" / f"{stem}.grains.json").get("grains", [])
+            ecds = [float(x.get("equivalent_diameter_um", 0.0)) for x in grains]
+        except (OSError, ValueError, AttributeError):
+            ecds = []
+    mean_d = float(summary.get("mean_diameter_um") or 0.0)
+    thumb = session_dir / "thumbs" / f"{stem}.jpg"
+    return FieldResult(
+        field_id=f"{session_id}/{img.get('filename', '')}",
+        G=float(g) if g is not None else None,
+        method=str(astm.get("primary_method", "") or ""),
+        ecd_mean_um=mean_d if calibrated and mean_d > 0 else None,
+        grain_count=int(summary.get("grain_count", img.get("grain_count", 0)) or 0),
+        valid_area_pct=100.0 - float(summary.get("invalid_area_pct") or 0.0),
+        included=bool(img.get("included", True)),
+        exclusion_reason=img.get("exclusion_reason"),
+        session_id=session_id,
+        session_path=str(session_dir),
+        image_name=img.get("filename", ""),
+        thumb_path=str(thumb) if thumb.exists() else "",
+        ecds_um=ecds,
+    )
+
+
+def fields_for_lot(lot_path: Union[str, Path]) -> List[FieldResult]:
+    """One ``FieldResult`` per analysed image (latest saved result) in
+    every session of the lot at ``lot_path``, excluded fields included
+    (flagged ``included=False``) so the UI can list them.  Feed the list
+    to ``core.metrics.sample_statistics``."""
+    out: List[FieldResult] = []
+    for sdir in _session_dirs_of_lot(Path(lot_path)):
+        try:
+            m = read_json(sdir / "manifest.json")
+        except (OSError, ValueError):
+            continue
+        sid = m.get("session_id") or sdir.name
+        for img in m.get("images", []) or []:
+            if isinstance(img, dict) and img.get("has_result"):
+                out.append(_field_from_saved(sdir, sid, img))
+    return out
+
+
 _COLUMNS = ["path", "project", "sample_id", "lot_number", "session_id", "label",
             "operator", "created_utc", "notes", "tags", "image_count",
             "grain_count", "mean_area_um2", "mean_diameter_um", "profile_json"]
@@ -247,6 +324,23 @@ class Catalog:
             out.append(row)
         out.sort(key=lambda r: r.get("created_utc", ""), reverse=True)
         return out
+
+    def fields_for_lot(self, lot_id: Union[str, Path]) -> List[FieldResult]:
+        """Latest per-image results of a lot (INN-27). ``lot_id`` is the lot
+        folder (absolute, or relative to the workspace root) or a lot
+        number, resolved through the index (manifest scan fallback)."""
+        p = Path(lot_id)
+        if not p.is_absolute():
+            p = self.root / p
+        if p.is_dir():
+            return fields_for_lot(p)
+        lots: List[Path] = []
+        for row in self.search("", {"lot_number": str(lot_id)}):
+            sdir = Path(row["path"])
+            lot = sdir if (sdir / "lot.json").exists() else sdir.parent
+            if lot not in lots:
+                lots.append(lot)
+        return [f for lot in lots for f in fields_for_lot(lot)]
 
     def rebuild(self) -> int:
         """Rescan every manifest.json under the workspace root and rebuild

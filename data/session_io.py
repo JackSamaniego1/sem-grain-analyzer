@@ -799,3 +799,43 @@ def import_loose_images(workspace: Workspace, paths: Sequence[Union[str, Path]],
          "label": session_label or "", "notes": "Imported loose images"},
         entries, label=session_label, catalog=catalog, in_place=in_place,
         image_name_template=profile.image_name_template, name_context=name_context)
+
+
+# ======================================================================
+# INN-27: include / exclude a field from the lot statistics (audited)
+# ======================================================================
+
+def set_image_included(session_path: Union[str, Path], filename: str, included: bool, *,
+                        reason: Optional[str] = None, operator: Optional[str] = None,
+                        catalog=None) -> dict:
+    """Mark one image (field) of a session as included in / excluded from
+    the lot statistics.  Excluding requires a non-empty ``reason``.
+
+    Every change is appended to the manifest's ``audit_log`` (the stand-in
+    audit trail until INN-07): ``{"utc", "operator", "action", "image",
+    "reason"}``.  Returns that audit entry.  Raises ``ValueError`` for an
+    empty exclusion reason, ``KeyError`` for an unknown filename.
+    """
+    reason = (reason or "").strip()
+    if not included and not reason:
+        raise ValueError("Excluding a field requires a reason.")
+    session_dir = Path(session_path)
+    manifest_path = session_dir / "manifest.json"
+    meta = SessionMeta.from_dict(read_json(manifest_path))
+    entry = next((img for img in meta.images if img.filename == filename), None)
+    if entry is None:
+        raise KeyError(filename)
+    entry.included = bool(included)
+    entry.exclusion_reason = None if included else reason
+    note = {
+        "utc": utc_now_iso(),
+        "operator": operator if operator is not None else default_operator(),
+        "action": "include_field" if included else "exclude_field",
+        "image": filename,
+        "reason": reason or None,
+    }
+    meta.audit_log = list(meta.audit_log or []) + [note]
+    write_json_atomic(manifest_path, meta.to_dict())
+    if catalog is not None:
+        catalog.index_session(session_dir)
+    return note

@@ -297,6 +297,10 @@ class ImageManifestEntry:
     source_path: str = ""  # informational: where it was copied from
     filters_override: Optional[dict] = None  # None -> use session-level filters
     manual_excluded: List[int] = field(default_factory=list)  # hand-removed grain ids
+    # INN-27: whether this field counts toward the lot statistics. Old
+    # manifests lack both keys and load as included / no reason.
+    included: bool = True
+    exclusion_reason: Optional[str] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -304,6 +308,10 @@ class ImageManifestEntry:
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> "ImageManifestEntry":
         return _generic_from_dict(cls, d)
+
+
+# INN-27 spec name for one analysed image record in a session manifest.
+ImageRecord = ImageManifestEntry
 
 
 @dataclass
@@ -330,6 +338,9 @@ class SessionMeta:
     tags: List[str] = field(default_factory=list)
     filters: dict = field(default_factory=dict)  # session-level grain-filter options
     images: List[ImageManifestEntry] = field(default_factory=list)
+    # INN-27: append-only audit notes (field include/exclude with reason,
+    # operator, UTC time) until a global audit log (INN-07) exists.
+    audit_log: List[dict] = field(default_factory=list)
     path: Optional[str] = None
 
     def to_dict(self) -> dict:
@@ -455,6 +466,9 @@ class AppSettings:
     recent_sessions: List[str] = field(default_factory=list)
     theme: str = "system"
     last_export_dir: str = ""
+    # INN-27 lot statistics (ASTM E112 sec. 15: >= 5 fields, %RA <= 10 %)
+    required_fields: int = 5
+    target_RA_pct: float = 10.0
 
     def to_dict(self) -> dict:
         return asdict(self)

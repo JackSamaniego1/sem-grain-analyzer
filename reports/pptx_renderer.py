@@ -261,12 +261,17 @@ def _exec_summary_slide(slide, model: ReportModel, images: List[ImageSummary], n
         _textbox(slide, Inches(0.8), Inches(1.5), Inches(11), Inches(0.5), "No images included.", size=14)
         return
 
+    table_top = Inches(1.3)
+    if model.sample_statistics and model.is_enabled("sample_statistics", default=True):
+        _lot_tiles(slide, model, navy)
+        table_top = Inches(2.35)
+
     level_cols = model.level_columns() if model.hierarchy else []
     headers = (["Image"] + [label for _, label in level_cols] +
                ["Grains", "Mean Diam", "Std Diam", "Mean Area", "Coverage %", "Circularity"])
     rows = len(images) + 2  # header + images + combined
     cols = len(headers)
-    table_shape = slide.shapes.add_table(rows, cols, Inches(0.6), Inches(1.3), Inches(12.1), Inches(0.4) * rows)
+    table_shape = slide.shapes.add_table(rows, cols, Inches(0.6), table_top, Inches(12.1), Inches(0.4) * rows)
     table = table_shape.table
     for c, h in enumerate(headers):
         cell = table.cell(0, c)
@@ -319,6 +324,36 @@ def _exec_summary_slide(slide, model: ReportModel, images: List[ImageSummary], n
         cell = table.cell(r, c)
         cell.text = v
         _style_total_cell(cell)
+
+
+def _lot_tile_text(st: dict) -> Tuple[str, str]:
+    """(big value, caption) for one INN-27 lot tile, e.g.
+    ("G 7.40 ± 0.39", "Lot L-44A · 95 % CI · n = 5 of 5 · %RA 3.1 %")."""
+    g, ci = st.get("G_mean"), st.get("G_ci95")
+    if g is None:
+        value = "G n/a"
+    elif ci is None:
+        value = f"G {g:.2f} ± n/a"
+    else:
+        value = f"G {g:.2f} ± {ci:.2f}"
+    ra = st.get("RA_pct")
+    parts = [f"{st.get('label') or st.get('scope', 'Lot')}", "95 % CI",
+             f"n = {st.get('n_fields', 0)} of {st.get('n_needed', 0)}"]
+    if ra is not None:
+        parts.append(f"%RA {ra:.1f} %")
+    if st.get("status"):
+        parts.append(str(st["status"]))
+    return value, " · ".join(parts)
+
+
+def _lot_tiles(slide, model: ReportModel, navy: RGBColor = NAVY) -> None:
+    """INN-27 "G ± CI" big-number tiles (max 3 lots) on the summary slide."""
+    stats = model.sample_statistics[:3]
+    w = Inches(12.1 / len(stats)) - Inches(0.1)
+    for i, st in enumerate(stats):
+        value, caption = _lot_tile_text(st)
+        _metric_callout(slide, Inches(0.6) + i * (w + Inches(0.1)), Inches(1.2), w, Inches(0.95),
+                        value, caption, navy)
 
 
 def _style_header_cell(cell, navy: RGBColor = NAVY) -> None:
