@@ -35,6 +35,7 @@ from typing import List, Optional, Tuple
 import logging
 
 from core.metrics import compute_statistics
+from core.astm import update_astm
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,11 @@ class AnalysisResult:
     valid_area_px: float = 0.0
     valid_area_um2: float = 0.0
     invalid_area_pct: float = 0.0
+    # ASTM E112 / E1382 (DET-04, INN-26): JSON-able dict produced by
+    # core.astm.AstmResult.to_dict() for the full (unedited) field, and the
+    # primary grain-size number (None when uncalibrated).
+    astm: dict = field(default_factory=dict)
+    astm_g: Optional[float] = None
 
 
 @dataclass
@@ -138,6 +144,11 @@ class DetectionParams:
     invalid_min_area_px: int = 400
     min_valid_fraction: float = 0.5
     sam_min_intensity_std: float = 1.5
+    # ASTM E112 procedure (INN-26): "both" | "planimetric" |
+    # "intercept_lines" | "intercept_circles"; test-line spacing as a
+    # multiple of the mean ECD.
+    astm_method: str = "both"
+    astm_pattern_spacing_factor: float = 2.0
 
 
 # ======================================================================
@@ -331,7 +342,9 @@ def discard_border_grains(result, image_bgr=None, detector=None):
     area is set.  Mutates and returns ``result``: labels zeroed, grain list
     filtered, statistics recomputed via :func:`core.metrics.compute_statistics`
     and, if ``image_bgr`` is given, the overlay redrawn.  The valid (test
-    field) area is unchanged.
+    field) area is unchanged.  ``result.astm`` is deliberately kept: the
+    E112 count was made on the full field, where border grains already
+    count 1/2 (re-counting after discarding them would bias N_A).
     """
     lab = result.label_image
     if lab is None or lab.size == 0:
@@ -454,6 +467,12 @@ class GrainDetector:
         result.grain_count = len(grains)
         result.label_image = labels
         result = self._compute_statistics(result, image_bgr)
+
+        # ASTM E112 planimetric + intercept on the full field (DET-04).
+        try:
+            update_astm(result, params)
+        except Exception:  # never let the standard report break detection
+            logger.exception("ASTM E112 evaluation failed")
 
         progress(94, "Generating overlay...")
         result.overlay_image = self._draw_overlay(image_bgr, labels, grains)

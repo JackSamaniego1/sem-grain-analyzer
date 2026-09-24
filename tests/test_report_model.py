@@ -131,6 +131,12 @@ def test_image_section_disable_excludes_from_ordered_images(tmp_path):
     assert [i.id for i in ordered] == ["img_2"]
 
 
-def test_astm_g_hook_is_none_by_default(tmp_path):
+def test_astm_g_present_when_calibrated(tmp_path):
     model = _build_model(tmp_path, n=1)
+    g = model.images[0].astm_g
+    assert g is not None and 0.0 < g < 20.0
+
+
+def test_astm_g_none_when_uncalibrated(tmp_path):
+    model = _build_model(tmp_path, n=1, px_per_um=0.0)
     assert model.images[0].astm_g is None

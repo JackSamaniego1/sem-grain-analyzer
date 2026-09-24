@@ -25,6 +25,7 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 | DET-07 | Per-image calibration and scan rect (model + UI override) | detection-engineer + ui-designer | todo | B7 |
 | DET-08 | Dark-grain regression fixture (legit dark grains must survive DET-01) | qa-engineer | done | fc412c0 |
 | DET-09 | Expose new detection params (invalid_intensity_threshold etc.) + invalid-area overlay in UI; switch worker to core.discard_border_grains | ui-designer | todo | |
+| DET-10 | Post-analysis grain filter toggles (border / false grains / size / shape), non-destructive, persisted per session; core `core/postfilter.py` + UI filter card on Analyze & Review | detection-engineer + ui-designer | doing | user request 2026-09-23 |
 
 ## Phase 2 — Data layer
 | ID | Task | Owner | Status | Notes |

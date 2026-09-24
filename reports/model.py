@@ -240,7 +240,7 @@ class ReportModel:
                 base = os.path.splitext(os.path.basename(item.image_path or f"image_{idx}"))[0] or f"image_{idx}"
                 overlay_path = _save_bgr(res.overlay_image, _asset_dir, f"{idx:03d}_{base}_overlay.png")
 
-            astm_g = estimate_astm_g(getattr(res, "mean_diameter_um", 0.0))
+            astm_g = estimate_astm_g(res)
 
             summary = ImageSummary(
                 id=img_id,

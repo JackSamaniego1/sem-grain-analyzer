@@ -137,10 +137,12 @@ def normal_fit(values: Sequence[float], edges: Sequence[float]) -> List[float]:
     return out
 
 
-def estimate_astm_g(mean_diameter_um: float) -> float | None:
-    """Hook for the ASTM E112 grain-size number (DET-04 computes this
-    properly from planimetric/intercept counts). Returns ``None`` until that
-    lands; renderers must display "—" in that case. Deliberately NOT
-    implementing a provisional formula here — a naive diameter-only
-    conversion would be misleading on a report."""
-    return None
+def estimate_astm_g(result) -> float | None:
+    """Primary ASTM E112 grain-size number G for an AnalysisResult (None if
+    uncalibrated). Delegates to core.astm, which uses the stored value or
+    recomputes it for results saved before G was introduced."""
+    from core.astm import astm_g_from_result
+    try:
+        return astm_g_from_result(result)
+    except Exception:
+        return None
