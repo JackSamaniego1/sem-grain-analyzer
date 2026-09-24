@@ -17,3 +17,10 @@
 - **Innovation run approved**: INN-run complete (06493ff). Innovator rewrote 07_IDEAS_BACKLOG.md (40 ideas, top 25 active) and wrote specs INN-02, INN-26, INN-27, INN-29, INN-30. Added to Phase 5.
 - **Phase 2/3/4 launched in parallel**: DATA-01..05, DATA-08; REP-01..04; UI-01, UI-02.
 - **Blocked**: FND-04 GitHub auth (Harvey-FS credentials cached; user action needed). DET validaton: D-13 flagged (real SEM images wanted for black-region threshold validation).
+
+## 2026-09-24 — Opus coordinator session 1 (cont.)
+- **Phases 0–3 completed**: Full data layer, reports back-end, Phase 1 detection fixes, ASTM E112/E1382 compliance engine (b45fb7f). Test count **257 passing**. Commits: fa736c5 (data models/catalog), af8dea2 (report model/renderers), 7c17b7d (design tokens/theme), 04a65b7 (app shell, Projects/Analyze/Review pages, filter UI), c54daeb (grain filter toggles), b45fb7f (ASTM E112/E1382 + INN-26), 55c7f4d (trash/restore, CLEAR sentinel, autosave), c64d6ea (fix: no crash on close), 173a8cf (report designer with live preview + exports).
+- **UI-05 majority done**: zoom, minimap, hover metrics, multi-select working; lasso select + merge/split deferred to INN-04.
+- **Stage-1 UI agent (opus) hit API rate limit mid-task**. Work recovered via checkpoint commit 04a65b7; session continued with haiku agents for refinement.
+- **New rows created**: REP-08 (renderers + grain notes), DET-05 (auto-detect info bars), INN-05 (SEM metadata calibration), REV-S2 (report designer code review), FIX-01 (crash on close fix).
+- **Next**: Review REP-08/DET-05/INN-05, wire into Analyze page; UI-05 lasso/merge/split; Phase 5 features (INN-27, INN-02, INN-29, INN-30); Phase 6 journey tests + release.

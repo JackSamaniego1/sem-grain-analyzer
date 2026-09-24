@@ -1,27 +1,29 @@
 # SESSION STATE — read this first when resuming
 
-**Last updated:** 2026-09-23 (Opus coordinator session 1)
+**Last updated:** 2026-09-24 (Opus coordinator session 1 cont.)
 **Branch:** `v3-dev`
-**Last commit:** `fc412c0` (before scribe update)
-**Current phase:** Phase 0 + Phase 1 core complete; Phase 2/3 back-ends and design system in progress.
+**Last commit:** `173a8cf` (before scribe update)
+**Current phase:** Phases 0–3 complete; Phase 4 UI mostly complete; Phase 5 innovation starting; Phase 6 release not started.
 
 ## In progress
-- **DATA-01..05 + DATA-08** (data-architect, sonnet) — building `data/` package (models, workspace, session I/O, catalog, QSettings, auto-save)
-- **REP-01..04** (report-engineer, sonnet) — building `reports/` package (model, charts, Excel/PowerPoint renderers)
-- **UI-01 + UI-02** (ui-designer, opus) — building `ui/design/` (tokens + theme) and `ui/widgets/` (component library)
+- **REP-08** (report-engineer) — Renderers honour section order/titles/cover+overview toggles/palette/custom text; grain notes in Raw sheet
+- **DET-05** (detection-engineer) — auto-detect SEM info bar (extend `_auto_crop` to black info bars/borders)
+- **INN-05** (detection-engineer) — Calibration from SEM TIFF metadata (Zeiss/FEI/JEOL/Hitachi/TESCAN)
+- **REV-S2** (code-reviewer) — Code review of report designer
 
 ## Blocked
 - **FND-04**: GitHub push — cached credentials for `Harvey-FS` (403); user action required to fix or change remote config.
-- **DET validation**: D-13 flagged — real SEM images still wanted for validating the black-region thresholds.
+- **D-13**: Real SEM images still wanted for validating the black-region thresholds.
 
 ## Next 3 actions for the coordinator
-1. Review + commit `data/`, `reports/`, `ui/design/` + `ui/widgets/` when back-end agents finish (expect ~2 sessions).
-2. Launch **DET-04** (ASTM G-number, detection-engineer) and **INN-26** (compliance engine, depends DET-04) in parallel; launch **UI-03** app shell (ui-designer).
-3. Wire UI to data layer (DATA-06/07: Projects page + New Session wizard) and reports page (REP-05).
+1. Review + commit REP-08 and DET-05/INN-05; wire info-bar auto-detection + metadata calibration into the Analyze page (ui-designer).
+2. UI-05 remainder: lasso select + merge/split (INN-04); then innovator features INN-27 (lot stats + 95% CI), INN-02 (spec limits), INN-29 (cal verification), INN-30 (approval + sign-off).
+3. Phase 6: journey tests, docs, local PyInstaller build + install test (verify spec includes all new modules), then release with user go.
 
 ## How to run
 ```powershell
 cd "C:\Users\saman\GRAIN ANALYSIS TOOL"
-.venv\Scripts\python -m pytest tests -q -p no:cacheprovider     # 47 tests passing
+.venv\Scripts\python -m pytest tests -q -p no:cacheprovider     # 257 tests passing
 .venv\Scripts\python main.py                                     # GUI
+python -m ui.demo --capture scratch/ui                           # demo screenshots
 ```
