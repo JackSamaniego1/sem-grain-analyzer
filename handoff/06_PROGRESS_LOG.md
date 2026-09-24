@@ -80,3 +80,14 @@
 - **Follow-ups identified**: Build resources icon generation (icon.ico via ui.design.branding), ReportModel calibration field (metadata), CalStatusChip mount in status bar + wire apply_to_session, DPI/layout (toolbar overlap <1400px, Projects card truncation, Analyze stat labels clipped at 1100px), cleanup (grain_edit.replay_edits unused, THIRD_PARTY_LICENSES.txt remove "CLAUDE.md" mention).
 - **In progress**: Demo-workspace + PowerPoint overview deck for user's boss (agent-built, scratch/demo).
 - **Next**: Finish boss deck; address follow-ups above; second innovator pass; Phase 6 (journey tests, README v3, NSIS test, merge to main, tag v3.0.0).
+
+## 2026-09-24 — Demo deck + boss overview PPTX delivered; FIX batch initiated
+- **Boss deck delivered** (C:\Users\saman\Documents\SEM_Grain_Analyzer_Overview.pptx, 17 slides, speaker notes). Demo workspace built in scratch/demo/ (git-ignored): gen_workspace.py (26 lots, 128 synthetic micrographs, 4 operators, real analysis pipeline, classical mode since SAM checkpoint absent), capture.py, charts.py, deck/build_deck.js — reusable for future screenshots/docs.
+- **Bugs found during deck build** (high priority for PPTX report layout, Excel/UI truncation): 
+  - PPTX: title overlaps subtitle; summary table and Methods overflow past footer; normal-fit curve renders as bars instead of line → FIX-11, FIX-12, FIX-13 (report-engineer)
+  - Excel: "Lot" column truncated → FIX-14 (report-engineer)
+  - Lot result table: Note column clips exclusion reason → FIX-15 (ui-designer)
+  - Calibration: check shows "-0.00 %" (negative zero) → FIX-16 (detection-engineer)
+  - Scale-bar: finder fooled by rectangular frame around bar → FIX-17 (detection-engineer)
+  - Review toolbar: overlap reproduced <1700px width → FIX-09 threshold updated
+- FIX items 11–17 added to task board (todo status). Next: batch FIX assignments; second innovator pass; Phase 6.
