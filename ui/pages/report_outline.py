@@ -76,7 +76,8 @@ class ReportOutline(QTreeWidget):
                 self.addTopLevelItem(it)
                 self.images_root = it
                 for img in images:
-                    ch = QTreeWidgetItem([os.path.basename(img.image_path) or img.id])
+                    ch = QTreeWidgetItem([img.display() or img.id])
+                    ch.setToolTip(0, img.image_path)
                     ch.setData(0, KEY_ROLE, ("image", img.id))
                     ch.setIcon(0, swatch_icon(SECTION_COLORS["image"]))
                     ch.setFlags((ch.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled)

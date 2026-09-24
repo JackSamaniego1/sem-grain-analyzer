@@ -659,6 +659,8 @@ class AnalyzePage(QWidget):
             ar = tuple(info.get("analysis_rect") or ())
             cur = self.state.scan_for(im)
             self.btn_ib_scan.setEnabled(bool(ar) and (cur is None or tuple(cur) != ar))
+            if cur is None:
+                self.scan_lbl.setText("Full image — the info bar is left out automatically")
             conf = float(info.get("confidence", 0.0) or 0.0)
             self.ib_chip.set_text("Info bar excluded" + (" (check)" if conf < 0.7 else ""))
             self.ib_chip.set_kind("info" if conf >= 0.7 else "warning")

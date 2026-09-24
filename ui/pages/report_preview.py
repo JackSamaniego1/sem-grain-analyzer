@@ -201,12 +201,12 @@ class ChartsPreview(SectionPreview):
             _au, _am, du_i, dm = resolve_units(img.px_per_um, m.units)
             du = du_i
             if img.has_calibration:
-                items.append((os.path.basename(img.image_path), img.mean_diameter_um * dm,
+                items.append((img.display(), img.mean_diameter_um * dm,
                               img.std_diameter_um * dm, img.grain_count))
             else:
                 import numpy as np
                 d = [g["diameter_px"] for g in img.grains]
-                items.append((os.path.basename(img.image_path), float(np.mean(d)) if d else 0.0,
+                items.append((img.display(), float(np.mean(d)) if d else 0.0,
                               float(np.std(d)) if d else 0.0, img.grain_count))
         self.bars.set_items(items, du)
         sec = m.get_section("combined_distribution")
@@ -479,7 +479,7 @@ class GrainReportTable(QAbstractTableModel):
 
 class ImagePreview(SectionPreview):
     def __init__(self, page, img) -> None:
-        super().__init__(page, "image", os.path.basename(img.image_path))
+        super().__init__(page, "image", img.display())
         self.img = img
         orig, ovl = page.pixmaps(img)
         self.slide = ImageSlide(page.model, img, orig, ovl, self._number())

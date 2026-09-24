@@ -66,7 +66,13 @@ def synthetic_sem(h: int = 600, w: int = 800, n_grains: int = 140, seed: int = 1
 
 
 def build_demo_workspace(root: Path, img_dir: Path, analyse: bool = True) -> dict:
-    """Two projects, samples, lots and sessions — some analysed."""
+    """The lab's own structure (HIER-01 default for a new workspace):
+    Job # › Part Number › Lot, images stored directly in each lot.
+
+    Job 24-117 "Acme Aerospace" › Part 7718-A "Turbine disk forging, Alloy
+    718" › Lot L-44A (heat HT-90211) is the fully analysed showcase; other
+    lots are partly analysed or empty.  No scan area is set — the SEM info
+    bar is excluded automatically (DET-05)."""
     from core.grain_detector import DetectionParams
     from data.catalog import Catalog
     from data.models import ImageEntry
@@ -77,6 +83,7 @@ def build_demo_workspace(root: Path, img_dir: Path, analyse: bool = True) -> dic
     from ui.workers import analyze_image
 
     ws = Workspace(root)
+    assert ws.profile.images_location == "lot"
     cat = Catalog(root)
     img_dir.mkdir(parents=True, exist_ok=True)
     out = {}
@@ -84,7 +91,7 @@ def build_demo_workspace(root: Path, img_dir: Path, analyse: bool = True) -> dic
     def images(prefix: str, n: int, seed0: int, void_at: int = -1) -> List[str]:
         paths = []
         for i in range(n):
-            p = img_dir / f"{prefix}_{i + 1:02d}.png"
+            p = img_dir / f"{prefix}_{i + 1:04d}.tif"
             cv2.imwrite(str(p), synthetic_sem(seed=seed0 + i, n_grains=110 + 25 * i,
                                               void=(i == void_at)))
             paths.append(str(p))
@@ -92,59 +99,52 @@ def build_demo_workspace(root: Path, img_dir: Path, analyse: bool = True) -> dic
 
     params = DetectionParams(detection_mode="boundary")
     ppu = 2.35  # px/µm (20 µm bar ≈ 47 px … demo only)
-    scan = (0, 0, 800, 544)
 
-    def session(lot: Path, label: str, operator: str, paths: List[str], n_analyse: int,
-                notes: str = "") -> Path:
+    def record(lot: Path, operator: str, paths: List[str], n_analyse: int,
+               notes: str = "") -> Path:
         entries = []
-        opts = default_options(scan)
+        opts = default_options(None)
         opts.exclude_low_contrast = True
         opts.exclude_touching_invalid = True
         for i, p in enumerate(paths):
             bgr = cv2.imread(p)
             res = None
             if analyse and i < n_analyse:
-                raw = analyze_image(bgr, ppu, params, scan, draw_overlay=False)
+                raw = analyze_image(bgr, ppu, params, None, draw_overlay=False)
                 f = filter_image(raw, bgr, opts, frozenset(), params)
                 res = f["result"]
                 res.label_image = raw.label_image     # every raw grain; filters re-derive
             entries.append(ImageEntry(source_path=p, result=res))
-        dp = params_to_dict(params)
         ref = save_session(lot, {"operator": operator, "instrument": "Zeiss Sigma 300",
                                  "filters": options_to_dict(opts),
                                  "magnification": "500×", "accelerating_voltage_kv": 15.0,
                                  "working_distance_mm": 8.6, "px_per_um": ppu,
-                                 "scan_rect": list(scan), "detection_params": dp,
+                                 "detection_params": params_to_dict(params),
                                  "detector_mode": "boundary", "notes": notes},
-                           entries, label=label, catalog=cat)
+                           entries, in_place=True, catalog=cat)
         return ref.path
 
-    p1 = ws.create_project("Alloy 718 qualification", customer="Turbine components programme",
-                           description="Grain size acceptance for forged discs")
-    s1 = ws.create_sample(p1, "S-014", material="Inconel 718", alloy_grade="AMS 5662",
-                          heat_treatment="Solution + aged")
-    l1 = ws.create_lot(p1, s1, "2026-0917-B", supplier="Special Metals",
-                       received_date="2026-09-17", notes="Forging lot, rim location")
-    out["session_main"] = session(l1, "Transverse section 500×", "A. Ramirez",
-                                  images("s014_t", 3, 10, void_at=1), 3,
-                                  "Etched, Kalling's No. 2")
-    out["session_partial"] = session(l1, "Longitudinal section 500×", "J. Samaniego",
-                                     images("s014_l", 3, 20), 1)
-    l1b = ws.create_lot(p1, s1, "2026-0921-A", supplier="Special Metals",
-                        received_date="2026-09-21")
-    session(l1b, "Surface 1000×", "A. Ramirez", images("s014_s", 2, 30), 0)
-    s2 = ws.create_sample(p1, "S-015", material="Inconel 718", alloy_grade="AMS 5663",
-                          heat_treatment="Direct aged")
-    ws.create_lot(p1, s2, "2026-0930-C", supplier="ATI")
-    p2 = ws.create_project("Ti-6Al-4V AM study", customer="Additive manufacturing R&D",
-                           description="Prior-β grain size after HIP")
-    s3 = ws.create_sample(p2, "AM-B3", material="Ti-6Al-4V", alloy_grade="Grade 5",
-                          heat_treatment="HIP 920 °C")
-    l3 = ws.create_lot(p2, s3, "B3-L1", supplier="In-house build 3")
-    session(l3, "As-built vs HIP", "K. Chen", images("am_b3", 2, 40), 2)
+    j1 = ws.create_project("24-117", customer="Acme Aerospace", po_number="PO-5521")
+    p1 = ws.create_sample(j1, "7718-A", part_description="Turbine disk forging",
+                          material_alloy="Alloy 718", drawing_revision="C")
+    l1 = ws.create_lot(j1, p1, "L-44A", heat_number="HT-90211", supplier="Special Metals",
+                       received_date="2026-09-17", quantity="12")
+    out["session_main"] = record(l1, "A. Ramirez", images("SEM", 3, 10, void_at=1), 3,
+                                 "Etched, Kalling's No. 2 — rim location")
+    l2 = ws.create_lot(j1, p1, "L-44B", heat_number="HT-90214", supplier="Special Metals",
+                       received_date="2026-09-21", quantity="8")
+    out["session_partial"] = record(l2, "J. Samaniego", images("SEM_B", 3, 20), 1)
+    p2 = ws.create_sample(j1, "7718-C", part_description="Compressor ring",
+                          material_alloy="Alloy 718", drawing_revision="A")
+    ws.create_lot(j1, p2, "L-51", heat_number="HT-90302", supplier="ATI")
+    j2 = ws.create_project("24-121", customer="Northwind Turbines", po_number="PO-7730")
+    p3 = ws.create_sample(j2, "TI-5521", part_description="AM bracket",
+                          material_alloy="Ti-6Al-4V", drawing_revision="B")
+    l3 = ws.create_lot(j2, p3, "B3-L1", heat_number="AM-B3", supplier="In-house build 3")
+    record(l3, "K. Chen", images("AM", 2, 40), 2)
     out["lot_main"] = l1
-    out["project"] = p1
-    out["images"] = images("new", 3, 60)
+    out["project"] = j1
+    out["images"] = images("NEW", 3, 60)
     return out
 
 
@@ -223,14 +223,19 @@ def capture(out_dir: str) -> List[str]:
 
         # ---- Wizard
         wiz = NewSessionWizard(state, prefill={"project_path": demo["project"]}, parent=win)
-        wiz.fill(project="Alloy 718 qualification", sample="S-014", lot="2026-0917-B",
-                 label_text="Transverse section 1000×", operator="J. Samaniego",
-                 instrument="Zeiss Sigma 300", magnification="1000×", kv=15.0, wd=8.6)
+        wiz.fill(project="24-117", sample="7718-A", lot="L-44C", heat_number="HT-90388",
+                 supplier="Special Metals", received_date="2026-09-24", quantity="6",
+                 operator="J. Samaniego", instrument="Zeiss Sigma 300", magnification="1000×",
+                 kv=15.0, wd=8.6)
         wiz.add_images(demo["images"])
         wiz.show()
-        wiz._go(3)
-        _pump(app, 500)
-        wiz._go(4)
+        last = len(wiz.step_titles()) - 1
+        wiz._go(last - 1)
+        _pump(app, 700)
+        p = os.path.join(out_dir, "app_wizard_lot.png")
+        wiz.grab().save(p)
+        saved.append(p)
+        wiz._go(last)
         _pump(app, 700)
         p = os.path.join(out_dir, "app_wizard.png")
         wiz.grab().save(p)
@@ -245,6 +250,13 @@ def capture(out_dir: str) -> List[str]:
         state.set_current_image(imgs[1].uid)
         _pump(app, 300)
         win.analyze.params.sec_mode.set_expanded(True, animate=False)
+        win.analyze.sec_scan.set_expanded(True, animate=False)
+        cur = state.current_image()
+        from core.scale_bar import find_scale_bar_line
+        bar = find_scale_bar_line(cur.image_bgr)
+        # as the Zeiss TIFF tag would report it: the printed 20 µm bar
+        cur.cal_suggestion = ((bar["length_px"] if bar else 150) / 20.0, "Zeiss", "high")
+        state.sem_metadata_ready.emit(cur.uid)
         win.analyze.canvas.set_view("overlay")
         for c in (win.analyze.st_images, win.analyze.st_grains, win.analyze.st_diam,
                   win.analyze.st_g):
@@ -253,6 +265,24 @@ def capture(out_dir: str) -> List[str]:
         p = os.path.join(out_dir, "app_analyze.png")
         win.grab().save(p)
         saved.append(p)
+        # side panel: metadata scale row + info-bar chip (DET-05 / INN-05)
+        win.analyze.params.sec_mode.set_expanded(False, animate=False)
+        _pump(app, 400)
+        p = os.path.join(out_dir, "app_analyze_side.png")
+        win.analyze.params.grab().save(p)
+        saved.append(p)
+
+        # ---- Calibration dialog: scale bar found, length from metadata
+        from ui.calibration_dialog import CalibrationDialog, suggest_bar_length_um
+        cal = CalibrationDialog(cur.image_bgr, parent=win)
+        cal.prefill(bar, suggest_bar_length_um(bar["length_px"], cur.cal_suggestion[0])
+                    if bar else None)
+        cal.show()
+        _pump(app, 600)
+        p = os.path.join(out_dir, "app_calibration_prefill.png")
+        cal.grab().save(p)
+        saved.append(p)
+        cal.close()
 
         # ---- Review with filters + manual removal + selection + hover
         win.go("review")
@@ -301,6 +331,36 @@ def capture(out_dir: str) -> List[str]:
         p = os.path.join(out_dir, "app_settings.png")
         win.grab().save(p)
         saved.append(p)
+        card = win.settings_page.naming
+        sc = card.parentWidget()
+        while sc is not None and not hasattr(sc, "ensureWidgetVisible"):
+            sc = sc.parentWidget()
+        if sc is not None:
+            sc.ensureWidgetVisible(card, 0, 0)
+        card.levels[2].table.selectRow(0)
+        _pump(app, 600)
+        p = os.path.join(out_dir, "app_settings_naming_page.png")
+        win.grab().save(p)
+        saved.append(p)
+        p = os.path.join(out_dir, "app_settings_naming.png")
+        card.grab().save(p)
+        saved.append(p)
+        # rename preview: the folder template now adds the customer to the job
+        from ui.dialogs.rename_folders_dialog import RenameFoldersDialog
+        prof = state.profile
+        prof.levels[0].folder_template = "{id} - {customer}"
+        state.set_profile(prof)
+        dlg = RenameFoldersDialog(state, win)
+        dlg.show()
+        _wait(app, lambda: dlg.tree.topLevelItemCount() > 0, 10000)
+        _pump(app, 600)
+        p = os.path.join(out_dir, "app_rename_folders.png")
+        dlg.grab().save(p)
+        saved.append(p)
+        dlg.close()
+        prof.levels[0].folder_template = "{id}"
+        state.set_profile(prof)
+        _pump(app, 300)
 
         # ---- Reports: overview table, per-image slide with caption, light theme
         rp = win.reports
@@ -311,8 +371,6 @@ def capture(out_dir: str) -> List[str]:
         _pump(app, 600)
         rp.inspector.org.setText("Metallurgy Laboratory")
         rp.inspector.org.textEdited.emit("Metallurgy Laboratory")
-        rp.inspector.title.setText("Alloy 718 forging — grain size, lot 2026-0917-B")
-        rp.inspector.title.textEdited.emit(rp.inspector.title.text())
         rp.select(("section", "overview_table"))
         _pump(app, 700)
         p = os.path.join(out_dir, "app_reports.png")

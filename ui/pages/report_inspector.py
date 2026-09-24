@@ -205,6 +205,7 @@ class ReportInspector(QWidget):
                      (self.operator, m.operator), (self.date, m.date)):
             if w.text() != (v or ""):
                 w.setText(v or "")
+                w.setCursorPosition(0)
         self.units.set_current_index(UNITS.index(m.units) if m.units in UNITS else 0,
                                      animate=False)
         self.bins_area.setValue(int(m.bins.get("area", 0) or 0))

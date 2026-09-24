@@ -518,7 +518,7 @@ class NamingCard(Card):
                 fctx[f.key] = ctx.get(f"{lv.key}_{f.key}", "") or f.label
             le.folder.set_tokens(hui.token_list(prof, f"folder:{lv.key}"))
             le.folder.set_context(fctx, hui.folder_keys(prof, lv.key), for_filename=True,
-                                  suffix=" \\")
+                                  suffix="")
         gen = hui.token_list(prof)
         self.t_image.set_tokens(hui.token_list(prof, "image"))
         ictx = dict(ctx, index=1, original=ctx.get("original") or "SEM_0001")
@@ -528,7 +528,7 @@ class NamingCard(Card):
         self.t_title.set_tokens(gen)
         self.t_title.set_context(ctx, keys)
         self.t_session.set_tokens(gen)
-        self.t_session.set_context(ctx, keys, for_filename=True, suffix=" \\")
+        self.t_session.set_context(ctx, keys, for_filename=True, suffix="")
         for lab, t in self._rows:
             if t is self.t_session:
                 lab.setVisible(not lot)

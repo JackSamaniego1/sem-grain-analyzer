@@ -370,6 +370,8 @@ class AppShell(QMainWindow):
         s = self.state.session
         if s is not None:
             self.setWindowTitle(f"{s.title} — {APP_NAME}")
+        else:
+            self.chip_save.set_text(f"No {self._rec_word()} open")
 
     def _on_crumb(self, idx: int, _text: str) -> None:
         chain = getattr(self, "_crumb_chain", [])
@@ -687,10 +689,15 @@ class AppShell(QMainWindow):
             self.chip_cal.set_kind("warning")
         self.chip_cal.updateGeometry()
 
+    def _rec_word(self) -> str:
+        from ui import hierarchy_ui as hui
+        return hui.record_word(self.state.profile)
+
     def _on_save_state(self, state: str, detail: str) -> None:
         text, kind = {"saved": (f"Saved ✓ {detail or self.state.last_saved}".strip(), "success"),
                       "saving": ("Saving…", "info"), "unsaved": ("Unsaved changes", "warning"),
-                      "error": ("Save failed", "danger"), "none": ("No session", "neutral")
+                      "error": ("Save failed", "danger"),
+                      "none": (f"No {self._rec_word()} open", "neutral")
                       }.get(state, (state, "neutral"))
         if state == "saved" and not (detail or self.state.last_saved):
             text = "Saved ✓"
