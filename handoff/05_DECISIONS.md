@@ -58,3 +58,17 @@ Context: UI-11 offers three calibration modes (Rectangle, Level line, Free line;
 
 ### D-19 · 2026-09-24 · accepted — core/scale_bar.py kernel width fix
 Context: Line-detection auto-calibration in UI-11 uses a convolution kernel for edge detection; measured bar length was correct but auto-detected bar position was 1 px off to the right. Decision: change kernel width 20→21 (odd width ensures symmetric padding and centered filter response). Consequences: auto-detected bar position now matches measured length; no API change; previous bar detections unaffected (mode is re-detectable).
+
+### D-20 · 2026-09-24 · accepted (user) — Spec limits and calibration check optional
+Context: INN-02 (spec verdict badges) and INN-29 (calibration verification) are optional features; users may not have specs defined or reference standards available. Decision: **default both OFF with zero user nags.** `data/specs.py` verdict only computed when a spec is defined; `AppSettings.calibration_verification_enabled=False` by default; Settings controls let users enable if needed. Report badges only appear when spec exists. Consequences: zero cognitive load for users without these features; clean onboarding for v3.0.0.
+
+### D-21 · 2026-09-24 · accepted (user) — INN-30 (approval/sign-off) cancelled
+Context: INN-30 proposed report approval workflow with SHA-256 sealed sign-off (local only). User feedback 2026-09-24: "not needed for v3.0.0". Decision: **cancel INN-30.** Mark task `cancelled` on task board; do not schedule UI for data/approval.py; remove from Next lists. Consequences: simpler v3.0.0 scope; sign-off deferrable to v3.1+ if customer demand emerges.
+
+### D-22 · 2026-09-24 · accepted (user) — Overlay export shows full original image
+Context: v2 overlay export showed only the cropped scan area when auto-crop was active. User feedback 2026-09-24: "exported overlays must show the full original image incl. SEM info bar." Decision: **compose_full_overlay in core/overlay_compose.py returns full original frame** with thin dashed outline around the measured region; SEM info bar and unscanned areas untouched. Consequences: exports are context-rich; operators can see which area was actually measured; info bar preserved for instrument metadata.
+
+### D-23 · 2026-09-24 · accepted — Calibration verification: newer failed supersedes older pass
+Context: INN-29 (calibration_verify.py) may find that a calibration passes one check then fails a later check (e.g. drift detected). Coordinator pattern: newer result wins. Decision: **in cal_records.py, a failed check record supersedes an older passed record for the same calibration ID.** Flagged in UI as "FAILED" (red chip) not "PASSED then FAILED". Consequences: audit trail shows the ultimate verdict; no ambiguity in report rendering.
+
+

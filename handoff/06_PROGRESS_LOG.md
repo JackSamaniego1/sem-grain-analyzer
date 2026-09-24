@@ -59,3 +59,13 @@
 - Full suite: **489 passed / 0 failed**.
 - In progress (5 agents): INN-02 backend, INN-29 backend, INN-30 backend, INN-27 UI Lot result card, PyInstaller dry run.
 - Next: land in-progress work, then UI pieces for INN-02/29/30.
+
+## 2026-09-24 — INN-02 + INN-29 + INN-27 UI + FIX backend + overlay export done
+- **Overlay export fix (6bf41ff)**: core/overlay_compose.py compose_full_overlay now returns full original image with dashed outline around measured region; SEM info bar and unscanned areas untouched. Root cause: v2 only padded when manual scan area was set; auto info-bar crop stayed cropped. User request 2026-09-24: exported overlays must show full original frame incl. SEM info bar.
+- **INN-02 backend done (924f47f)**: data/specs.py ILAC-G8 verdict logic (PASS/FAIL/INCONCLUSIVE per spec limits). Report badges only when a spec exists (default: none). Spec limits optional, default off, no effect on analysis or nags.
+- **INN-29 backend done (924f47f)**: core/cal_verify.py FFT pitch verification + data/cal_records.py record storage. AppSettings.calibration_verification_enabled=False (optional, default off). Newer failed check supersedes older pass.
+- **INN-27 UI done (924f47f)**: Lot result card with Include checkbox + exclusion reason dropdown. Exports include lot block. Stale saved results refiltered. Connects INN-27 backend to reports workflow.
+- **FIX-02/03/04 done (924f47f)**: Image card open jumps to that image (FIX-02); Delete key routed via context menu not app_shell (FIX-03); trash_node batched delete uses single Catalog instance (FIX-04).
+- Full suite: **544 passed / 0 failed**. Code review: APPROVE. PyInstaller local build dry run: PASS (exe 51.6 MB, dist 922 MB); NSIS untested (makensis not installed locally); SAM checkpoint absent locally (release build requires it).
+- **User decisions 2026-09-24** (recorded in 05_DECISIONS.md as D-20 through D-23): Spec limits & calibration check optional default off; INN-30 cancelled; overlay shows full original image; newer failed supersedes older pass.
+- Next: UI for INN-02/29 (spec editor, calibration dialog, Settings controls); lasso select/merge/split (INN-04); UI-08 About/DPI; journey tests; Phase 6 release.

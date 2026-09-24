@@ -75,20 +75,21 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 | ID | Task | Owner | Status | Notes |
 |----|------|-------|--------|-------|
 | INN-run | Run innovator at session start; approve ≥1 idea per session | coordinator | done | 06493ff: 07_IDEAS_BACKLOG.md rewritten (40 ideas, top 25 active); INN-02, INN-26, INN-27, INN-29, INN-30 specs approved |
-| INN-02 | Spec limits PASS/FAIL/INCONCLUSIVE | data-architect + ui-designer | doing | Backend in progress: data/specs.py + report badges. |
+| INN-02 | Spec limits PASS/FAIL/INCONCLUSIVE | data-architect + ui-designer | done | 924f47f: backend (data/specs.py, ILAC-G8 verdict, badges optional default off); UI todo |
 | INN-05 | Calibration from SEM TIFF metadata (Zeiss/FEI/JEOL/Hitachi/TESCAN) | detection-engineer | done | 1d6df50: metadata auto-calibration with undo toast |
 | INN-26 | ASTM E112/E1382 compliance engine (detection-engineer, depends DET-04) | detection-engineer | done | b45fb7f |
-| INN-27 | Lot statistics + 95% CI + fields-needed (report-engineer+data-architect, depends DATA-03, INN-26) | report-engineer + data-architect | doing | Backend done (ce833e5); UI in progress: Lot result card, edited-G fix. |
-| INN-29 | Calibration verification vs reference standard | detection-engineer | doing | Backend in progress: core/cal_verify.py + records. |
-| INN-30 | Approval + SHA-256 sealed sign-off, local only | data-architect | doing | Backend in progress: data/approval.py. |
+| INN-27 | Lot statistics + 95% CI + fields-needed (report-engineer+data-architect, depends DATA-03, INN-26) | report-engineer + data-architect | done | 924f47f: UI Lot result card (Include checkbox + reason); backend ce833e5. 544 tests. |
+| INN-29 | Calibration verification vs reference standard | detection-engineer | done | 924f47f: backend (core/cal_verify.py FFT pitch, optional default off); UI todo |
+| INN-30 | Approval + SHA-256 sealed sign-off, local only | data-architect | cancelled | User request 2026-09-24: not needed for v3.0.0. |
 
 ## Fixes
 | ID | Task | Owner | Status | Notes |
 |----|------|-------|--------|-------|
 | FIX-01 | Crash on close while background tasks run | build-engineer | done | c64d6ea |
-| FIX-02 | Opening a lot from image card does not jump to that image | ui-designer | todo | UI-09 follow-up |
-| FIX-03 | Delete key still routed via app_shell.py instead of context menu | ui-designer | todo | UI-09 follow-up |
-| FIX-04 | trash_node builds a second Catalog during batched delete; could pass one through | data-architect | todo | UI-09 optimization |
+| FIX-02 | Opening a lot from image card does not jump to that image | ui-designer | done | 924f47f |
+| FIX-03 | Delete key still routed via app_shell.py instead of context menu | ui-designer | done | 924f47f |
+| FIX-04 | trash_node builds a second Catalog during batched delete; could pass one through | data-architect | done | 924f47f |
+| FIX-05 | Overlay export must show full original image incl. SEM info bar | detection-engineer | done | 6bf41ff: core/overlay_compose.py compose_full_overlay; thin dashed outline around measured region |
 
 ## Code Review
 | ID | Task | Owner | Status | Notes |
