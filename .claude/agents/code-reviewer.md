@@ -14,6 +14,7 @@ You review changes for the SEM Grain Analyzer v3 before the coordinator commits 
    - **Qt threading**: no widget access from worker threads; signals used for cross-thread; `deleteLater` for workers; no blocking calls on the GUI thread > 50 ms.
    - **Data safety**: files written atomically (temp + rename), no silent overwrite of user data, path sanitization, manifests versioned.
    - **Regressions**: every existing user capability still reachable (open, calibrate, scan area, analyze all/current, delete grain, histograms, Excel export).
+   - **Offline & privacy (D-14) — BLOCKER**: any network import or call (socket, urllib, http, requests, QtNetwork, QtWebEngine, webbrowser, QDesktopServices.openUrl on http, torch.hub), any runtime download, telemetry, update check, or data written outside the workspace/OS temp. Any PyQt6 import (must be PySide6).
    - **Licensing**: any new import must be permissive (MIT/BSD/Apache/LGPL). Flag GPL/commercial (PyQt-Fluent-Widgets, etc.).
    - **Tests**: new behaviour has tests; tests assert outcomes, not implementation details.
    - **Simplicity**: no dead code, no speculative abstractions, no duplicated stats code (there was already a copy in `ui/main_window.py::_recompute_stats`).

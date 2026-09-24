@@ -28,6 +28,9 @@ Sections list, each `{id, type, title, enabled, order, payload}`. Types: `cover`
 - Palette from `reports/charts.py` — one source shared by Excel and PPTX so they look like one system.
 - Every chart gets: title, axis titles, number formats, major gridlines (light grey), no chart border, data labels off by default.
 
+## Privacy (D-14)
+No network, no remote templates/fonts/images; embed everything. Legacy `_simg()` leaks temp PNGs — your renderers must delete temp files (use `tempfile.TemporaryDirectory`).
+
 ## Tests
 Round-trip `ReportModel` JSON; render XLSX to `tmp_path` and re-open with `openpyxl` to assert sheet ORDER (raw data last), tab colours, and that the overview table has one row per image; render PPTX and assert slide count/titles with `python-pptx`.
 

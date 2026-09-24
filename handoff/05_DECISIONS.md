@@ -8,8 +8,8 @@ Context: user reserves Fable for planning; wants token-efficient team. Decision:
 ### D-02 · 2026-09-23 · accepted — Branching
 Context: colleagues download the v2.3 installer from GitHub Releases. Decision: all v3 work on `v3-dev`; `main` unchanged until `v3.0.0` is tagged. Consequences: installer stays available; merge is a single fast-forward/merge at release.
 
-### D-03 · 2026-09-23 · **needs user** — PyQt6 licensing
-Context: PyQt6 is GPL/commercial; closed corporate distribution may require a Riverbank licence; PySide6 is LGPL. Decision (default): keep PyQt6, use only permissive add-ons (qtawesome), forbid PyQt-Fluent-Widgets, keep code PySide6-portable. Consequences: possible later migration (`pyqtSignal`→`Signal`, enum access) is mechanical.
+### D-03 · 2026-09-23 · **accepted (user)** — Migrate PyQt6 → PySide6
+Context: PyQt6 is GPL/commercial. User: "I want the installer to stay the same way it is now without any license — download the installer from GitHub to a flash drive, bring it to work and install." Decision: migrate to **PySide6 (LGPL v3, Qt for Python official)** — free for commercial/closed use with no licence purchase, provided Qt is dynamically linked (PyInstaller onedir ships Qt as separate replaceable DLLs — already our layout). Do it in Phase 0 (FND-06) **before** the UI rewrite so all new UI code is PySide6-native. Only permissive add-ons (MIT/BSD/Apache/LGPL); PyQt-Fluent-Widgets forbidden. Update `LICENSE.txt` third-party list and ship `THIRD_PARTY_LICENSES.txt` (incl. LGPL notice) in the installer. Consequences: installer workflow unchanged (GitHub Release → flash drive → NSIS install); `pyqtSignal`→`Signal`, `pyqtSlot`→`Slot`, `QAction` stays in QtGui, `exec()` same.
 
 ### D-04 · 2026-09-23 · accepted — Data layout
 Decision: `<Workspace>/<Project>/<Sample>/<Lot>/<Session>/` with `manifest.json`, `images/`, `results/` (`.npz` labels, overlay png, grains.json), `report.json`, `exports/`; `catalog.sqlite` at workspace root as a rebuildable index. Files are the source of truth. Consequences: human-browsable, backup-friendly; search needs the catalog.
@@ -29,7 +29,17 @@ Decision: `/save-handoff` after every completed task, every decision, and before
 ### D-09 · 2026-09-23 · accepted — Detection fix strategy
 Decision: single `valid_mask` computed once in `analyze()`, threaded through all pipelines; conservative default threshold exposed as `DetectionParams.invalid_intensity_threshold`; stats over valid area only. Consequences: dark-but-legitimate grains must be protected by a regression fixture (DET-08).
 
-### D-10 · needs user — default workspace root (default: `~/Documents/GrainAnalyzer/Projects`)
-### D-11 · needs user — branding assets (default: neutral)
-### D-12 · needs user — ASTM G-number in reports (default: yes when calibrated)
-### D-13 · needs user — real SEM validation images (default: synthetic only, flagged risk)
+### D-14 · 2026-09-23 · **accepted (user) — HARD CONSTRAINT** — Fully offline, zero data egress
+Context: user will install on a work machine; "never use the internet after the installation period. No data loaded into the program at any time should be leaving the computer. This is very serious." Decision:
+1. **No network code at runtime.** Forbidden in app code: `socket`, `urllib`, `http.client`, `requests`, `httpx`, `aiohttp`, `ftplib`, `smtplib`, `QtNetwork`, `QtWebEngine*`, `QDesktopServices.openUrl` on http(s) URLs, `webbrowser`, torch.hub/HF hub downloads, update checks, telemetry, crash upload, cloud sync, web fonts, remote templates.
+2. **Everything bundled at build time**: SAM checkpoint, icon fonts, report templates, fonts. Build scripts may download (that is "installation period"); the installed app never does. If an asset is missing, show "reinstall" — never a download link.
+3. **In-process network kill-switch** (`core/offline_guard.py`, installed first thing in `main.py`): blocks outbound AF_INET/AF_INET6 connections and name resolution for the whole process, logs any attempt locally; env hardening (`HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `TORCH_HOME` pointed at the bundle, `QT_*` no network).
+4. **Enforced by tests**: static AST scan of all first-party `.py` for forbidden imports/calls; runtime test that runs analysis + save + XLSX/PPTX export with the guard armed and a socket spy asserting zero connection attempts.
+5. **Data stays local**: workspace defaults to a local folder; temp files created in the user temp dir and deleted after use (legacy exporter leaks temp PNGs — fix); logs local only; no analytics.
+6. code-reviewer treats any violation as a **blocker**; innovator ideas must be offline/local-only (no auto-update, no cloud, no remote LIMS push — local file drops only).
+Consequences: some ideas (auto-update check, crash reporting) are re-scoped to local-only variants.
+
+### D-10 · defaulted — default workspace root (default: `~/Documents/GrainAnalyzer/Projects`)
+### D-11 · defaulted — branding assets (default: neutral)
+### D-12 · defaulted — ASTM G-number in reports (default: yes when calibrated)
+### D-13 · defaulted — real SEM validation images (default: synthetic only, flagged risk)

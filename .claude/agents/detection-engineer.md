@@ -18,7 +18,8 @@ You are the computer-vision engineer for the SEM Grain Analyzer. You own everyth
 - Prefer a single "valid pixel mask" concept: compute once (`gray > black_thresh`, morphologically cleaned, eroded by a few px) and thread it through every pipeline: watershed `mask=`, seed exclusion, SAM mask post-filter (mean intensity, intensity std-dev, fraction of mask on valid pixels), and `_compute_statistics` (coverage % must divide by the VALID analyzed area, not the whole frame).
 - Add a `min_mean_intensity` / `invalid_region_threshold` field to `DetectionParams` so the UI can expose it; default must make the regression test pass on synthetic data and be conservative on real SEM images (dark grains are legitimate; pure black is not).
 - Keep the progress-callback contract (`progress(pct, msg)`) intact — the UI depends on it.
-- Do not import PyQt6 anywhere in `core/`.
+- Do not import Qt (PySide6) anywhere in `core/`.
+- Offline (D-14): never add network code or runtime downloads. The SAM "checkpoint not found" error must tell the user to reinstall — remove the download URL at grain_detector.py:684.
 - Performance budget: boundary/threshold pipelines must stay under 3 s on a 2048x1536 image on CPU. Measure with `time.perf_counter()` and report numbers.
 
 ## Definition of done for any task

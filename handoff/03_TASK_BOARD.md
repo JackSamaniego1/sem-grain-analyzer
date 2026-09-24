@@ -7,9 +7,11 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 |----|------|-------|--------|-------|
 | FND-01 | Create branch `v3-dev`; add `version.py` (`3.0.0-dev`) and `CHANGELOG.md`; wire version into main.py, main_window, settings_panel, spec, NSIS, README | build-engineer | todo | |
 | FND-02 | Add `xlsxwriter`, `python-pptx`, `qtawesome` to requirements/build scripts/CI/spec hiddenimports (+ `collect_data_files('qtawesome')`); delete `.github/workflows/build.ymlresources/`; CPU-only torch index in build scripts | build-engineer | todo | |
-| FND-03 | Get user decision on D-03 (PyQt6 licensing) and D-10/D-11 | coordinator | todo | see 00_START_HERE §8 |
+| FND-03 | Get user decision on D-03 (PyQt6 licensing) and D-10/D-11 | coordinator | done | D-03 → PySide6; D-14 offline added; D-10..13 defaulted |
 | FND-04 | User fixes GitHub auth; push `v3-dev` | user | blocked | creds cached for `Harvey-FS` |
-| FND-05 | Baseline: `/run-tests` + `/smoke-app`; record results in progress log | qa-engineer | todo | expect 1 failing test |
+| FND-05 | Baseline: `/run-tests` + `/smoke-app`; record results in progress log | qa-engineer | todo | expect 2 failing tests |
+| FND-06 | Migrate PyQt6 → PySide6 across main.py + ui/; requirements, spec, build scripts, CI; LICENSE.txt + THIRD_PARTY_LICENSES.txt | build-engineer | todo | D-03 |
+| FND-07 | `core/offline_guard.py` network kill-switch installed first in main.py; env hardening; `tests/test_offline.py` (AST scan + runtime socket spy); remove download URL from SAM error; installer must bundle SAM checkpoint (fail build if missing) | build-engineer | todo | D-14 |
 
 ## Phase 1 — Detection correctness
 | ID | Task | Owner | Status | Notes |
