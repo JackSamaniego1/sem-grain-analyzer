@@ -52,3 +52,10 @@
 - Follow-ups added to task board: FIX-02 (image card open doesn't jump), FIX-03 (Delete key routing), FIX-04 (Catalog batching).
 - Full suite: **466 passed / 0 failed**. Code-reviewer verdict: APPROVE.
 - Next: UI-10 (guided tour), then UI-05 remainder (lasso, merge/split), then Phase 5 innovator features.
+
+## 2026-09-24 — INN-27 backend + UI-10 completed
+- **INN-27 backend done (ce833e5)**: Lot sample statistics with 95% CI per ASTM E112/E1382. New: core/metrics.sample_statistics (mean G, 95% CI Student t, %RA, fields_needed, outlier_flag), ImageRecord.included + exclusion_reason + per-session audit_log, Catalog.fields_for_lot. Settings: required_fields=5, target_RA_pct=10. Exports: Excel Overview lot block (G ± CI, %RA, count); PPTX "G ± CI" tile (opt-in via sample_statistics param). 11 tests in tests/test_sample_statistics.py.
+- **UI-10 done (932e184)**: First-run guided tour of basic SAM analysis. New: ui/tour/ (steps, overlay, controller), 11 steps with animated spotlight + dimmed overlay, callout cards, Skip, Don't show on startup toggle (ui_state["tour"]), Help › Show tour to replay. Never auto-starts under pytest, offscreen render, or GRAIN_NO_TOUR=1. 12 tests in tests/test_ui_tour.py. **Known**: tour Analyze/Review steps point at nav icons on fresh install (no session open yet).
+- Full suite: **489 passed / 0 failed**.
+- In progress (5 agents): INN-02 backend, INN-29 backend, INN-30 backend, INN-27 UI Lot result card, PyInstaller dry run.
+- Next: land in-progress work, then UI pieces for INN-02/29/30.

@@ -68,19 +68,19 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 | HIER-03 | Fix: New Session wizard date-field dropdown arrow slightly clipped | ui-designer | done | 276d579 |
 | HIER-04 | Acceptance check: Excel/PowerPoint export hierarchy labels + export basename vs HIER-01 spec | qa-engineer | done | 276d579 |
 | UI-09 | Projects browser file management (user request 2026-09-24): right-click menu on every folder/image (Delete → trash with undo, Move to…, Rename, Open); per-row checkbox to select items; multi-select (checkbox, Ctrl/Shift-click) with a selection action bar "N selected — Delete · Move to… · Clear"; Move to… opens a picker of valid destination folders (same level only, e.g. images → another lot). Deleting must be obvious, not hidden. | ui-designer + data-architect | done | c0e8e53; New: data/file_ops.py (Qt-free), ui/widgets/selection_bar.py, ui/dialogs/{move_to,rename}.py; 20 tests. |
-| UI-10 | First-run guided tour of a basic SAM analysis: animated spotlight + dimmed overlay, callout cards, Skip, "Don't show on startup", Help → Show tour to replay. Spec: handoff/specs/UI-10.md | ui-designer (opus) | todo | User request 2026-09-24. **Priority: after UI-09.** |
+| UI-10 | First-run guided tour of a basic SAM analysis: animated spotlight + dimmed overlay, callout cards, Skip, "Don't show on startup", Help → Show tour to replay. Spec: handoff/specs/UI-10.md | ui-designer (opus) | done | 932e184; 11 steps, never auto-starts under pytest/offscreen/GRAIN_NO_TOUR=1. Known: Analyze/Review steps point at nav icons on fresh install. |
 | UI-11 | Scale-bar calibration modes: Rectangle (editable box, width only, snap to bar ends), Level line (horizontal-locked, loupe, snap; default), Free line (with tilt warning). Spec: handoff/specs/UI-11.md | detection-engineer (core snap) + ui-designer | done | c0e8e53; core/scale_bar_snap.py, ui/canvas/calibration_canvas.py, ui/calibration_dialog.py rebuilt; 29 tests. |
 
 ## Phase 5 — Innovation (populated from 07_IDEAS_BACKLOG.md)
 | ID | Task | Owner | Status | Notes |
 |----|------|-------|--------|-------|
 | INN-run | Run innovator at session start; approve ≥1 idea per session | coordinator | done | 06493ff: 07_IDEAS_BACKLOG.md rewritten (40 ideas, top 25 active); INN-02, INN-26, INN-27, INN-29, INN-30 specs approved |
-| INN-02 | Spec limits PASS/FAIL/INCONCLUSIVE | data-architect + ui-designer | todo | |
+| INN-02 | Spec limits PASS/FAIL/INCONCLUSIVE | data-architect + ui-designer | doing | Backend in progress: data/specs.py + report badges. |
 | INN-05 | Calibration from SEM TIFF metadata (Zeiss/FEI/JEOL/Hitachi/TESCAN) | detection-engineer | done | 1d6df50: metadata auto-calibration with undo toast |
 | INN-26 | ASTM E112/E1382 compliance engine (detection-engineer, depends DET-04) | detection-engineer | done | b45fb7f |
-| INN-27 | Lot statistics + 95% CI + fields-needed (report-engineer+data-architect, depends DATA-03, INN-26) | report-engineer + data-architect | todo | |
-| INN-29 | Calibration verification vs reference standard | detection-engineer | todo | |
-| INN-30 | Approval + SHA-256 sealed sign-off, local only | data-architect | todo | |
+| INN-27 | Lot statistics + 95% CI + fields-needed (report-engineer+data-architect, depends DATA-03, INN-26) | report-engineer + data-architect | doing | Backend done (ce833e5); UI in progress: Lot result card, edited-G fix. |
+| INN-29 | Calibration verification vs reference standard | detection-engineer | doing | Backend in progress: core/cal_verify.py + records. |
+| INN-30 | Approval + SHA-256 sealed sign-off, local only | data-architect | doing | Backend in progress: data/approval.py. |
 
 ## Fixes
 | ID | Task | Owner | Status | Notes |
