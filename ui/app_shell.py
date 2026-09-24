@@ -13,6 +13,8 @@ Delete) plus Ctrl+N, Ctrl+S, Ctrl+Z/Ctrl+Y, Ctrl+1…5, Ctrl+F and ``?``.
 """
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -114,8 +116,14 @@ class SearchPopup(Card):
 
 
 class AppShell(QMainWindow):
-    def __init__(self, state: Optional[AppState] = None, probe_device: bool = True) -> None:
+    def __init__(self, state: Optional[AppState] = None, probe_device: bool = True,
+                 tour: Optional[bool] = None) -> None:
+        """``tour``: auto-start the first-run guided tour when the window is
+        first shown.  ``None`` = yes, except under pytest / offscreen renders /
+        ``GRAIN_NO_TOUR=1`` (the tour must never block headless runs)."""
         super().__init__()
+        self._tour_autostart = _tour_env_allows() if tour is None else bool(tour)
+        self._tour_checked = False
         self.state = state or AppState()
         self.setWindowTitle(f"{APP_NAME}")
         self.setMinimumSize(1180, 720)
@@ -134,6 +142,9 @@ class AppShell(QMainWindow):
         self._on_profile_changed()
         self._update_cal_chip()
         self._ensure_catalog()
+        from ui.tour import TourController, tag_anchors
+        tag_anchors(self)
+        self.tour = TourController(self)
         if probe_device:
             QTimer.singleShot(1500, lambda: run_task(_probe_device, on_done=self._set_device))
 
@@ -273,6 +284,8 @@ class AppShell(QMainWindow):
         vm.addSeparator()
         self._act(vm, "Toggle &theme", self.toggle_theme, "Ctrl+Shift+L")
         hm = mb.addMenu("&Help")
+        self.act_tour = self._act(hm, "Show &tour", self.start_tour, None, "help",
+                                  "Replay the guided tour of a basic analysis")
         self._act(hm, "&Keyboard shortcuts", self.overlay.toggle, None, "keyboard")
         self._act(hm, "&About", lambda: self.go("settings"), None, "info")
 
@@ -762,10 +775,36 @@ class AppShell(QMainWindow):
         self.state.persist_ui_state()
         super().closeEvent(e)
 
+    # ------------------------------------------------------------------ tour (UI-10)
+    def start_tour(self, index: int = 0) -> None:
+        """Help › Show tour — always plays, whatever "don't show" says."""
+        self.search_popup.hide()
+        if self.overlay.is_open():
+            self.overlay.close_overlay()
+        self.tour.start(index)
+
+    def showEvent(self, e) -> None:
+        super().showEvent(e)
+        if not self._tour_checked:
+            self._tour_checked = True
+            if self._tour_autostart and self.tour.should_autostart():
+                QTimer.singleShot(700, lambda: self.isVisible() and not self.tour.is_active()
+                                  and self.start_tour())
+
     def resizeEvent(self, e) -> None:
         super().resizeEvent(e)
         if self.search_popup.isVisible():
             self._place_popup()
+
+
+def _tour_env_allows() -> bool:
+    """Auto-start the tour only in a real interactive session."""
+    if os.environ.get("GRAIN_NO_TOUR", "") in ("1", "true", "yes"):
+        return False
+    if "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ:
+        return False
+    plat = (QApplication.platformName() or os.environ.get("QT_QPA_PLATFORM", "")).lower()
+    return plat not in ("offscreen", "minimal")
 
 
 __all__ = ["AppShell", "SHORTCUTS"]
