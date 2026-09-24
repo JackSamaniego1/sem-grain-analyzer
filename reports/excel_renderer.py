@@ -1,0 +1,602 @@
+"""Excel renderer (xlsxwriter) for ``ReportModel``.
+
+Sheet order (raw data always last):
+  1. Overview          (navy)   — header block + one row per image + combined row
+  2. Summary Charts     (green)  — combined histograms, per-image mean-diameter
+                                    bar w/ error bars, grain-count-per-image bar
+  3. Img n - <name>      (teal)   — original + overlay, stats, per-image histograms
+  4. Methods            (amber)  — detection mode/params, calibration, version
+  5. Raw - <name>        (grey)   — full per-grain data, autofilter, freeze panes
+
+Every embedded/resized image goes through a ``tempfile.TemporaryDirectory``
+that is cleaned up before this function returns (D-14 — no leaked temp
+files, unlike the legacy ``utils/excel_export.py::_simg``).
+"""
+from __future__ import annotations
+
+import hashlib
+import os
+import re
+import tempfile
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import xlsxwriter
+from xlsxwriter.utility import xl_rowcol_to_cell
+
+try:
+    import cv2
+except Exception:  # pragma: no cover
+    cv2 = None
+
+from reports.charts import SERIES, TAB_COLORS, build_bins, normal_fit, resolve_units
+from reports.model import ReportModel, ImageSummary
+
+try:
+    from version import __version__ as APP_VERSION
+except Exception:  # pragma: no cover
+    APP_VERSION = "unknown"
+
+INVALID_SHEET_CHARS = re.compile(r"[\[\]:*?/\\]")
+
+
+def _safe_sheet_name(name: str, used: Dict[str, int]) -> str:
+    clean = INVALID_SHEET_CHARS.sub("", name).strip() or "Sheet"
+    clean = clean[:31]
+    base = clean
+    n = used.get(base, 0)
+    if n:
+        suffix = f" ({n})"
+        clean = base[: 31 - len(suffix)] + suffix
+    used[base] = n + 1
+    return clean
+
+
+def _resized_png(tmpdir: str, src_path: Optional[str], max_w: int = 800, _seq: List[int] = [0]
+                  ) -> Optional[Tuple[str, int, int]]:
+    """Return (path, width, height) of a size-capped PNG copy, or None.
+
+    Output filenames combine a content-derived hash with a monotonically
+    increasing sequence number so repeated/near-identical paths never
+    collide within one render (plain ``hash(path) % N`` can).
+    """
+    if not src_path or not os.path.exists(src_path) or cv2 is None:
+        return None
+    img = cv2.imread(src_path, cv2.IMREAD_COLOR)
+    if img is None:
+        return None
+    h, w = img.shape[:2]
+    if w > max_w:
+        scale = max_w / w
+        img = cv2.resize(img, (max_w, int(h * scale)), interpolation=cv2.INTER_AREA)
+        h, w = img.shape[:2]
+    _seq[0] += 1
+    digest = hashlib.sha1(src_path.encode("utf-8", "ignore")).hexdigest()[:12]
+    out_path = os.path.join(tmpdir, f"_r{digest}_{_seq[0]}.png")
+    cv2.imwrite(out_path, img, [cv2.IMWRITE_PNG_COMPRESSION, 3])
+    return out_path, w, h
+
+
+def render_excel(model: ReportModel, output_path: str) -> str:
+    with tempfile.TemporaryDirectory(prefix="grain_report_xlsx_") as tmpdir:
+        wb = xlsxwriter.Workbook(output_path)
+        fmts = _build_formats(wb)
+        used_names: Dict[str, int] = {}
+
+        images = model.ordered_images(included_only=True)
+        want_charts = model.is_enabled("combined_distribution", default=True) and bool(images)
+        want_methods = model.is_enabled("parameters", default=True)
+        want_raw = model.is_enabled("raw_data", default=True)
+
+        # Precompute every sheet name up front (in final sheet order) so
+        # Overview can hyperlink to the correct, already-unique names.
+        overview_name = _safe_sheet_name("Overview", used_names)
+        charts_name = _safe_sheet_name("Summary Charts", used_names) if want_charts else None
+        image_sheet_names: Dict[str, str] = {}
+        for img in images:
+            image_sheet_names[img.id] = _safe_sheet_name(
+                f"Img {img.order} - {os.path.splitext(os.path.basename(img.image_path))[0]}", used_names)
+        methods_name = _safe_sheet_name("Methods", used_names) if want_methods else None
+        raw_sheet_names: Dict[str, str] = {}
+        if want_raw:
+            for img in images:
+                raw_sheet_names[img.id] = _safe_sheet_name(
+                    f"Raw - {os.path.splitext(os.path.basename(img.image_path))[0]}", used_names)
+
+        # 1. Overview (always first)
+        _write_overview(wb, model, images, fmts, overview_name, image_sheet_names)
+
+        # 2. Summary Charts
+        if want_charts:
+            _write_summary_charts(wb, model, images, fmts, charts_name)
+
+        # 3. Per-image sheets
+        for img in images:
+            _write_image_sheet(wb, model, img, image_sheet_names[img.id], fmts, tmpdir)
+
+        # 4. Methods
+        if want_methods:
+            _write_methods(wb, model, fmts, methods_name)
+
+        # 5. Raw data (last, always)
+        if want_raw:
+            for img in images:
+                _write_raw_sheet(wb, img, fmts, raw_sheet_names[img.id])
+
+        wb.close()
+    return output_path
+
+
+# ---------------------------------------------------------------------------
+# Formats
+# ---------------------------------------------------------------------------
+
+def _build_formats(wb: "xlsxwriter.Workbook") -> Dict[str, "xlsxwriter.format.Format"]:
+    f = {}
+    f["title"] = wb.add_format({"bold": True, "font_size": 18, "font_color": SERIES["white"],
+                                 "bg_color": SERIES["navy"], "align": "center", "valign": "vcenter"})
+    f["subtitle"] = wb.add_format({"font_size": 10, "font_color": SERIES["white"],
+                                    "bg_color": TAB_COLORS["overview"], "align": "left", "valign": "vcenter"})
+    f["section"] = wb.add_format({"bold": True, "font_size": 12, "font_color": SERIES["white"],
+                                   "bg_color": SERIES["navy"], "align": "left", "valign": "vcenter", "indent": 1})
+    f["header"] = wb.add_format({"bold": True, "font_size": 10, "font_color": SERIES["white"],
+                                  "bg_color": "#2E5FA3", "align": "center", "valign": "vcenter", "border": 1,
+                                  "text_wrap": True})
+    f["band0"] = wb.add_format({"bg_color": SERIES["band_alt"], "border": 1, "align": "center"})
+    f["band1"] = wb.add_format({"bg_color": SERIES["band"], "border": 1, "align": "center"})
+    f["band0_num2"] = wb.add_format({"bg_color": SERIES["band_alt"], "border": 1, "align": "center", "num_format": "0.00"})
+    f["band1_num2"] = wb.add_format({"bg_color": SERIES["band"], "border": 1, "align": "center", "num_format": "0.00"})
+    f["band0_pct"] = wb.add_format({"bg_color": SERIES["band_alt"], "border": 1, "align": "center", "num_format": "0.0\"%\""})
+    f["band1_pct"] = wb.add_format({"bg_color": SERIES["band"], "border": 1, "align": "center", "num_format": "0.0\"%\""})
+    f["band0_num4"] = wb.add_format({"bg_color": SERIES["band_alt"], "border": 1, "align": "center", "num_format": "0.0000"})
+    f["band1_num4"] = wb.add_format({"bg_color": SERIES["band"], "border": 1, "align": "center", "num_format": "0.0000"})
+    f["total_label"] = wb.add_format({"bold": True, "bg_color": "#D9DEE8", "border": 1, "align": "left", "indent": 1})
+    f["total"] = wb.add_format({"bold": True, "bg_color": "#D9DEE8", "border": 1, "align": "center", "num_format": "0.00"})
+    f["label"] = wb.add_format({"bold": True, "align": "left", "indent": 1, "border": 1})
+    f["value"] = wb.add_format({"align": "center", "border": 1})
+    f["value_num2"] = wb.add_format({"align": "center", "border": 1, "num_format": "0.00"})
+    f["caption"] = wb.add_format({"italic": True, "text_wrap": True, "valign": "top"})
+    f["hyperlink"] = wb.add_format({"font_color": "#1155CC", "underline": 1, "align": "left", "indent": 1,
+                                     "border": 1})
+    f["hyperlink_band"] = wb.add_format({"font_color": "#1155CC", "underline": 1, "align": "left", "indent": 1,
+                                          "border": 1, "bg_color": SERIES["band"]})
+    return f
+
+
+def _band(fmts, i, key="band"):
+    return fmts[f"band{i % 2}"] if key == "band" else fmts[f"band{i % 2}_{key}"]
+
+
+# ---------------------------------------------------------------------------
+# Overview
+# ---------------------------------------------------------------------------
+
+_OVERVIEW_COLS = ["#", "Image", "Sample", "Lot", "Grains", "Mean Area", "Median Area", "Std Area",
+                   "Mean Diameter", "Std Diameter", "Units", "Coverage %", "Invalid %", "Mean Circularity",
+                   "Mean Aspect Ratio", "ASTM G"]
+
+
+def _combined_unit(model: ReportModel, images: List[ImageSummary]) -> Tuple[str, str]:
+    if images and all(i.has_calibration for i in images):
+        au, _, du, _ = resolve_units(images[0].px_per_um, model.units)
+        return au, du
+    return "px²", "px"
+
+
+def _row_size_stats(model: ReportModel, img: ImageSummary) -> Tuple[str, str, float, float, float, float, float]:
+    """Per-row (area_unit, diam_unit, mean_area, median_area, std_area, mean_diam, std_diam).
+
+    ``core.metrics.compute_statistics`` zeroes the ``*_um2``/``*_um`` summary
+    fields when an image has no calibration, so those rows must be derived
+    straight from the per-grain ``area_px``/``diameter_px`` columns instead
+    of the (zeroed) um summary fields — otherwise uncalibrated images show
+    all-zero size stats on the Overview table.
+    """
+    if img.has_calibration:
+        au, am, du, dm = resolve_units(img.px_per_um, model.units)
+        return (au, du, img.mean_area_um2 * am, img.median_area_um2 * am, img.std_area_um2 * am,
+                img.mean_diameter_um * dm, img.std_diameter_um * dm)
+    if img.grains:
+        areas = np.array([g["area_px"] for g in img.grains], dtype=float)
+        diams = np.array([g["diameter_px"] for g in img.grains], dtype=float)
+        return ("px²", "px", float(np.mean(areas)), float(np.median(areas)), float(np.std(areas)),
+                float(np.mean(diams)), float(np.std(diams)))
+    return "px²", "px", 0.0, 0.0, 0.0, 0.0, 0.0
+
+
+def _write_overview(wb, model: ReportModel, images: List[ImageSummary], fmts, name: str,
+                     image_sheet_names: Dict[str, str]) -> None:
+    ws = wb.add_worksheet(name)
+    ws.set_tab_color(TAB_COLORS["overview"])
+    ws.hide_gridlines(2)
+
+    ncols = len(_OVERVIEW_COLS)
+    ws.merge_range(0, 0, 0, ncols - 1, model.title or "Grain Analysis Report", fmts["title"])
+    ws.set_row(0, 30)
+    sub = (f"Operator: {model.operator or '—'}   |   Organization: {model.organization or '—'}   |   "
+           f"Date: {model.date}   |   {len(images)} image(s)   |   Grain Analyzer v{APP_VERSION}")
+    ws.merge_range(1, 0, 1, ncols - 1, sub, fmts["subtitle"])
+
+    if not model.is_enabled("overview_table", default=True) or not images:
+        ws.set_column(0, ncols - 1, 16)
+        return
+
+    au, du = _combined_unit(model, images)
+    header = [
+        "#", "Image", "Sample", "Lot", "Grains", f"Mean Area ({au})*", f"Median Area ({au})*",
+        f"Std Area ({au})*", f"Mean Diameter ({du})*", f"Std Diameter ({du})*", "Units", "Coverage %",
+        "Invalid %", "Mean Circularity", "Mean Aspect Ratio", "ASTM G",
+    ]
+    header_row = 3
+    for c, h in enumerate(header):
+        ws.write(header_row, c, h, fmts["header"])
+    ws.set_row(header_row, 30)
+
+    if images and images[0].has_calibration:
+        _, am, _, dm = resolve_units(images[0].px_per_um, model.units)
+    else:
+        am, dm = 1.0, 1.0
+
+    r = header_row + 1
+    for i, img in enumerate(images):
+        au_i, du_i, mean_a, med_a, std_a, mean_d, std_d = _row_size_stats(model, img)
+        row = [
+            img.order, os.path.basename(img.image_path), img.sample_id, img.lot_number, img.grain_count,
+            round(mean_a, 3), round(med_a, 3), round(std_a, 3), round(mean_d, 3), round(std_d, 3),
+            f"{au_i} / {du_i}", round(img.grain_coverage_pct, 2), round(img.invalid_area_pct, 2),
+            round(img.mean_circularity, 4), round(img.mean_aspect_ratio, 4),
+            (img.astm_g if img.astm_g is not None else "—"),
+        ]
+        for c, val in enumerate(row):
+            if c == 1:
+                target_sheet = image_sheet_names.get(img.id)
+                fmt = fmts["hyperlink_band"] if i % 2 else fmts["hyperlink"]
+                if target_sheet:
+                    ws.write_url(r, c, f"internal:'{target_sheet}'!A1", fmt, string=str(val))
+                else:
+                    ws.write(r, c, val, fmt)
+            elif c in (5, 6, 7, 8, 9):
+                ws.write_number(r, c, val, _band(fmts, i, "num2"))
+            elif c in (11, 12):
+                ws.write_number(r, c, val, _band(fmts, i, "pct"))
+            elif c in (13, 14):
+                ws.write_number(r, c, val, _band(fmts, i, "num4"))
+            elif c == 15 and isinstance(val, (int, float)):
+                ws.write_number(r, c, val, _band(fmts, i, "num2"))
+            else:
+                ws.write(r, c, val, _band(fmts, i))
+        r += 1
+
+    # Combined row across all grains of all included images.
+    all_grains = [g for img in images for g in img.grains]
+    if all_grains:
+        calibrated_all = all(i.has_calibration for i in images)
+        if calibrated_all:
+            areas = np.array([g["area_um2"] for g in all_grains]) * am
+            diams = np.array([g["diameter_um"] for g in all_grains]) * dm
+        else:
+            areas = np.array([g["area_px"] for g in all_grains])
+            diams = np.array([g["diameter_px"] for g in all_grains])
+        total_grains = len(all_grains)
+        mean_circ = float(np.mean([g["circularity"] for g in all_grains]))
+        mean_ar = float(np.mean([g["aspect_ratio"] for g in all_grains]))
+        mean_cov = float(np.mean([i.grain_coverage_pct for i in images]))
+        mean_inv = float(np.mean([i.invalid_area_pct for i in images]))
+        ws.write(r, 0, "", fmts["total_label"])
+        ws.write(r, 1, "Combined (all images)", fmts["total_label"])
+        ws.write(r, 2, "", fmts["total_label"])
+        ws.write(r, 3, "", fmts["total_label"])
+        ws.write_number(r, 4, total_grains, fmts["total"])
+        ws.write_number(r, 5, round(float(np.mean(areas)), 3), fmts["total"])
+        ws.write_number(r, 6, round(float(np.median(areas)), 3), fmts["total"])
+        ws.write_number(r, 7, round(float(np.std(areas)), 3), fmts["total"])
+        ws.write_number(r, 8, round(float(np.mean(diams)), 3), fmts["total"])
+        ws.write_number(r, 9, round(float(np.std(diams)), 3), fmts["total"])
+        ws.write(r, 10, f"{au} / {du}" if calibrated_all else "px² / px", fmts["total_label"])
+        ws.write_number(r, 11, round(mean_cov, 2), fmts["total"])
+        ws.write_number(r, 12, round(mean_inv, 2), fmts["total"])
+        ws.write_number(r, 13, round(mean_circ, 4), fmts["total"])
+        ws.write_number(r, 14, round(mean_ar, 4), fmts["total"])
+        ws.write(r, 15, "—", fmts["total"])
+        r += 1
+
+    ws.freeze_panes(header_row + 1, 1)
+    widths = [5, 30, 12, 12, 9, 13, 13, 13, 15, 14, 13, 11, 10, 15, 15, 9]
+    for c, w in enumerate(widths):
+        ws.set_column(c, c, w)
+
+
+# ---------------------------------------------------------------------------
+# Summary Charts
+# ---------------------------------------------------------------------------
+
+def _write_summary_charts(wb, model: ReportModel, images: List[ImageSummary], fmts, name: str) -> None:
+    ws = wb.add_worksheet(name)
+    ws.set_tab_color(TAB_COLORS["charts"])
+    ws.hide_gridlines(2)
+    ws.merge_range(0, 0, 0, 7, "Combined Distributions (all images)", fmts["section"])
+
+    all_grains = [g for img in images for g in img.grains]
+    calibrated_all = all(i.has_calibration for i in images)
+    au, du = _combined_unit(model, images)
+    n_bins_area = model.bins.get("area", 0)
+    n_bins_diam = model.bins.get("diameter", 0)
+
+    if calibrated_all:
+        _, am, _, dm = resolve_units(images[0].px_per_um, model.units)
+        area_vals = [g["area_um2"] * am for g in all_grains]
+        diam_vals = [g["diameter_um"] * dm for g in all_grains]
+    else:
+        area_vals = [g["area_px"] for g in all_grains]
+        diam_vals = [g["diameter_px"] for g in all_grains]
+
+    row = 2
+    row = _write_hist_block(ws, fmts, wb, row, area_vals, n_bins_area, au, "Grain Area", SERIES["area_bar"],
+                             chart_anchor="J2")
+    row += 2
+    row = _write_hist_block(ws, fmts, wb, row, diam_vals, n_bins_diam, du, "Grain Diameter", SERIES["diameter_bar"],
+                             chart_anchor="J22")
+
+    # Per-image mean diameter bar w/ error bars + grain count bar.
+    row += 2
+    tbl_row = row
+    ws.write(tbl_row, 0, "Image", fmts["header"])
+    ws.write(tbl_row, 1, f"Mean Diameter ({du})", fmts["header"])
+    ws.write(tbl_row, 2, f"Std Diameter ({du})", fmts["header"])
+    ws.write(tbl_row, 3, "Grain Count", fmts["header"])
+    for i, img in enumerate(images):
+        _, _, _, dm_i = resolve_units(img.px_per_um, model.units)
+        r = tbl_row + 1 + i
+        ws.write(r, 0, os.path.basename(img.image_path), _band(fmts, i))
+        ws.write_number(r, 1, round(img.mean_diameter_um * dm_i, 3), _band(fmts, i, "num2"))
+        ws.write_number(r, 2, round(img.std_diameter_um * dm_i, 3), _band(fmts, i, "num2"))
+        ws.write_number(r, 3, img.grain_count, _band(fmts, i))
+    n = len(images)
+    last = tbl_row + n
+
+    diam_chart = wb.add_chart({"type": "column"})
+    diam_chart.add_series({
+        "name": f"Mean Diameter ({du})",
+        "categories": [name, tbl_row + 1, 0, last, 0],
+        "values": [name, tbl_row + 1, 1, last, 1],
+        "fill": {"color": SERIES["diameter_bar"]},
+        "y_error_bars": {
+            "type": "custom",
+            "plus_values": [name, tbl_row + 1, 2, last, 2],
+            "minus_values": [name, tbl_row + 1, 2, last, 2],
+        },
+        "gap": 40,
+    })
+    diam_chart.set_title({"name": "Mean Grain Diameter per Image"})
+    diam_chart.set_x_axis({"name": "Image"})
+    diam_chart.set_y_axis({"name": f"Mean Diameter ({du})", "num_format": "0.00",
+                            "major_gridlines": {"visible": True, "line": {"color": SERIES["gridline"]}}})
+    diam_chart.set_legend({"none": True})
+    diam_chart.set_chartarea({"border": {"none": True}})
+    diam_chart.set_size({"width": 480, "height": 300})
+    ws.insert_chart(tbl_row, 5, diam_chart)
+
+    count_chart = wb.add_chart({"type": "column"})
+    count_chart.add_series({
+        "name": "Grain Count",
+        "categories": [name, tbl_row + 1, 0, last, 0],
+        "values": [name, tbl_row + 1, 3, last, 3],
+        "fill": {"color": SERIES["count_bar"]},
+        "gap": 40,
+    })
+    count_chart.set_title({"name": "Grain Count per Image"})
+    count_chart.set_x_axis({"name": "Image"})
+    count_chart.set_y_axis({"name": "Number of Grains", "num_format": "0",
+                             "major_gridlines": {"visible": True, "line": {"color": SERIES["gridline"]}}})
+    count_chart.set_legend({"none": True})
+    count_chart.set_chartarea({"border": {"none": True}})
+    count_chart.set_size({"width": 480, "height": 300})
+    ws.insert_chart(tbl_row + 17, 5, count_chart)
+
+    ws.set_column(0, 0, 26)
+    ws.set_column(1, 3, 16)
+
+
+def _write_hist_block(ws, fmts, wb, start_row, values, n_bins, unit, label, color, chart_anchor) -> int:
+    if isinstance(chart_anchor, tuple):
+        chart_anchor = xl_rowcol_to_cell(chart_anchor[0], chart_anchor[1])
+    labels, counts, edges = build_bins(values, n_bins)
+    if not labels:
+        return start_row
+    fit = normal_fit(values, edges)
+    nb = len(labels)
+
+    ws.write(start_row, 0, "Bin Range", fmts["header"])
+    ws.write(start_row, 1, "Count", fmts["header"])
+    ws.write(start_row, 2, "Normal Fit", fmts["header"])
+    for i in range(nb):
+        r = start_row + 1 + i
+        ws.write(r, 0, f"{labels[i]} {unit}", _band(fmts, i))
+        ws.write_number(r, 1, int(counts[i]), _band(fmts, i))
+        ws.write_number(r, 2, fit[i], _band(fmts, i, "num2"))
+
+    bar = wb.add_chart({"type": "column"})
+    bar.add_series({
+        "name": "Count",
+        "categories": [ws.get_name(), start_row + 1, 0, start_row + nb, 0],
+        "values": [ws.get_name(), start_row + 1, 1, start_row + nb, 1],
+        "fill": {"color": color},
+        "gap": 0,
+    })
+    line = wb.add_chart({"type": "line"})
+    line.add_series({
+        "name": "Normal Fit",
+        "categories": [ws.get_name(), start_row + 1, 0, start_row + nb, 0],
+        "values": [ws.get_name(), start_row + 1, 2, start_row + nb, 2],
+        "line": {"color": SERIES["normal_fit"], "width": 2.25},
+        "smooth": True,
+    })
+    bar.combine(line)
+    bar.set_title({"name": f"{label} Distribution"})
+    bar.set_x_axis({"name": f"{label} ({unit})"})
+    bar.set_y_axis({"name": "Number of Grains", "num_format": "0",
+                     "major_gridlines": {"visible": True, "line": {"color": SERIES["gridline"]}}})
+    bar.set_legend({"position": "bottom"})
+    bar.set_chartarea({"border": {"none": True}})
+    bar.set_size({"width": 480, "height": 300})
+    ws.insert_chart(chart_anchor, bar)
+
+    ws.set_column(0, 0, 18)
+    ws.set_column(1, 2, 12)
+    return start_row + nb + 1
+
+
+# ---------------------------------------------------------------------------
+# Per-image sheet
+# ---------------------------------------------------------------------------
+
+def _write_image_sheet(wb, model: ReportModel, img: ImageSummary, sheet_name, fmts, tmpdir) -> None:
+    ws = wb.add_worksheet(sheet_name)
+    ws.set_tab_color(TAB_COLORS["image"])
+    ws.hide_gridlines(2)
+    ws.merge_range(0, 0, 0, 13, f"Image {img.order}: {os.path.basename(img.image_path)}", fmts["title"])
+    ws.set_row(0, 26)
+
+    row_after_images = 3
+    orig = _resized_png(tmpdir, img.image_path)
+    if orig:
+        path, w, h = orig
+        ws.insert_image(2, 0, path, {"x_scale": 1, "y_scale": 1})
+        row_after_images = max(row_after_images, 2 + int(h / 15) + 2)
+    ovl = _resized_png(tmpdir, img.overlay_path)
+    if ovl:
+        path, w, h = ovl
+        ws.insert_image(2, 6, path, {"x_scale": 1, "y_scale": 1})
+        row_after_images = max(row_after_images, 2 + int(h / 15) + 2)
+
+    stats_row = row_after_images + 1
+    ws.merge_range(stats_row, 0, stats_row, 2, "Summary Statistics", fmts["section"])
+    au, am, du, dm = resolve_units(img.px_per_um, model.units)
+    r = stats_row + 1
+    stat_rows = [
+        ("Sample", img.sample_id or "—", ""), ("Lot", img.lot_number or "—", ""),
+        ("Total Grains", img.grain_count, "grains"),
+    ]
+    if img.has_calibration:
+        stat_rows += [
+            ("Mean Area", round(img.mean_area_um2 * am, 3), au),
+            ("Std Dev Area", round(img.std_area_um2 * am, 3), au),
+            ("Mean Diameter", round(img.mean_diameter_um * dm, 3), du),
+            ("Std Dev Diameter", round(img.std_diameter_um * dm, 3), du),
+        ]
+    stat_rows += [
+        ("Mean Circularity", round(img.mean_circularity, 4), "(0-1)"),
+        ("Mean Aspect Ratio", round(img.mean_aspect_ratio, 4), "(1=equiaxed)"),
+        ("Coverage", round(img.grain_coverage_pct, 2), "%"),
+        ("Invalid Area", round(img.invalid_area_pct, 2), "%"),
+        ("ASTM G", img.astm_g if img.astm_g is not None else "—", ""),
+    ]
+    for label, val, unit in stat_rows:
+        ws.write(r, 0, label, fmts["label"])
+        if isinstance(val, float):
+            ws.write_number(r, 1, val, fmts["value_num2"])
+        else:
+            ws.write(r, 1, val, fmts["value"])
+        ws.write(r, 2, unit, fmts["value"])
+        r += 1
+
+    hist_row = r + 2
+    if img.has_calibration:
+        area_vals = [g["area_um2"] * am for g in img.grains]
+        diam_vals = [g["diameter_um"] * dm for g in img.grains]
+    else:
+        area_vals = [g["area_px"] for g in img.grains]
+        diam_vals = [g["diameter_px"] for g in img.grains]
+    hist_row = _write_hist_block(ws, fmts, wb, hist_row, area_vals, model.bins.get("area", 0), au,
+                                  "Grain Area", SERIES["area_bar"], chart_anchor=(hist_row, 5))
+    hist_row += 2
+    hist_row = _write_hist_block(ws, fmts, wb, hist_row, diam_vals, model.bins.get("diameter", 0), du,
+                                  "Grain Diameter", SERIES["diameter_bar"], chart_anchor=(hist_row, 5))
+
+    note_row = hist_row + 2
+    ws.merge_range(note_row, 0, note_row, 2, "Caption / Notes", fmts["section"])
+    ws.merge_range(note_row + 1, 0, note_row + 4, 4, (img.caption + ("\n" + img.notes if img.notes else "")).strip() or "—",
+                    fmts["caption"])
+
+    ws.set_column(0, 0, 20)
+    ws.set_column(1, 2, 14)
+
+
+# ---------------------------------------------------------------------------
+# Methods
+# ---------------------------------------------------------------------------
+
+def _write_methods(wb, model: ReportModel, fmts, name: str) -> None:
+    ws = wb.add_worksheet(name)
+    ws.set_tab_color(TAB_COLORS["methods"])
+    ws.hide_gridlines(2)
+    ws.merge_range(0, 0, 0, 2, "Methods & Parameters", fmts["title"])
+    ws.set_row(0, 26)
+
+    params = model.metadata.get("detection_params") or {}
+    r = 2
+    ws.merge_range(r, 0, r, 2, "Detection", fmts["section"]); r += 1
+    rows = [("Mode", model.metadata.get("detection_mode", "—"))]
+    rows += [(k, v) for k, v in params.items()]
+    for label, val in rows:
+        ws.write(r, 0, str(label), fmts["label"])
+        ws.write(r, 1, str(val), fmts["value"])
+        r += 1
+
+    r += 1
+    ws.merge_range(r, 0, r, 2, "Calibration", fmts["section"]); r += 1
+    ws.write(r, 0, "Instrument", fmts["label"]); ws.write(r, 1, str(model.metadata.get("instrument", "—")), fmts["value"]); r += 1
+    ws.write(r, 0, "Calibrated", fmts["label"])
+    ws.write(r, 1, "Yes" if any(i.has_calibration for i in model.images) else "No", fmts["value"]); r += 1
+
+    r += 1
+    ws.merge_range(r, 0, r, 2, "Software", fmts["section"]); r += 1
+    ws.write(r, 0, "Version", fmts["label"]); ws.write(r, 1, f"Grain Analyzer v{APP_VERSION}", fmts["value"]); r += 1
+    ws.write(r, 0, "Generated by", fmts["label"])
+    ws.write(r, 1, f"{model.operator or 'unknown operator'} / {model.organization or '—'} on {model.date}", fmts["value"])
+    r += 1
+
+    ws.set_column(0, 0, 24)
+    ws.set_column(1, 1, 40)
+
+
+# ---------------------------------------------------------------------------
+# Raw data
+# ---------------------------------------------------------------------------
+
+def _write_raw_sheet(wb, img: ImageSummary, fmts, name: str) -> None:
+    ws = wb.add_worksheet(name)
+    ws.set_tab_color(TAB_COLORS["raw"])
+    ws.hide_gridlines(2)
+
+    if img.has_calibration:
+        headers = ["ID", "Area (µm²)", "Diameter (µm)", "Major (µm)", "Minor (µm)", "Perimeter (µm)",
+                   "Circularity", "Aspect Ratio", "Eccentricity", "Cx", "Cy"]
+        keys = ["id", "area_um2", "diameter_um", "major_um", "minor_um", "perimeter_um",
+                "circularity", "aspect_ratio", "eccentricity", "centroid_x", "centroid_y"]
+    else:
+        headers = ["ID", "Area (px²)", "Diameter (px)", "Perimeter (px)", "Circularity", "Aspect Ratio",
+                   "Eccentricity", "Cx", "Cy"]
+        keys = ["id", "area_px", "diameter_px", "perimeter_px", "circularity", "aspect_ratio",
+                "eccentricity", "centroid_x", "centroid_y"]
+
+    ws.merge_range(0, 0, 0, len(headers) - 1, f"Grain Data - {os.path.basename(img.image_path)}", fmts["title"])
+    for c, h in enumerate(headers):
+        ws.write(1, c, h, fmts["header"])
+    ws.freeze_panes(2, 0)
+
+    for ri, g in enumerate(img.grains):
+        r = 2 + ri
+        for c, k in enumerate(keys):
+            v = g.get(k)
+            fmt = _band(fmts, ri, "num4" if k in ("circularity", "aspect_ratio", "eccentricity") else
+                        ("num2" if isinstance(v, float) else "band"))
+            if isinstance(v, (int, float)):
+                ws.write_number(r, c, v, fmt)
+            else:
+                ws.write(r, c, v, fmt)
+
+    last_row = 1 + len(img.grains)
+    ws.autofilter(1, 0, max(last_row, 1), len(headers) - 1)
+    for c in range(len(headers)):
+        ws.set_column(c, c, 14 if c else 8)
