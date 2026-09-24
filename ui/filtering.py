@@ -20,6 +20,9 @@ import numpy as np
 
 from core.grain_detector import AnalysisResult, DetectionParams, GrainDetector
 from core.metrics import compute_statistics
+from core.overlay_compose import (
+    analysed_rect_from_mask, compose_full_overlay, draw_analysed_outline,
+)
 
 from core.postfilter import (
     FilterOutcome, PostFilterOptions, apply_post_filters, draw_filtered_overlay,
@@ -83,18 +86,7 @@ def options_to_dict(o: PostFilterOptions) -> dict:
 
 def analysed_rect(result: AnalysisResult, shape) -> Optional[tuple]:
     """(x, y, w, h) of the analysed area, or None for the whole frame."""
-    vm = getattr(result, "valid_mask", None)
-    H, W = shape[:2]
-    if vm is None or vm.shape[:2] != (H, W) or vm.all():
-        return None
-    rows = np.flatnonzero(vm.any(axis=1))
-    cols = np.flatnonzero(vm.any(axis=0))
-    if not len(rows) or not len(cols):
-        return None
-    y0, y1, x0, x1 = rows[0], rows[-1] + 1, cols[0], cols[-1] + 1
-    if y0 == 0 and x0 == 0 and y1 == H and x1 == W:
-        return None
-    return int(x0), int(y0), int(x1 - x0), int(y1 - y0)
+    return analysed_rect_from_mask(getattr(result, "valid_mask", None), shape)
 
 
 def _shift_grains(grains, dx: int, dy: int):
@@ -152,9 +144,9 @@ def filter_image(raw: AnalysisResult, image_bgr: Optional[np.ndarray],
                 setattr(res, name, full)
         ov = getattr(out.result, "overlay_image", None)
         if ov is not None and ov.shape[:2] == (h, w):
-            full = image_bgr.copy()
-            full[y:y + h, x:x + w] = ov
-            res.overlay_image = full
+            # Full original frame, crop overlay at its offset, analysed
+            # region outlined (exports keep the SEM data bar).
+            res.overlay_image = compose_full_overlay(image_bgr, ov, rect)
         else:
             res.overlay_image = None
         compute_statistics(res, (H, W))
@@ -167,6 +159,8 @@ def filter_image(raw: AnalysisResult, image_bgr: Optional[np.ndarray],
             if res.label_image is not None:
                 res.overlay_image = GrainDetector()._draw_overlay(
                     image_bgr, res.label_image, res.grains)
+        if res.overlay_image is not None and rect is not None:
+            draw_analysed_outline(res.overlay_image, rect)
     return {"result": res, "excluded": excluded, "counts": dict(out.counts)}
 
 

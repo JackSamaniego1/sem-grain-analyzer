@@ -37,6 +37,7 @@ import logging
 from core.metrics import compute_statistics
 from core.astm import update_astm
 from core.infobar import detect_info_bar
+from core.overlay_compose import compose_full_overlay, rc_to_xywh
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +97,10 @@ class AnalysisResult:
     #   auto_crop_rect  (r0, c0, r1, c1) of the analysed sub-image, or None
     #                   when the whole image was analysed; label_image,
     #                   binary_image, valid_mask and grain coordinates are
-    #                   relative to (r0, c0).
+    #                   relative to (r0, c0).  overlay_image is the
+    #                   exception: always the FULL input frame (crop overlay
+    #                   pasted at (r0, c0) + analysed-region outline; see
+    #                   core.overlay_compose) because it is what gets exported.
     #   info_bar_rect   (x, y, w, h) of the detected data bar (bottom bar
     #                   preferred), or None.
     #   info_bar        detect_info_bar(...).to_dict() (analysis_rect,
@@ -379,8 +383,15 @@ def discard_border_grains(result, image_bgr=None, detector=None):
     compute_statistics(result, lab.shape)
     if image_bgr is not None:
         det = detector or GrainDetector()
-        result.overlay_image = det._draw_overlay(
-            image_bgr, result.label_image, result.grains)
+        crop = rc_to_xywh(getattr(result, "auto_crop_rect", None))
+        img = image_bgr
+        if crop is not None and img.shape[:2] != lab.shape[:2]:
+            x, y, w, h = crop          # full frame given, crop labels
+            img = image_bgr[y:y + h, x:x + w]
+        else:
+            crop = None
+        ov = det._draw_overlay(img, result.label_image, result.grains)
+        result.overlay_image = compose_full_overlay(image_bgr, ov, crop)
     return result
 
 
@@ -432,6 +443,7 @@ class GrainDetector:
                 progress_callback(pct, msg)
 
         progress(2, "Preprocessing...")
+        full_bgr = image_bgr   # uncropped frame, for the exported overlay
         gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
 
         crop_rect, info = self.auto_crop_details(gray, params)
@@ -507,7 +519,12 @@ class GrainDetector:
             logger.exception("ASTM E112 evaluation failed")
 
         progress(94, "Generating overlay...")
-        result.overlay_image = self._draw_overlay(image_bgr, labels, grains)
+        # label_image stays in analysed (crop) coordinates; the overlay is
+        # the FULL original frame with the crop overlay at its offset, so an
+        # exported overlay keeps the SEM data bar and original resolution.
+        result.overlay_image = compose_full_overlay(
+            full_bgr, self._draw_overlay(image_bgr, labels, grains),
+            rc_to_xywh(crop_rect))
 
         progress(100, f"Complete — {result.grain_count} grains detected.")
         self._last_result = result

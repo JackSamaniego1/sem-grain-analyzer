@@ -29,6 +29,7 @@ from core.grain_detector import (
     AnalysisResult, DetectionParams, GrainDetector, discard_border_grains,
 )
 from core.metrics import compute_statistics
+from core.overlay_compose import analysed_rect_from_mask, compose_full_overlay, rc_to_xywh
 
 IMAGE_FILTER = "SEM images (*.tif *.tiff *.png *.jpg *.jpeg *.bmp);;All files (*)"
 IMAGE_EXTS = {".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp"}
@@ -182,8 +183,18 @@ def analyze_image(image_bgr: np.ndarray, px_per_um: float = 0.0,
     if not draw_overlay:
         result.overlay_image = None
     elif result.label_image is not None:
-        result.overlay_image = det._draw_overlay(image_bgr, result.label_image, result.grains)
+        result.overlay_image = full_frame_overlay(image_bgr, result)
     return result
+
+
+def full_frame_overlay(image_bgr: np.ndarray, result: AnalysisResult) -> np.ndarray:
+    """Overlay of a full-frame ``result`` on the full original image, with
+    the analysed-region boundary (bounding box of ``valid_mask``) outlined.
+    The unanalysed area (SEM data bar, outside the scan area) is left as in
+    the original, so exports keep the instrument's annotations."""
+    ov = GrainDetector()._draw_overlay(image_bgr, result.label_image, result.grains)
+    rect = analysed_rect_from_mask(getattr(result, "valid_mask", None), image_bgr.shape)
+    return compose_full_overlay(image_bgr, ov, rect)
 
 
 def snapshot_result(result: Optional[AnalysisResult]) -> Optional[AnalysisResult]:
@@ -204,8 +215,17 @@ def redraw_overlay(image_bgr: Optional[np.ndarray], result: AnalysisResult) -> N
     """Regenerate ``result.overlay_image`` after grain edits (off-thread)."""
     if image_bgr is None or result.label_image is None:
         return
-    result.overlay_image = GrainDetector()._draw_overlay(
-        image_bgr, result.label_image, result.grains)
+    if result.label_image.shape[:2] != image_bgr.shape[:2]:
+        # Labels still in analysed-crop coordinates (core result): place the
+        # crop overlay back into the full frame.
+        crop = rc_to_xywh(getattr(result, "auto_crop_rect", None))
+        if crop is not None and (crop[3], crop[2]) == result.label_image.shape[:2]:
+            x, y, w, h = crop
+            ov = GrainDetector()._draw_overlay(
+                image_bgr[y:y + h, x:x + w], result.label_image, result.grains)
+            result.overlay_image = compose_full_overlay(image_bgr, ov, crop)
+        return
+    result.overlay_image = full_frame_overlay(image_bgr, result)
 
 
 def mask_to_display(binary: Optional[np.ndarray]) -> Optional[np.ndarray]:
@@ -487,7 +507,7 @@ def pending_tasks() -> int:
 
 __all__ = [
     "IMAGE_FILTER", "IMAGE_EXTS", "read_image", "bgr_to_qimage", "thumb_qimage",
-    "load_thumb_file", "analyze_image", "snapshot_result", "redraw_overlay",
+    "load_thumb_file", "analyze_image", "snapshot_result", "redraw_overlay", "full_frame_overlay",
     "mask_to_display", "AnalysisWorker", "AnalysisJob", "AnalysisQueue",
     "Task", "run_task", "serial_pool", "shutdown_tasks", "pending_tasks",
 ]
