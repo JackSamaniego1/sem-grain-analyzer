@@ -29,11 +29,12 @@ from scipy import ndimage as ndi
 from skimage.segmentation import watershed
 from skimage.feature import peak_local_max
 from skimage.measure import regionprops
-from skimage.morphology import remove_small_objects
 from skimage.filters import threshold_otsu, gaussian
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 import logging
+
+from core.metrics import compute_statistics
 
 logger = logging.getLogger(__name__)
 
@@ -75,12 +76,47 @@ class AnalysisResult:
     std_diameter_um: float = 0.0
     mean_circularity: float = 0.0
     mean_aspect_ratio: float = 0.0
-    total_analyzed_area_um2: float = 0.0
-    grain_coverage_pct: float = 0.0
+    total_analyzed_area_um2: float = 0.0   # = valid (test-field) area
+    grain_coverage_pct: float = 0.0        # grain area / valid area
+    # Test-field bookkeeping (DET-02). The valid mask is in the same
+    # (auto-cropped) coordinates as label_image.
+    valid_mask: Optional[np.ndarray] = None
+    valid_area_px: float = 0.0
+    valid_area_um2: float = 0.0
+    invalid_area_pct: float = 0.0
 
 
 @dataclass
 class DetectionParams:
+    """Detection parameters.
+
+    Invalid-region (pure black) gate — DET-01
+    ----------------------------------------
+    invalid_intensity_threshold
+        uint8 gray level at or below which a pixel is a candidate "no
+        specimen information" pixel (black info bar, detector drop-out,
+        masked area, deep pore).  Also the minimum mean intensity a
+        detected region must have to be reported as a grain.  0 disables
+        the whole gate (legacy v2.3 behaviour).  Default 12: SEM
+        secondary/back-scatter images of real grains, even dark phases,
+        sit well above this; true black is 0-10.
+    invalid_min_width_px
+        A dark structure only counts as invalid if it is at least this
+        thick (morphological opening with a disk of this diameter).
+        Thinner dark lines are grain-boundary grooves and stay VALID so
+        they keep separating grains.
+    invalid_min_area_px
+        A thick dark blob must also cover at least this many pixels to be
+        invalid (groove triple junctions and small pits stay valid; regions
+        seeded inside them are still rejected by the mean-intensity gate).
+    min_valid_fraction
+        A region is dropped if less than this fraction of its pixels lie in
+        the valid mask.
+    sam_min_intensity_std
+        SAM only: masks whose gray-level standard deviation is below this
+        are near-uniform (flat black/saturated patches) and are rejected.
+        Real grains carry detector noise and texture (std > ~3).
+    """
     blur_sigma: float = 1.5
     threshold_offset: float = -0.1
     min_grain_size_px: int = 50
@@ -97,12 +133,252 @@ class DetectionParams:
     clahe_clip_limit: float = 2.0
     boundary_weight: float = 0.5
     detection_mode: str = "auto"
+    invalid_intensity_threshold: int = 12
+    invalid_min_width_px: int = 9
+    invalid_min_area_px: int = 400
+    min_valid_fraction: float = 0.5
+    sam_min_intensity_std: float = 1.5
+
+
+# ======================================================================
+# Valid-pixel mask (DET-01)
+# ======================================================================
+
+def compute_valid_mask(gray, threshold=12, min_width_px=9, min_area_px=400):
+    """Return a bool mask, True where the image carries specimen information.
+
+    A pixel is INVALID only if it belongs to a dark (``<= threshold`` raw or
+    after a 3x3 median, which absorbs isolated shot noise in black areas)
+    structure that is both
+
+    * thick — survives a morphological opening with a disk of diameter
+      ``min_width_px`` (i.e. its distance transform reaches the disk
+      radius), then one conditional dilation back into the dark set
+      restores the corners the opening rounded off, and
+    * large — the opened component covers ``>= min_area_px`` pixels.
+
+    Thin dark grain-boundary grooves fail the width test and therefore stay
+    valid, so the boundary pipelines can still use them as separators.
+    ``threshold <= 0`` disables the gate (all pixels valid).
+    """
+    gray = np.asarray(gray)
+    if gray.ndim == 3:
+        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+    if threshold is None or threshold <= 0:
+        return np.ones(gray.shape[:2], dtype=bool)
+    g = gray if gray.dtype == np.uint8 else np.clip(gray, 0, 255).astype(np.uint8)
+    # raw OR median: the median fills isolated bright noise pixels inside
+    # black areas, the raw test keeps exact corners (median rounds them);
+    # isolated dark noise pixels inside grains are removed by the opening.
+    dark = ((g <= threshold) | (cv2.medianBlur(g, 3) <= threshold)
+            ).astype(np.uint8)
+    if not dark.any():
+        return np.ones(g.shape, dtype=bool)
+    k = int(max(1, min_width_px))
+    if k > 1:
+        kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        thick = cv2.morphologyEx(dark, cv2.MORPH_OPEN, kern)
+        # The opening rounds convex corners of black regions; one
+        # conditional dilation (within ``dark``) restores them. Thin grooves
+        # only become invalid within k/2 px of a thick black region.
+        thick = cv2.dilate(thick, kern) & dark
+    else:
+        thick = dark
+    if min_area_px and min_area_px > 1 and thick.any():
+        n, lab, stats, _ = cv2.connectedComponentsWithStats(thick, connectivity=8)
+        keep = stats[:, cv2.CC_STAT_AREA] >= min_area_px
+        keep[0] = False
+        thick = keep[lab]
+    return ~thick.astype(bool)
+
+
+def _remove_small_bool(mask, min_size):
+    """Drop 4-connected components with fewer than ``min_size`` pixels.
+
+    Exact equivalent of the deprecated
+    ``skimage.morphology.remove_small_objects(mask, min_size=min_size)``
+    (strictly-smaller-than semantics, connectivity=1). Implemented locally
+    because the replacement keyword ``max_size`` (``<=`` semantics, i.e.
+    ``max_size=min_size-1``) only exists in scikit-image >= 0.26 while the
+    requirements allow >= 0.22.
+    """
+    lab, n = ndi.label(mask)
+    if n == 0:
+        return mask.astype(bool)
+    sizes = np.bincount(lab.ravel())
+    keep = sizes >= min_size
+    keep[0] = False
+    return keep[lab]
+
+
+def _relabel_sequential(labels):
+    """Map the positive labels of ``labels`` to 1..N, preserving order."""
+    ids = np.unique(labels)
+    ids = ids[ids > 0]
+    lut = np.zeros(int(labels.max()) + 1 if labels.size else 1, dtype=np.int32)
+    lut[ids] = np.arange(1, len(ids) + 1, dtype=np.int32)
+    return lut[labels]
+
+
+def _drop_by_size(labels, min_sz, max_sz=0):
+    """Zero regions smaller than ``min_sz`` (or larger than ``max_sz`` > 0)."""
+    if labels.max() == 0:
+        return labels
+    sizes = np.bincount(labels.ravel())
+    bad = sizes < min_sz
+    if max_sz and max_sz > 0:
+        bad |= sizes > max_sz
+    bad[0] = False
+    if bad.any():
+        labels = labels.copy()
+        labels[bad[labels]] = 0
+    return labels
+
+
+def gate_labels_by_validity(labels, gray, valid_mask, min_mean_intensity,
+                            min_valid_fraction=0.5):
+    """Apply the invalid-region gate to a label image.
+
+    Drops every region whose mean gray level (over all its pixels) is below
+    ``min_mean_intensity`` or whose fraction of pixels inside ``valid_mask``
+    is below ``min_valid_fraction``; zeros all labels outside the mask.
+    Labels are renumbered 1..N only if something was removed, so results on
+    images without invalid regions are bit-identical to the ungated ones.
+    """
+    if labels.max() == 0:
+        return labels
+    n = int(labels.max()) + 1
+    flat = labels.ravel()
+    counts = np.bincount(flat, minlength=n).astype(np.float64)
+    sums = np.bincount(flat, weights=gray.ravel().astype(np.float64), minlength=n)
+    vcount = np.bincount(flat, weights=valid_mask.ravel().astype(np.float64),
+                         minlength=n)
+    present = counts > 0
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mean = np.where(present, sums / np.maximum(counts, 1), 0.0)
+        vfrac = np.where(present, vcount / np.maximum(counts, 1), 0.0)
+    bad = present & ((mean < min_mean_intensity) | (vfrac < min_valid_fraction))
+    bad[0] = False
+    outside = (labels > 0) & ~valid_mask
+    if not bad.any() and not outside.any():
+        return labels
+    out = labels.copy()
+    out[bad[labels]] = 0
+    out[~valid_mask] = 0
+    return _relabel_sequential(out) if bad.any() else out
+
+
+def filter_sam_masks(masks, gray, valid_mask, *, min_area, max_area,
+                     min_mean_intensity=12.0, min_intensity_std=1.5,
+                     min_valid_fraction=0.5, min_predicted_iou=0.75,
+                     max_frame_fraction=0.4):
+    """Turn SAM automatic-mask output into a label image.
+
+    Pure function (no model needed) so it can be unit-tested with fake mask
+    dicts carrying ``segmentation`` (bool HxW), ``area`` and
+    ``predicted_iou``.  Masks are processed largest-first so smaller grains
+    overwrite larger background-like masks.  A mask is rejected if
+
+    * its area is outside [min_area, max_area] or > max_frame_fraction of
+      the frame (background),
+    * ``predicted_iou < min_predicted_iou``,
+    * mean gray < ``min_mean_intensity`` (black region),
+    * gray std-dev < ``min_intensity_std`` (near-uniform patch: SAM gives
+      flat regions high stability scores, but grains carry texture/noise),
+    * fraction on valid pixels < ``min_valid_fraction``,
+    * > 50 % of it overlaps already accepted grains.
+
+    Returns ``(labels int32, binary uint8 0/255, n_accepted)``.
+    """
+    h, w = gray.shape[:2]
+    labels = np.zeros((h, w), dtype=np.int32)
+    binary = np.zeros((h, w), dtype=np.uint8)
+    gid = 0
+    gray_f = gray.astype(np.float32)
+    for m in sorted(masks, key=lambda d: d['area'], reverse=True):
+        area = m['area']
+        if area < min_area or area > max_area:
+            continue
+        if area > h * w * max_frame_fraction:
+            continue
+        if m.get('predicted_iou', 1.0) < min_predicted_iou:
+            continue
+        seg = m['segmentation']
+        n = int(np.count_nonzero(seg))
+        if n == 0:
+            continue
+        vals = gray_f[seg]
+        if float(vals.mean()) < min_mean_intensity:
+            continue
+        if float(vals.std()) < min_intensity_std:
+            continue
+        if valid_mask is not None and \
+                np.count_nonzero(valid_mask[seg]) < min_valid_fraction * n:
+            continue
+        if np.count_nonzero(seg & (labels > 0)) > 0.5 * area:
+            continue
+        gid += 1
+        labels[seg] = gid
+        binary[seg] = 255
+    return labels, binary, gid
+
+
+def discard_border_grains(result, image_bgr=None, detector=None):
+    """Remove grains whose label touches the frame edge (partial grains).
+
+    ASTM E112 planimetric counting excludes grains cut by the test-field
+    boundary from the full-grain count; this is what the UI does when a scan
+    area is set.  Mutates and returns ``result``: labels zeroed, grain list
+    filtered, statistics recomputed via :func:`core.metrics.compute_statistics`
+    and, if ``image_bgr`` is given, the overlay redrawn.  The valid (test
+    field) area is unchanged.
+    """
+    lab = result.label_image
+    if lab is None or lab.size == 0:
+        return result
+    border = np.unique(np.concatenate(
+        [lab[0, :], lab[-1, :], lab[:, 0], lab[:, -1]]))
+    border = border[border > 0]
+    if len(border):
+        kill = np.zeros(int(lab.max()) + 1, dtype=bool)
+        kill[border] = True
+        lab[kill[lab]] = 0
+        bset = set(int(b) for b in border)
+        result.grains = [g for g in result.grains if g.grain_id not in bset]
+    compute_statistics(result, lab.shape)
+    if image_bgr is not None:
+        det = detector or GrainDetector()
+        result.overlay_image = det._draw_overlay(
+            image_bgr, result.label_image, result.grains)
+    return result
 
 
 class GrainDetector:
 
     def __init__(self):
         self._last_result = None
+        self._valid_mask = None
+
+    def _ws_mask(self, shape):
+        """Valid mask for watershed ``mask=`` (None when everything is valid,
+        which keeps legacy results bit-identical)."""
+        vm = self._valid_mask
+        if vm is None or vm.shape != tuple(shape[:2]) or vm.all():
+            return None
+        return vm
+
+    def _seeded_watershed(self, landscape_u8, coords, h, w):
+        """Marker watershed on ``landscape_u8``; seeds outside the valid
+        mask are discarded and flooding is confined to valid pixels."""
+        vm = self._ws_mask((h, w))
+        if vm is not None and len(coords):
+            coords = coords[vm[coords[:, 0], coords[:, 1]]]
+        if len(coords) == 0:
+            return np.zeros((h, w), dtype=np.int32), 0
+        markers = np.zeros((h, w), dtype=np.int32)
+        markers[coords[:, 0], coords[:, 1]] = np.arange(
+            1, len(coords) + 1, dtype=np.int32)
+        return watershed(landscape_u8, markers, mask=vm), len(coords)
 
     def analyze(self, image_bgr, px_per_um=0.0, params=None, progress_callback=None):
         if params is None:
@@ -123,21 +399,52 @@ class GrainDetector:
             gray = gray[r0:r1, c0:c1]
             image_bgr = image_bgr[r0:r1, c0:c1]
 
+        # One valid-pixel mask for every pipeline (DET-01).
+        thr = int(getattr(params, "invalid_intensity_threshold", 0) or 0)
+        valid = compute_valid_mask(
+            gray, thr,
+            getattr(params, "invalid_min_width_px", 9),
+            getattr(params, "invalid_min_area_px", 400))
+        self._valid_mask = valid
+        has_invalid = not bool(valid.all())
+        if has_invalid and valid.any():
+            # Neutralise invalid pixels for the contrast-based pipelines:
+            # the huge step at a black edge would otherwise dominate the
+            # max-normalised boundary signals. Fill with the valid median.
+            seg_gray = gray.copy()
+            seg_gray[~valid] = np.uint8(np.median(gray[valid]))
+        else:
+            seg_gray = gray
+
         mode = params.detection_mode
         if mode == "auto":
-            mode = self._auto_detect_mode(gray)
+            mode = self._auto_detect_mode(seg_gray)
 
-        if mode == "sam_astm":
+        if not valid.any():
+            h0, w0 = gray.shape
+            labels = np.zeros((h0, w0), dtype=np.int32)
+            binary = np.zeros((h0, w0), dtype=np.uint8)
+        elif mode == "sam_astm":
             labels, binary = self._sam_astm_pipeline(
                 gray, image_bgr, params, progress)
         elif mode == "boundary":
             labels, binary = self._boundary_pipeline(
-                gray, image_bgr, params, progress)
+                seg_gray, image_bgr, params, progress)
         else:
             labels, binary = self._threshold_pipeline(
-                gray, image_bgr, params, progress)
+                seg_gray, image_bgr, params, progress)
+
+        if thr > 0:
+            labels = gate_labels_by_validity(
+                labels, gray, valid, thr,
+                getattr(params, "min_valid_fraction", 0.5))
+            if has_invalid and binary is not None:
+                binary = binary.copy()
+                binary[~valid] = 0
 
         result.binary_image = binary
+        result.valid_mask = valid
+        result.valid_area_px = float(np.count_nonzero(valid))
 
         progress(78, "Measuring grain properties...")
         grains = self._measure_grains(labels, params, px_per_um)
@@ -305,30 +612,15 @@ class GrainDetector:
             threshold_abs=thresh_abs)
 
         progress(50, f"Watershed ({len(coords)} seeds)...")
-        if len(coords) == 0:
-            labels = np.zeros((h, w), dtype=np.int32)
-        else:
-            markers = np.zeros((h, w), dtype=np.int32)
-            for i, (r, c) in enumerate(coords, 1):
-                markers[r, c] = i
-            labels = watershed(
-                (boosted * 255).astype(np.uint8), markers)
+        labels, _ = self._seeded_watershed(
+            (boosted * 255).astype(np.uint8), coords, h, w)
 
         # Filter
         min_sz = max(params.min_grain_size_px, 20)
-        for r in regionprops(labels):
-            if r.area < min_sz:
-                labels[labels == r.label] = 0
-            if (params.max_grain_size_px > 0 and
-                    r.area > params.max_grain_size_px):
-                labels[labels == r.label] = 0
+        labels = _drop_by_size(labels, min_sz, params.max_grain_size_px)
 
         # Relabel
-        unique = np.unique(labels)
-        unique = unique[unique > 0]
-        new_labels = np.zeros_like(labels)
-        for i, lbl in enumerate(unique, 1):
-            new_labels[labels == lbl] = i
+        new_labels = _relabel_sequential(labels)
 
         return new_labels, (boosted * 255).astype(np.uint8)
 
@@ -424,23 +716,12 @@ class GrainDetector:
             threshold_abs=thresh_abs)
 
         progress(48, f"Contrast watershed ({len(coords)} seeds)...")
-        if len(coords) == 0:
-            labels = np.zeros((h, w), dtype=np.int32)
-        else:
-            markers = np.zeros((h, w), dtype=np.int32)
-            for i, (r, c) in enumerate(coords, 1):
-                markers[r, c] = i
-            labels = watershed(
-                (boosted * 255).astype(np.uint8), markers)
+        labels, _ = self._seeded_watershed(
+            (boosted * 255).astype(np.uint8), coords, h, w)
 
         # Filter small/large
         min_sz = max(params.min_grain_size_px, 20)
-        for r in regionprops(labels):
-            if r.area < min_sz:
-                labels[labels == r.label] = 0
-            if (params.max_grain_size_px > 0 and
-                    r.area > params.max_grain_size_px):
-                labels[labels == r.label] = 0
+        labels = _drop_by_size(labels, min_sz, params.max_grain_size_px)
 
         # ---- PASS 2: Texture orientation split on oversized regions ----
         progress(58, "Computing texture orientation...")
@@ -452,15 +733,8 @@ class GrainDetector:
             labels, boosted, orient, params)
 
         # Final filter + relabel
-        for r in regionprops(labels):
-            if r.area < min_sz:
-                labels[labels == r.label] = 0
-
-        unique = np.unique(labels)
-        unique = unique[unique > 0]
-        new_labels = np.zeros_like(labels)
-        for i, lbl in enumerate(unique, 1):
-            new_labels[labels == lbl] = i
+        labels = _drop_by_size(labels, min_sz)
+        new_labels = _relabel_sequential(labels)
 
         binary = (boosted * 255).astype(np.uint8)
         return new_labels, binary
@@ -525,9 +799,8 @@ class GrainDetector:
             if region.area < merge_thresh:
                 continue
 
-            rmask = (labels == region.label)
             r0, c0, r1, c1 = region.bbox
-            lmask = rmask[r0:r1, c0:c1]
+            lmask = (labels[r0:r1, c0:c1] == region.label)
             lu8 = (split_landscape[r0:r1, c0:c1] * 255).astype(np.uint8)
 
             dist = ndi.distance_transform_edt(lmask)
@@ -549,11 +822,10 @@ class GrainDetector:
             if (len(sub_r) > 1 and
                     all(sr.area >= params.min_grain_size_px
                         for sr in sub_r)):
+                out_win = output[r0:r1, c0:c1]   # view
                 for sr in sub_r:
                     max_lbl += 1
-                    fm = np.zeros_like(labels, dtype=bool)
-                    fm[r0:r1, c0:c1] = (sub == sr.label)
-                    output[fm] = max_lbl
+                    out_win[sub == sr.label] = max_lbl
 
         return output
 
@@ -580,7 +852,13 @@ class GrainDetector:
         progress(15, "Applying threshold...")
         gray_float = blurred.astype(np.float64) / 255.0
         blurred_g = gaussian(gray_float, sigma=max(params.blur_sigma, 0.5))
-        thresh_val = threshold_otsu(blurred_g)
+        vm = self._ws_mask((h, w))
+        if vm is not None and np.count_nonzero(vm) > 100:
+            # Otsu on the test field only: black areas would otherwise
+            # drag the histogram split toward zero.
+            thresh_val = threshold_otsu(blurred_g[vm])
+        else:
+            thresh_val = threshold_otsu(blurred_g)
         thresh_val = float(np.clip(
             thresh_val + params.threshold_offset, 0.01, 0.99))
 
@@ -616,11 +894,13 @@ class GrainDetector:
             binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
 
         binary_bool = binary.astype(bool)
+        if vm is not None:
+            binary_bool &= vm
 
         progress(40, "Removing debris...")
         if params.min_grain_size_px > 0:
-            binary_bool = remove_small_objects(
-                binary_bool, min_size=params.min_grain_size_px)
+            binary_bool = _remove_small_bool(
+                binary_bool, params.min_grain_size_px)
 
         progress(50, "Watershed segmentation...")
         if params.use_watershed:
@@ -678,10 +958,13 @@ class GrainDetector:
                 break
 
         if checkpoint_path is None:
+            # Offline app (D-14): never point the user to a download.
             raise FileNotFoundError(
-                f"SAM checkpoint not found. Please download '{checkpoint_name}' "
-                f"and place it in the 'models' folder next to main.py.\n"
-                f"Download: https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
+                f"The AI segmentation model ('{checkpoint_name}') could not be "
+                f"found. The model ships inside the SEM Grain Analyzer "
+                f"installer; please reinstall or repair the application "
+                f"(run GrainAnalyzer_Setup.exe again). Other detection modes "
+                f"remain available."
             )
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -750,37 +1033,16 @@ class GrainDetector:
 
         # --- Step 3: Filter and build label image ---
         progress(65, "Filtering masks...")
-        # Sort by area descending so smaller grains overwrite larger background
-        masks = sorted(masks, key=lambda m: m['area'], reverse=True)
-
-        labels = np.zeros((h, w), dtype=np.int32)
-        binary = np.zeros((h, w), dtype=np.uint8)
-        grain_id = 0
-
         max_area = params.max_grain_size_px if params.max_grain_size_px > 0 else (h * w * 0.5)
-
-        for mask_data in masks:
-            area = mask_data['area']
-            # Skip too small or too large
-            if area < min_area or area > max_area:
-                continue
-            # Skip masks that cover too much of the image (background)
-            if area > h * w * 0.4:
-                continue
-            # Filter by predicted quality
-            if mask_data['predicted_iou'] < 0.75:
-                continue
-
-            seg = mask_data['segmentation']  # bool array h x w
-
-            # Check overlap: skip if >50% overlaps existing grains
-            overlap = np.sum(seg & (labels > 0))
-            if overlap > 0.5 * area:
-                continue
-
-            grain_id += 1
-            labels[seg] = grain_id
-            binary[seg] = 255
+        thr = float(getattr(params, "invalid_intensity_threshold", 0) or 0)
+        labels, binary, grain_id = filter_sam_masks(
+            masks, gray, self._ws_mask((h, w)),
+            min_area=min_area, max_area=max_area,
+            min_mean_intensity=thr,
+            min_intensity_std=(float(getattr(params, "sam_min_intensity_std", 0.0))
+                               if thr > 0 else 0.0),
+            min_valid_fraction=float(getattr(params, "min_valid_fraction", 0.5)),
+        )
 
         progress(72, f"Accepted {grain_id} grains after filtering...")
 
@@ -789,11 +1051,7 @@ class GrainDetector:
         labels = self._astm_e112_refine(labels, params, h, w)
 
         # Relabel contiguously
-        unique = np.unique(labels)
-        unique = unique[unique > 0]
-        new_labels = np.zeros_like(labels)
-        for i, lbl in enumerate(unique, 1):
-            new_labels[labels == lbl] = i
+        new_labels = _relabel_sequential(labels)
 
         binary = (new_labels > 0).astype(np.uint8) * 255
         return new_labels, binary
@@ -843,9 +1101,8 @@ class GrainDetector:
             if region.area < merge_threshold:
                 continue
 
-            rmask = (labels == region.label)
             r0, c0, r1, c1 = region.bbox
-            lmask = rmask[r0:r1, c0:c1]
+            lmask = (labels[r0:r1, c0:c1] == region.label)
 
             # Use distance transform + watershed to split
             dist = ndi.distance_transform_edt(lmask)
@@ -867,11 +1124,10 @@ class GrainDetector:
             min_sz = max(params.min_grain_size_px, 20)
             if (len(sub_regions) > 1 and
                     all(sr.area >= min_sz for sr in sub_regions)):
+                out_win = output[r0:r1, c0:c1]   # view
                 for sr in sub_regions:
                     max_lbl += 1
-                    fm = np.zeros_like(labels, dtype=bool)
-                    fm[r0:r1, c0:c1] = (sub == sr.label)
-                    output[fm] = max_lbl
+                    out_win[sub == sr.label] = max_lbl
 
         return output
 
@@ -889,21 +1145,22 @@ class GrainDetector:
                     region.area > params.max_grain_size_px):
                 continue
             area_px = float(region.area)
-            perim_px = float(region.perimeter) if region.perimeter > 0 else 1.0
+            perim_raw = region.perimeter
+            perim_px = float(perim_raw) if perim_raw > 0 else 1.0
             eq_diam_px = float(region.equivalent_diameter_area)
+            major_ax = region.axis_major_length
+            minor_ax = region.axis_minor_length
             if px_per_um > 0:
                 px2 = px_per_um ** 2
                 area_um2 = area_px / px2
                 perim_um = perim_px / px_per_um
                 eq_diam_um = eq_diam_px / px_per_um
-                major_um = region.axis_major_length / px_per_um
-                minor_um = region.axis_minor_length / px_per_um
+                major_um = major_ax / px_per_um
+                minor_um = minor_ax / px_per_um
             else:
                 area_um2 = perim_um = eq_diam_um = major_um = minor_um = 0.0
             circularity = min(
                 (4 * np.pi * area_px) / (perim_px ** 2), 1.0)
-            major_ax = region.axis_major_length
-            minor_ax = region.axis_minor_length
             aspect = (major_ax / minor_ax) if minor_ax > 0 else 1.0
             cy, cx = region.centroid
             grains.append(GrainResult(
@@ -925,56 +1182,49 @@ class GrainDetector:
     # Statistics + overlay
     # ==================================================================
 
-    def _compute_statistics(self, result, original):
-        if not result.grains:
-            return result
-        if result.has_calibration:
-            areas = np.array([g.area_um2 for g in result.grains])
-            diameters = np.array(
-                [g.equivalent_diameter_um for g in result.grains])
-            result.mean_area_um2 = float(np.mean(areas))
-            result.std_area_um2 = float(np.std(areas))
-            result.median_area_um2 = float(np.median(areas))
-            result.min_area_um2 = float(np.min(areas))
-            result.max_area_um2 = float(np.max(areas))
-            result.mean_diameter_um = float(np.mean(diameters))
-            result.std_diameter_um = float(np.std(diameters))
-            h, w = original.shape[:2]
-            total_img_um2 = (h * w) / (result.px_per_um ** 2)
-            result.total_analyzed_area_um2 = total_img_um2
-            result.grain_coverage_pct = (
-                float(np.sum(areas)) / total_img_um2 * 100.0)
-        circs = np.array([g.circularity for g in result.grains])
-        aspects = np.array([g.aspect_ratio for g in result.grains])
-        result.mean_circularity = float(np.mean(circs))
-        result.mean_aspect_ratio = float(np.mean(aspects))
-        return result
+    def _compute_statistics(self, result, original=None):
+        """Backward-compatible wrapper; see core.metrics.compute_statistics
+        (coverage is relative to the valid test-field area, DET-02/03)."""
+        shape = original.shape[:2] if original is not None else None
+        return compute_statistics(result, shape)
 
     def _draw_overlay(self, image_bgr, labels, grains):
         overlay = image_bgr.copy()
-        color_map = np.zeros((*labels.shape, 3), dtype=np.uint8)
+        H, W = labels.shape[:2]
         unique_labels = np.unique(labels)
         unique_labels = unique_labels[unique_labels > 0]
+        # Colour lookup table (vectorised; one full-frame pass instead of
+        # one per grain — identical output to the per-label loop).
+        lut = np.zeros((int(labels.max()) + 1 if labels.size else 1, 3),
+                       dtype=np.uint8)
         colors = {}
         for lbl in unique_labels:
+            # per-pixel conversion on purpose: OpenCV's SIMD path for long
+            # rows rounds differently, which would shift colours by 1 level
             hue = int((lbl * 137.508) % 180)
             hsv = np.array([[[hue, 200, 220]]], dtype=np.uint8)
             bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0][0]
-            colors[lbl] = bgr.tolist()
-            color_map[labels == lbl] = bgr
+            lut[lbl] = bgr
+            colors[int(lbl)] = bgr.tolist()
+        color_map = lut[labels]
         alpha = 0.4
         mask = labels > 0
         blended = cv2.addWeighted(overlay, 1 - alpha, color_map, alpha, 0)
         overlay[mask] = blended[mask]
         grain_map = {g.grain_id: g for g in grains}
+        slices = ndi.find_objects(labels)
         for lbl in unique_labels:
             if lbl not in grain_map:
                 continue
             grain = grain_map[lbl]
-            color = colors.get(lbl, [0, 200, 255])
-            grain_mask = (labels == lbl).astype(np.uint8)
+            color = colors.get(int(lbl), [0, 200, 255])
+            sl = slices[lbl - 1]
+            r0 = max(sl[0].start - 1, 0); r1 = min(sl[0].stop + 1, H)
+            c0 = max(sl[1].start - 1, 0); c1 = min(sl[1].stop + 1, W)
+            grain_mask = (labels[r0:r1, c0:c1] == lbl).astype(np.uint8)
             contours, _ = cv2.findContours(
-                grain_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                grain_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE,
+                offset=(int(c0), int(r0)))
             cv2.drawContours(overlay, contours, -1, color, 1)
             cx, cy = int(grain.centroid_x), int(grain.centroid_y)
             if 0 <= cx < overlay.shape[1] and 0 <= cy < overlay.shape[0]:

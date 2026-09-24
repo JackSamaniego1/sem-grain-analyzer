@@ -101,6 +101,13 @@ class AnalysisWorker(QObject):
                     full_bin[offset_y:offset_y+img.shape[0],
                              offset_x:offset_x+img.shape[1]] = result.binary_image
                     result.binary_image = full_bin
+                vm = getattr(result, "valid_mask", None)
+                if vm is not None:
+                    # Outside the scan area counts as not analysed (invalid).
+                    full_vm = np.zeros(self.image_bgr.shape[:2], dtype=bool)
+                    full_vm[offset_y:offset_y+vm.shape[0],
+                            offset_x:offset_x+vm.shape[1]] = vm
+                    result.valid_mask = full_vm
 
             self.finished.emit(result)
         except Exception as e:

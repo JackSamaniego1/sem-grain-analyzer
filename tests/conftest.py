@@ -19,7 +19,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
 def make_mosaic(h=512, w=512, n_grains=90, seed=7,
-                boundary_val=35, boundary_px=2, noise_sigma=6.0):
+                boundary_val=35, boundary_px=2, noise_sigma=6.0,
+                fill_range=(110, 200)):
     """
     Build a grayscale 'mosaic' grain image: Voronoi cells with mid-gray
     fills, thin dark grooves at the cell boundaries, mild Gaussian noise.
@@ -37,7 +38,7 @@ def make_mosaic(h=512, w=512, n_grains=90, seed=7,
         label[s:s + 65536] = d.argmin(axis=1)
     label = label.reshape(h, w)
 
-    fills = rng.uniform(110, 200, n_grains)
+    fills = rng.uniform(fill_range[0], fill_range[1], n_grains)
     gray = fills[label].astype(np.float32)
 
     # boundary = pixel whose right or lower neighbour is a different cell
@@ -76,5 +77,34 @@ def mosaic_with_black_regions():
     black[60:200, 320:470] = True                    # interior square
     gray = gray.copy()
     gray[black] = 0
+    bgr = np.repeat(gray[:, :, None], 3, axis=2)
+    return bgr, black
+
+
+def make_dark_mosaic(seed=9, boundary_val=12, noise_sigma=4.0):
+    """Legitimately DARK grains (fills 40-70 uint8) with darker grooves."""
+    return make_mosaic(seed=seed, fill_range=(40, 70),
+                       boundary_val=boundary_val, noise_sigma=noise_sigma)
+
+
+@pytest.fixture
+def dark_mosaic_bgr():
+    gray, _ = make_dark_mosaic()
+    return np.repeat(gray[:, :, None], 3, axis=2)
+
+
+@pytest.fixture
+def dark_mosaic_with_black_regions():
+    """Dark-grain mosaic plus a noisy near-black band (values 0-8, as a
+    real detector produces) and a pure-black square."""
+    gray, _ = make_dark_mosaic()
+    h, w = gray.shape
+    rng = np.random.default_rng(3)
+    black = np.zeros((h, w), dtype=bool)
+    black[int(h * 0.80):, :] = True
+    black[80:200, 300:440] = True
+    gray = gray.copy()
+    gray[black] = rng.integers(0, 9, size=int(black.sum()))
+    gray[80:200, 300:440] = 0
     bgr = np.repeat(gray[:, :, None], 3, axis=2)
     return bgr, black
