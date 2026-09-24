@@ -339,6 +339,92 @@ def test_disabled_custom_text_section_is_not_rendered(tmp_path):
     assert "Draft" not in "\n".join(_all_text(s) for s in prs.slides)
 
 
+# ---------------------------------------------------------------------------
+# HIER-01: user-defined folder hierarchy in the PowerPoint renderer
+# ---------------------------------------------------------------------------
+
+_HIERARCHY = [
+    {"key": "project", "label": "Job #", "value": "24-117"},
+    {"key": "sample", "label": "Part Number", "value": "7718-A"},
+    {"key": "lot", "label": "Lot", "value": "L-44A"},
+]
+
+
+def _build_hierarchy_model(tmp_path, n=2, display_names=None):
+    det = GrainDetector()
+    items = []
+    for i in range(n):
+        gray, _ = make_mosaic(seed=i + 1, h=256, w=256, n_grains=30)
+        bgr = np.repeat(gray[:, :, None], 3, axis=2)
+        res = det.analyze(bgr, px_per_um=8.0, params=DetectionParams())
+        img_path = str(tmp_path / f"src_{i}.png")
+        cv2.imwrite(img_path, bgr)
+        item = ReportImageInput(image_path=img_path, result=res, image_bgr=bgr)
+        if display_names:
+            item.display_name = display_names[i]
+        items.append(item)
+    return ReportModel.from_results(items, title="Job Report", hierarchy=_HIERARCHY,
+                                     asset_dir=str(tmp_path / "assets"))
+
+
+def test_title_slide_shows_hierarchy_lines(tmp_path):
+    model = _build_hierarchy_model(tmp_path, n=1)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    text = _all_text(prs.slides[0])
+    assert "Job #: 24-117" in text
+    assert "Part Number: 7718-A" in text
+    assert "Lot: L-44A" in text
+
+
+def test_footer_shows_hierarchy_and_page_number(tmp_path):
+    model = _build_hierarchy_model(tmp_path, n=1)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    text = _all_text(prs.slides[0])
+    assert "Job # 24-117" in text
+    assert "Part Number 7718-A" in text
+    assert "Lot L-44A" in text
+    assert "page 1" in text
+
+
+def test_image_slide_title_uses_display_name(tmp_path):
+    model = _build_hierarchy_model(tmp_path, n=1, display_names=["L-44A_01"])
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    image_slide = prs.slides[4]  # title, exec, area, diam, img1
+    text = _all_text(image_slide)
+    assert "L-44A_01" in text
+    assert "src_0" not in text
+
+
+def test_exec_summary_table_uses_hierarchy_column_labels(tmp_path):
+    model = _build_hierarchy_model(tmp_path, n=1, display_names=["L-44A_01"])
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    table = [sh for sh in prs.slides[1].shapes if sh.has_table][0].table
+    headers = [table.cell(0, c).text for c in range(len(table.columns))]
+    assert "Job #" in headers and "Part Number" in headers and "Lot" in headers
+    row1 = [table.cell(1, c).text for c in range(len(table.columns))]
+    assert "L-44A_01" in row1
+    assert "24-117" in row1 and "7718-A" in row1 and "L-44A" in row1
+
+
+def test_legacy_model_without_hierarchy_keeps_old_footer_and_title(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    text = _all_text(prs.slides[0])
+    assert "Sample/Lot:" in text
+    assert model.title in text
+    assert "page 1" not in text  # legacy footer has no "page n" phrase
+
+
 def test_sample_output_written_to_scratch():
     scratch = os.path.join(ROOT, "scratch", "reports")
     os.makedirs(scratch, exist_ok=True)

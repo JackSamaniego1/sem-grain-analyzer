@@ -20,7 +20,7 @@ import os
 import tempfile
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -54,6 +54,8 @@ class ReportImageInput:
     sample_id: str = ""
     lot_number: str = ""
     notes: str = ""
+    display_name: str = ""
+    levels: Dict[str, str] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +105,16 @@ class ImageSummary:
     sample_id: str = ""
     lot_number: str = ""
 
+    # HIER-01: user-defined folder hierarchy support. ``display_name`` is the
+    # image name rendered from the profile's image_name_template (falls back
+    # to the file's basename when empty); ``original_name`` preserves the
+    # source file name even if the image was renamed on import.
+    # ``levels`` optionally overrides the report-level ``hierarchy`` values
+    # per row, so one report can span several lots.
+    display_name: str = ""
+    original_name: str = ""
+    levels: Dict[str, str] = field(default_factory=dict)
+
     # calibration
     px_per_um: float = 0.0
     has_calibration: bool = False
@@ -133,6 +145,17 @@ class ImageSummary:
         known = {f for f in cls.__dataclass_fields__}
         clean = {k: v for k, v in d.items() if k in known}
         return cls(**clean)
+
+    def display(self) -> str:
+        """Name to show for this image everywhere (sheet/slide titles,
+        Overview table, hyperlinked Image column): the profile-rendered
+        ``display_name`` if set, else the file's basename — identical to
+        the pre-HIER-01 behaviour when ``display_name`` is empty."""
+        return self.display_name or os.path.basename(self.image_path)
+
+    def level_value(self, key: str, default: str = "") -> str:
+        """Per-row override of a hierarchy level's value, if any."""
+        return self.levels.get(key, default) if self.levels else default
 
 
 def _grain_row(g: Any) -> Dict[str, Any]:
@@ -181,6 +204,17 @@ class ReportModel:
     sections: List[Section] = field(default_factory=list)
     images: List[ImageSummary] = field(default_factory=list)
 
+    # HIER-01: user-defined folder hierarchy (Job #/Part Number/Lot, or any
+    # profile the workspace defines). Ordered outermost-to-innermost level,
+    # each ``{"key": "project"|"sample"|"lot", "label": ..., "value": ...}``.
+    # Empty by default so legacy models fall back to the pre-HIER-01
+    # Sample/Lot columns sourced from ``ImageSummary.sample_id``/``lot_number``.
+    hierarchy: List[Dict[str, str]] = field(default_factory=list)
+    # Already-rendered (export_name_template) base filename, without
+    # extension, supplied by the UI from the workspace's hierarchy profile.
+    # Empty means "use the legacy default" (see ``reports.suggest_filename``).
+    export_basename: str = ""
+
     # ------------------------------------------------------------------
     # Construction from analysis results
     # ------------------------------------------------------------------
@@ -199,6 +233,8 @@ class ReportModel:
         theme: str = "default",
         metadata: Optional[Dict[str, Any]] = None,
         asset_dir: Optional[str] = None,
+        hierarchy: Optional[List[Dict[str, str]]] = None,
+        export_basename: str = "",
     ) -> "ReportModel":
         """Build a model from freshly-analysed images.
 
@@ -214,6 +250,8 @@ class ReportModel:
             logo_path=logo_path, units=units,
             bins=dict(bins) if bins else {"area": 0, "diameter": 0},
             theme=theme, metadata=dict(metadata) if metadata else {},
+            hierarchy=[dict(h) for h in hierarchy] if hierarchy else [],
+            export_basename=export_basename or "",
         )
 
         _asset_dir = asset_dir
@@ -251,6 +289,9 @@ class ReportModel:
                 order=idx,
                 sample_id=item.sample_id or "",
                 lot_number=item.lot_number or "",
+                display_name=item.display_name or "",
+                original_name=os.path.basename(item.image_path) if item.image_path else "",
+                levels=dict(item.levels) if item.levels else {},
                 px_per_um=float(getattr(res, "px_per_um", 0.0) or 0.0),
                 has_calibration=bool(getattr(res, "has_calibration", False)),
                 grain_count=int(getattr(res, "grain_count", 0)),
@@ -285,7 +326,7 @@ class ReportModel:
         for i, img in enumerate(self.images, start=3):
             secs.append(Section(
                 id=f"image_{img.id}", type="image",
-                title=os.path.basename(img.image_path) or img.id,
+                title=img.display() or img.id,
                 enabled=True, order=i, payload={"image_id": img.id},
             ))
         n = len(self.images) + 3
@@ -322,6 +363,30 @@ class ReportModel:
         return sorted(imgs, key=lambda i: i.order)
 
     # ------------------------------------------------------------------
+    # HIER-01: user-defined folder hierarchy helpers used by the renderers
+    # ------------------------------------------------------------------
+
+    def hierarchy_header(self) -> str:
+        """'Job #: 24-117 | Part Number: 7718-A | Lot: L-44A' or '' when no
+        hierarchy is set (legacy models)."""
+        return " | ".join(f"{h.get('label', h.get('key', ''))}: {h.get('value', '')}"
+                           for h in self.hierarchy)
+
+    def level_columns(self) -> List[Tuple[str, str]]:
+        """[(key, label), ...] for the per-image table columns — the user's
+        hierarchy when set, else the legacy fixed (key, label) pairs."""
+        if self.hierarchy:
+            return [(h.get("key", ""), h.get("label", h.get("key", ""))) for h in self.hierarchy]
+        return [("sample", "Sample"), ("lot", "Lot")]
+
+    def row_levels(self, img: ImageSummary) -> List[str]:
+        """Values for ``level_columns()`` for one image row, honouring a
+        per-image ``levels`` override (multi-lot reports)."""
+        if self.hierarchy:
+            return [img.level_value(h.get("key", ""), h.get("value", "")) for h in self.hierarchy]
+        return [img.sample_id, img.lot_number]
+
+    # ------------------------------------------------------------------
     # Serialization
     # ------------------------------------------------------------------
 
@@ -339,6 +404,8 @@ class ReportModel:
             "metadata": dict(self.metadata),
             "sections": [s.to_dict() for s in self.sections],
             "images": [i.to_dict() for i in self.images],
+            "hierarchy": [dict(h) for h in self.hierarchy],
+            "export_basename": self.export_basename,
         }
 
     def to_json(self, *, indent: int = 2) -> str:
@@ -359,6 +426,8 @@ class ReportModel:
             metadata=dict(d.get("metadata") or {}),
             sections=[Section.from_dict(s) for s in d.get("sections", [])],
             images=[ImageSummary.from_dict(i) for i in d.get("images", [])],
+            hierarchy=[dict(h) for h in (d.get("hierarchy") or [])],
+            export_basename=d.get("export_basename", ""),
         )
 
     @classmethod

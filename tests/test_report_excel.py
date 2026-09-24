@@ -388,6 +388,163 @@ def test_per_grain_notes_appear_as_note_column_in_raw_sheet(tmp_path):
     assert "Possible twin boundary" in values
 
 
+# ---------------------------------------------------------------------------
+# HIER-01: user-defined folder hierarchy in the Excel renderer
+# ---------------------------------------------------------------------------
+
+_HIERARCHY = [
+    {"key": "project", "label": "Job #", "value": "24-117"},
+    {"key": "sample", "label": "Part Number", "value": "7718-A"},
+    {"key": "lot", "label": "Lot", "value": "L-44A"},
+]
+
+
+def _build_hierarchy_model(tmp_path, images_dir, n=2, display_names=None, per_image_levels=None,
+                            asset_dir=None):
+    det = GrainDetector()
+    items = []
+    for i in range(n):
+        gray, _ = make_mosaic(seed=i + 1, h=256, w=256, n_grains=30)
+        bgr = np.repeat(gray[:, :, None], 3, axis=2)
+        res = det.analyze(bgr, px_per_um=8.0, params=DetectionParams())
+        img_path = os.path.join(images_dir, f"src_{i}.png")
+        cv2.imwrite(img_path, bgr)
+        item = ReportImageInput(image_path=img_path, result=res, image_bgr=bgr)
+        if display_names:
+            item.display_name = display_names[i]
+        if per_image_levels and i in per_image_levels:
+            item.levels = per_image_levels[i]
+        items.append(item)
+    return ReportModel.from_results(
+        items, title="Job Report", hierarchy=_HIERARCHY,
+        export_basename="24-117_7718-A_L-44A_Grain_Report_20260924",
+        asset_dir=asset_dir or str(tmp_path / "assets"),
+    )
+
+
+def test_overview_headers_use_hierarchy_labels(tmp_path):
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    model = _build_hierarchy_model(tmp_path, str(images_dir), n=2,
+                                    display_names=["L-44A_01", "L-44A_02"])
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    wb = openpyxl.load_workbook(out)
+    ws = wb["Overview"]
+    header = [c.value for c in next(ws.iter_rows(min_row=4, max_row=4))]
+    assert "Job #" in header and "Part Number" in header and "Lot" in header
+    assert "Sample" not in header and "Lot" != header[3]  # replaced, not appended
+    assert "File" in header
+    hier_line = ws["A3"].value
+    assert hier_line == "Job #: 24-117 | Part Number: 7718-A | Lot: L-44A"
+    row5 = list(ws.iter_rows(min_row=5, max_row=5, values_only=True))[0]
+    assert "L-44A_01" in row5  # display_name, not the source filename
+    assert "src_0" not in row5
+
+
+def test_overview_image_links_to_sheet_and_relative_file_when_inside_job_folder(tmp_path):
+    lot_dir = tmp_path / "24-117" / "7718-A" / "L-44A"
+    images_dir = lot_dir / "images"
+    exports_dir = lot_dir / "exports"
+    images_dir.mkdir(parents=True)
+    exports_dir.mkdir(parents=True)
+    model = _build_hierarchy_model(tmp_path, str(images_dir), n=1, display_names=["L-44A_01"],
+                                    asset_dir=str(images_dir))
+    out = str(exports_dir / "report.xlsx")
+    render_excel(model, out)
+    wb = openpyxl.load_workbook(out)
+    ws = wb["Overview"]
+    image_cell = ws["B5"]
+    assert image_cell.hyperlink.location.startswith("'Img 1")
+    file_cell = ws["C5"]
+    target = file_cell.hyperlink.target
+    assert target is not None
+    assert not target.lower().startswith("http")
+    assert not target.startswith("file:///")  # relative, survives moving the job folder
+    assert ".." in target or os.sep in target
+
+
+def test_overview_file_link_is_absolute_when_image_outside_job_folder(tmp_path):
+    lot_dir = tmp_path / "24-117" / "7718-A" / "L-44A"
+    exports_dir = lot_dir / "exports"
+    exports_dir.mkdir(parents=True)
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    model = _build_hierarchy_model(tmp_path, str(images_dir), n=1, display_names=["L-44A_01"],
+                                    asset_dir=str(images_dir))
+    out = str(exports_dir / "report.xlsx")
+    # Point straight at a UNC path (a different "drive" from the workbook's
+    # local C: path) to force the "outside the job folder" branch reliably.
+    model.images[0].image_path = r"\\fileserver\share\other\src_0.png"
+    render_excel(model, out)
+    wb = openpyxl.load_workbook(out)
+    file_cell = wb["Overview"]["C5"]
+    target = file_cell.hyperlink.target
+    assert target is not None
+    assert not target.lower().startswith("http")
+    assert "fileserver" in target
+
+
+def test_multi_lot_report_shows_per_row_hierarchy_overrides(tmp_path):
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    model = _build_hierarchy_model(
+        tmp_path, str(images_dir), n=2, display_names=["A", "B"],
+        per_image_levels={1: {"lot": "L-45B"}},
+    )
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    wb = openpyxl.load_workbook(out)
+    ws = wb["Overview"]
+    rows = list(ws.iter_rows(min_row=5, max_row=6, values_only=True))
+    row_a = next(r for r in rows if "A" in r)
+    row_b = next(r for r in rows if "B" in r)
+    assert "L-44A" in row_a
+    assert "L-45B" in row_b
+    assert "L-44A" not in row_b
+
+
+def test_methods_sheet_lists_hierarchy(tmp_path):
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    model = _build_hierarchy_model(tmp_path, str(images_dir), n=1)
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    ws = openpyxl.load_workbook(out)["Methods"]
+    values = [c.value for row in ws.iter_rows() for c in row if c.value]
+    assert "Job #" in values and "24-117" in values
+
+
+def test_per_image_and_raw_sheet_names_use_display_name(tmp_path):
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    model = _build_hierarchy_model(tmp_path, str(images_dir), n=1, display_names=["Custom Display Name"])
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    names = openpyxl.load_workbook(out).sheetnames
+    assert any("Custom Display Name" in n for n in names if n.startswith("Img "))
+    assert any("Custom Display Name" in n for n in names if n.startswith("Raw"))
+
+
+def test_legacy_model_without_hierarchy_renders_identically(tmp_path):
+    """No hierarchy/display_name/export_basename set -> pre-HIER-01 output:
+    same headers, same sheet names, no File column."""
+    model = _build_model(tmp_path, n=2)
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    wb = openpyxl.load_workbook(out)
+    ws = wb["Overview"]
+    header = [c.value for c in next(ws.iter_rows(min_row=4, max_row=4))]
+    assert header[:4] == ["#", "Image", "Sample", "Lot"]
+    assert "File" not in header
+    # No hierarchy header line inserted above the table.
+    assert ws["A3"].value is None
+    names = wb.sheetnames
+    assert names[0] == "Overview"
+    img_sheets = [n for n in names if n.startswith("Img ")]
+    assert all("synth_" in n for n in img_sheets)
+
+
 def test_sample_output_written_to_scratch():
     """Definition-of-done artifact for the coordinator to open."""
     scratch = os.path.join(ROOT, "scratch", "reports")

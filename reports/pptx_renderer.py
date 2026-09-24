@@ -190,10 +190,20 @@ def _fill_rect(slide, left, top, width, height, color):
     return shape
 
 
+def _footer_text(model: ReportModel, page_num: int) -> str:
+    """'<Job #> 24-117 · <Part Number> 7718-A · <Lot> L-44A · page n' when a
+    hierarchy is set; otherwise the legacy '<title> ... page' footer."""
+    if model.hierarchy:
+        levels = " · ".join(f"{h.get('label', '')} {h.get('value', '')}".strip()
+                                  for h in model.hierarchy)
+        return f"{levels} · page {page_num}" if levels else f"page {page_num}"
+    return model.title or "Grain Analysis Report"
+
+
 def _add_footer(slide, model: ReportModel, page_num: int, navy: RGBColor = NAVY) -> None:
     _fill_rect(slide, 0, SLIDE_H - Inches(0.32), SLIDE_W, Inches(0.32), navy)
     _textbox(slide, Inches(0.3), SLIDE_H - Inches(0.32), Inches(9), Inches(0.32),
-              model.title or "Grain Analysis Report", size=10, color=WHITE, align=PP_ALIGN.LEFT)
+              _footer_text(model, page_num), size=10, color=WHITE, align=PP_ALIGN.LEFT)
     _textbox(slide, SLIDE_W - Inches(1.3), SLIDE_H - Inches(0.32), Inches(1.0), Inches(0.32),
               str(page_num), size=10, color=WHITE, align=PP_ALIGN.RIGHT)
 
@@ -216,10 +226,20 @@ def _title_slide(slide, model: ReportModel, navy: RGBColor = NAVY, accent2: RGBC
     _fill_rect(slide, 0, Inches(0.18), SLIDE_W, Inches(0.06), accent2)
     _textbox(slide, Inches(0.8), Inches(2.6), Inches(11.7), Inches(1.2), model.title or "Grain Analysis Report",
               size=40, bold=True, color=navy)
-    meta = f"Sample/Lot: {_sample_lot_summary(model)}    |    {model.date}"
-    _textbox(slide, Inches(0.8), Inches(3.7), Inches(11.7), Inches(0.5), meta, size=16, color=GREY)
+    if model.hierarchy:
+        top = Inches(3.7)
+        for h in model.hierarchy:
+            line = f"{h.get('label', '')}: {h.get('value', '')}"
+            _textbox(slide, Inches(0.8), top, Inches(11.7), Inches(0.4), line, size=16, color=GREY)
+            top += Inches(0.4)
+        _textbox(slide, Inches(0.8), top, Inches(11.7), Inches(0.4), model.date, size=16, color=GREY)
+        top += Inches(0.4)
+    else:
+        meta = f"Sample/Lot: {_sample_lot_summary(model)}    |    {model.date}"
+        _textbox(slide, Inches(0.8), Inches(3.7), Inches(11.7), Inches(0.5), meta, size=16, color=GREY)
+        top = Inches(4.2)
     who = f"Operator: {model.operator or '—'}    |    Organization: {model.organization or '—'}"
-    _textbox(slide, Inches(0.8), Inches(4.2), Inches(11.7), Inches(0.5), who, size=16, color=GREY)
+    _textbox(slide, Inches(0.8), top, Inches(11.7), Inches(0.5), who, size=16, color=GREY)
     if model.logo_path and os.path.exists(model.logo_path):
         try:
             slide.shapes.add_picture(model.logo_path, SLIDE_W - Inches(2.3), Inches(0.5), height=Inches(1.0))
@@ -241,7 +261,9 @@ def _exec_summary_slide(slide, model: ReportModel, images: List[ImageSummary], n
         _textbox(slide, Inches(0.8), Inches(1.5), Inches(11), Inches(0.5), "No images included.", size=14)
         return
 
-    headers = ["Image", "Grains", "Mean Diam", "Std Diam", "Mean Area", "Coverage %", "Circularity"]
+    level_cols = model.level_columns() if model.hierarchy else []
+    headers = (["Image"] + [label for _, label in level_cols] +
+               ["Grains", "Mean Diam", "Std Diam", "Mean Area", "Coverage %", "Circularity"])
     rows = len(images) + 2  # header + images + combined
     cols = len(headers)
     table_shape = slide.shapes.add_table(rows, cols, Inches(0.6), Inches(1.3), Inches(12.1), Inches(0.4) * rows)
@@ -254,8 +276,17 @@ def _exec_summary_slide(slide, model: ReportModel, images: List[ImageSummary], n
     all_grains = []
     for r, img in enumerate(images, start=1):
         au, du, mean_a, med_a, std_a, mean_d, std_d = _row_size_stats(model, img)
-        vals = [
-            os.path.basename(img.image_path),
+        vals = (
+            [img.display()] + model.row_levels(img) + [
+                str(img.grain_count),
+                f"{mean_d:.2f} {du}",
+                f"{std_d:.2f} {du}",
+                f"{mean_a:.2f} {au}",
+                f"{img.grain_coverage_pct:.1f}",
+                f"{img.mean_circularity:.3f}",
+            ]
+        ) if model.hierarchy else [
+            img.display(),
             str(img.grain_count),
             f"{mean_d:.2f} {du}",
             f"{std_d:.2f} {du}",
@@ -277,11 +308,13 @@ def _exec_summary_slide(slide, model: ReportModel, images: List[ImageSummary], n
         au, du = "px²", "px"
         diams = np.array([g["diameter_px"] for g in all_grains]) if all_grains else np.array([0.0])
         areas = np.array([g["area_px"] for g in all_grains]) if all_grains else np.array([0.0])
-    combined = [
-        "Combined", str(len(all_grains)), f"{float(np.mean(diams)):.2f} {du}", f"{float(np.std(diams)):.2f} {du}",
-        f"{float(np.mean(areas)):.2f} {au}", f"{float(np.mean([i.grain_coverage_pct for i in images])):.1f}",
-        f"{float(np.mean([g['circularity'] for g in all_grains])) if all_grains else 0.0:.3f}",
-    ]
+    combined = (
+        ["Combined"] + ([""] * len(level_cols)) + [
+            str(len(all_grains)), f"{float(np.mean(diams)):.2f} {du}", f"{float(np.std(diams)):.2f} {du}",
+            f"{float(np.mean(areas)):.2f} {au}", f"{float(np.mean([i.grain_coverage_pct for i in images])):.1f}",
+            f"{float(np.mean([g['circularity'] for g in all_grains])) if all_grains else 0.0:.3f}",
+        ]
+    )
     for c, v in enumerate(combined):
         cell = table.cell(r, c)
         cell.text = v
@@ -368,7 +401,7 @@ def _distribution_slide(slide, model: ReportModel, images: List[ImageSummary], k
 
 
 def _image_slide(slide, model: ReportModel, img: ImageSummary, tmpdir: str, navy: RGBColor = NAVY) -> None:
-    _slide_heading(slide, f"Image {img.order}: {os.path.basename(img.image_path)}", navy)
+    _slide_heading(slide, f"Image {img.order}: {img.display()}", navy)
 
     orig = _resized_png(tmpdir, img.image_path, max_w=900)
     ovl = _resized_png(tmpdir, img.overlay_path, max_w=900)
@@ -405,7 +438,10 @@ def _image_slide(slide, model: ReportModel, img: ImageSummary, tmpdir: str, navy
 def _methods_slide(slide, model: ReportModel, navy: RGBColor = NAVY) -> None:
     _slide_heading(slide, "Methods & Parameters", navy)
     params = model.metadata.get("detection_params") or {}
-    lines = [f"Detection mode: {model.metadata.get('detection_mode', '—')}"]
+    lines = []
+    if model.hierarchy:
+        lines += [f"{h.get('label', '')}: {h.get('value', '')}" for h in model.hierarchy]
+    lines.append(f"Detection mode: {model.metadata.get('detection_mode', '—')}")
     for k, v in params.items():
         lines.append(f"{k}: {v}")
     lines.append(f"Calibrated: {'Yes' if any(i.has_calibration for i in model.images) else 'No'}")

@@ -140,3 +140,103 @@ def test_astm_g_present_when_calibrated(tmp_path):
 def test_astm_g_none_when_uncalibrated(tmp_path):
     model = _build_model(tmp_path, n=1, px_per_um=0.0)
     assert model.images[0].astm_g is None
+
+
+# ---------------------------------------------------------------------------
+# HIER-01: user-defined folder hierarchy fields on ReportModel
+# ---------------------------------------------------------------------------
+
+_HIERARCHY = [
+    {"key": "project", "label": "Job #", "value": "24-117"},
+    {"key": "sample", "label": "Part Number", "value": "7718-A"},
+    {"key": "lot", "label": "Lot", "value": "L-44A"},
+]
+
+
+def test_legacy_model_has_empty_hierarchy_and_export_basename(tmp_path):
+    """Old report.json files (no hierarchy/export_basename keys) load with
+    the new fields defaulted, so nothing about legacy rendering changes."""
+    model = _build_model(tmp_path, n=1)
+    assert model.hierarchy == []
+    assert model.export_basename == ""
+    assert model.images[0].display_name == ""
+    assert model.images[0].levels == {}
+    assert model.level_columns() == [("sample", "Sample"), ("lot", "Lot")]
+    assert model.hierarchy_header() == ""
+
+
+def test_from_results_with_hierarchy_and_display_names(tmp_path):
+    items = _build_items(tmp_path, n=2)
+    items[0].display_name = "L-44A_01"
+    items[1].display_name = "L-44A_02"
+    model = ReportModel.from_results(
+        items, title="Job Report", hierarchy=_HIERARCHY,
+        export_basename="24-117_7718-A_L-44A_Grain_Report_20260924",
+        asset_dir=str(tmp_path / "assets"),
+    )
+    assert model.hierarchy == _HIERARCHY
+    assert model.export_basename == "24-117_7718-A_L-44A_Grain_Report_20260924"
+    assert model.images[0].display() == "L-44A_01"
+    assert model.images[0].original_name.startswith("synth_0")
+    assert model.level_columns() == [("project", "Job #"), ("sample", "Part Number"), ("lot", "Lot")]
+    assert model.hierarchy_header() == "Job #: 24-117 | Part Number: 7718-A | Lot: L-44A"
+    assert model.row_levels(model.images[0]) == ["24-117", "7718-A", "L-44A"]
+
+
+def test_image_display_falls_back_to_basename(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    img = model.images[0]
+    assert img.display_name == ""
+    assert img.display() == os.path.basename(img.image_path)
+
+
+def test_per_image_levels_override_report_hierarchy(tmp_path):
+    items = _build_items(tmp_path, n=2)
+    items[1].levels = {"lot": "L-45B"}
+    model = ReportModel.from_results(items, hierarchy=_HIERARCHY, asset_dir=str(tmp_path / "assets"))
+    assert model.row_levels(model.images[0]) == ["24-117", "7718-A", "L-44A"]
+    assert model.row_levels(model.images[1]) == ["24-117", "7718-A", "L-45B"]
+
+
+def test_hierarchy_and_export_basename_round_trip(tmp_path):
+    items = _build_items(tmp_path, n=1)
+    items[0].display_name = "Custom Name"
+    items[0].levels = {"lot": "L-99Z"}
+    model = ReportModel.from_results(
+        items, hierarchy=_HIERARCHY, export_basename="my_export", asset_dir=str(tmp_path / "assets"),
+    )
+    restored = ReportModel.from_json(model.to_json())
+    assert restored.hierarchy == _HIERARCHY
+    assert restored.export_basename == "my_export"
+    assert restored.images[0].display_name == "Custom Name"
+    assert restored.images[0].levels == {"lot": "L-99Z"}
+    assert restored.to_dict() == model.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# reports.suggest_filename
+# ---------------------------------------------------------------------------
+
+def test_suggest_filename_uses_export_basename(tmp_path):
+    import reports
+    model = _build_model(tmp_path, n=1)
+    model.export_basename = "24-117_7718-A_L-44A_Grain_Report_20260924"
+    assert reports.suggest_filename(model, "xlsx") == "24-117_7718-A_L-44A_Grain_Report_20260924.xlsx"
+    assert reports.suggest_filename(model, "pptx") == "24-117_7718-A_L-44A_Grain_Report_20260924.pptx"
+
+
+def test_suggest_filename_legacy_default_from_title(tmp_path):
+    import reports
+    model = _build_model(tmp_path, n=1)
+    assert model.export_basename == ""
+    name = reports.suggest_filename(model, "xlsx")
+    assert name.endswith(".xlsx")
+    assert "Test_Report" in name
+
+
+def test_suggest_filename_sanitizes_for_windows(tmp_path):
+    import reports
+    model = _build_model(tmp_path, n=1)
+    model.export_basename = 'Bad:Name/With*Chars?'
+    name = reports.suggest_filename(model, "xlsx")
+    assert not any(ch in name for ch in ':/\\*?"<>|')

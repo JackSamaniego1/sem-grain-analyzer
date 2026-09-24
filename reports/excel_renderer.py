@@ -90,6 +90,39 @@ def _resized_png(tmpdir: str, src_path: Optional[str], max_w: int = 800, _seq: L
     return out_path, w, h
 
 
+def _file_link_target(output_path: str, image_path: str) -> Optional[str]:
+    """Local-file hyperlink target for the Overview "File" column.
+
+    Relative (so the link survives moving the whole job folder) when the
+    workbook and the image share a meaningful ancestor folder deeper than
+    just the drive root; absolute otherwise. Never an http(s) link (D-14).
+    Returns ``None`` when ``image_path`` is empty/unresolved.
+    """
+    if not image_path:
+        return None
+    out_dir = os.path.abspath(os.path.dirname(output_path) or ".")
+    img_abs = os.path.abspath(image_path)
+    out_drive, _ = os.path.splitdrive(out_dir)
+    img_drive, _ = os.path.splitdrive(img_abs)
+    if out_drive.lower() == img_drive.lower():
+        try:
+            common = os.path.commonpath([out_dir, img_abs])
+        except ValueError:
+            common = ""
+        _, common_rest = os.path.splitdrive(common)
+        if common_rest not in ("", os.sep):
+            return os.path.relpath(img_abs, out_dir)
+    return img_abs
+
+
+def _write_file_url(ws, row: int, col: int, output_path: str, image_path: str, fmt, display: str) -> None:
+    target = _file_link_target(output_path, image_path)
+    if not target:
+        ws.write(row, col, "—", fmt)
+        return
+    ws.write_url(row, col, f"external:{target}", fmt, string=display)
+
+
 def _build_plan(model: ReportModel, images: List[ImageSummary]) -> List[Tuple[str, Optional[Section]]]:
     """Sheets between Overview and Raw data, in ``Section.order``.
 
@@ -151,18 +184,17 @@ def render_excel(model: ReportModel, output_path: str) -> str:
                 sheet_names[id(sec)] = _safe_sheet_name(f"Notes - {sec.title or 'Notes'}", used_names)
             elif kind == "images":
                 for img in images:
-                    image_sheet_names[img.id] = _safe_sheet_name(
-                        f"Img {img.order} - {os.path.splitext(os.path.basename(img.image_path))[0]}",
-                        used_names)
+                    display = img.display_name or os.path.splitext(os.path.basename(img.image_path))[0]
+                    image_sheet_names[img.id] = _safe_sheet_name(f"Img {img.order} - {display}", used_names)
         raw_sheet_names: Dict[str, str] = {}
         if want_raw:
             for img in images:
-                raw_sheet_names[img.id] = _safe_sheet_name(
-                    f"Raw - {os.path.splitext(os.path.basename(img.image_path))[0]}", used_names)
+                display = img.display_name or os.path.splitext(os.path.basename(img.image_path))[0]
+                raw_sheet_names[img.id] = _safe_sheet_name(f"Raw - {display}", used_names)
 
         # 1. Overview (always first; cover banner + overview table, each
         #    independently toggle-able)
-        _write_overview(wb, model, images, fmts, overview_name, image_sheet_names)
+        _write_overview(wb, model, images, fmts, overview_name, image_sheet_names, output_path)
 
         # 2. Everything in designer order: Summary Charts / per-image sheets
         #    / Methods / Notes — any mix, any order the user picked.
@@ -180,7 +212,7 @@ def render_excel(model: ReportModel, output_path: str) -> str:
         # 3. Raw data (last, always — lab manager requirement)
         if want_raw:
             for img in images:
-                _write_raw_sheet(wb, img, fmts, raw_sheet_names[img.id])
+                _write_raw_sheet(wb, model, img, fmts, raw_sheet_names[img.id])
 
         wb.close()
     return output_path
@@ -268,12 +300,23 @@ def _row_size_stats(model: ReportModel, img: ImageSummary) -> Tuple[str, str, fl
 
 
 def _write_overview(wb, model: ReportModel, images: List[ImageSummary], fmts, name: str,
-                     image_sheet_names: Dict[str, str]) -> None:
+                     image_sheet_names: Dict[str, str], output_path: str = "") -> None:
     ws = wb.add_worksheet(name)
     ws.set_tab_color(TAB_COLORS["overview"])
     ws.hide_gridlines(2)
 
-    ncols = len(_OVERVIEW_COLS)
+    hier = bool(model.hierarchy)
+    level_cols = model.level_columns() if hier else []
+    # Lead columns: legacy layout is unchanged ("#", "Image", "Sample",
+    # "Lot") so old report.json files render identically; a hierarchy adds
+    # a "File" hyperlink column and swaps Sample/Lot for the user's levels.
+    lead = ["#", "Image", "Sample", "Lot"] if not hier else \
+        ["#", "Image", "File"] + [label for _, label in level_cols]
+    tail = ["Grains", "Mean Area*", "Median Area*", "Std Area*", "Mean Diameter*", "Std Diameter*",
+            "Units", "Coverage %", "Invalid %", "Mean Circularity", "Mean Aspect Ratio", "ASTM G"]
+    ncols = len(lead) + len(tail)
+    file_col = 2 if hier else None
+
     header_row = 0
     if model.is_enabled("cover", default=True):
         ws.merge_range(0, 0, 0, ncols - 1, model.title or "Grain Analysis Report", fmts["title"])
@@ -281,6 +324,8 @@ def _write_overview(wb, model: ReportModel, images: List[ImageSummary], fmts, na
         sub = (f"Operator: {model.operator or '—'}   |   Organization: {model.organization or '—'}   |   "
                f"Date: {model.date}   |   {len(images)} image(s)   |   Grain Analyzer v{APP_VERSION}")
         ws.merge_range(1, 0, 1, ncols - 1, sub, fmts["subtitle"])
+        if hier:
+            ws.merge_range(2, 0, 2, ncols - 1, model.hierarchy_header(), fmts["subtitle"])
         header_row = 3
 
     if not model.is_enabled("overview_table", default=True) or not images:
@@ -288,11 +333,13 @@ def _write_overview(wb, model: ReportModel, images: List[ImageSummary], fmts, na
         return
 
     au, du = _combined_unit(model, images)
-    header = [
-        "#", "Image", "Sample", "Lot", "Grains", f"Mean Area ({au})*", f"Median Area ({au})*",
-        f"Std Area ({au})*", f"Mean Diameter ({du})*", f"Std Diameter ({du})*", "Units", "Coverage %",
-        "Invalid %", "Mean Circularity", "Mean Aspect Ratio", "ASTM G",
+    tail_header = [
+        "Grains", f"Mean Area ({au})*", f"Median Area ({au})*", f"Std Area ({au})*",
+        f"Mean Diameter ({du})*", f"Std Diameter ({du})*", "Units", "Coverage %", "Invalid %",
+        "Mean Circularity", "Mean Aspect Ratio", "ASTM G",
     ]
+    header = lead + tail_header
+    tail_start = len(lead)
     for c, h in enumerate(header):
         ws.write(header_row, c, h, fmts["header"])
     ws.set_row(header_row, 30)
@@ -305,13 +352,18 @@ def _write_overview(wb, model: ReportModel, images: List[ImageSummary], fmts, na
     r = header_row + 1
     for i, img in enumerate(images):
         au_i, du_i, mean_a, med_a, std_a, mean_d, std_d = _row_size_stats(model, img)
-        row = [
-            img.order, os.path.basename(img.image_path), img.sample_id, img.lot_number, img.grain_count,
-            round(mean_a, 3), round(med_a, 3), round(std_a, 3), round(mean_d, 3), round(std_d, 3),
-            f"{au_i} / {du_i}", round(img.grain_coverage_pct, 2), round(img.invalid_area_pct, 2),
-            round(img.mean_circularity, 4), round(img.mean_aspect_ratio, 4),
+        display = img.display()
+        if hier:
+            row_lead = [img.order, display, ""] + model.row_levels(img)
+        else:
+            row_lead = [img.order, display, img.sample_id, img.lot_number]
+        row_tail = [
+            img.grain_count, round(mean_a, 3), round(med_a, 3), round(std_a, 3), round(mean_d, 3),
+            round(std_d, 3), f"{au_i} / {du_i}", round(img.grain_coverage_pct, 2),
+            round(img.invalid_area_pct, 2), round(img.mean_circularity, 4), round(img.mean_aspect_ratio, 4),
             (img.astm_g if img.astm_g is not None else "—"),
         ]
+        row = row_lead + row_tail
         for c, val in enumerate(row):
             if c == 1:
                 target_sheet = image_sheet_names.get(img.id)
@@ -320,13 +372,18 @@ def _write_overview(wb, model: ReportModel, images: List[ImageSummary], fmts, na
                     ws.write_url(r, c, f"internal:'{target_sheet}'!A1", fmt, string=str(val))
                 else:
                     ws.write(r, c, val, fmt)
-            elif c in (5, 6, 7, 8, 9):
+            elif file_col is not None and c == file_col:
+                fmt = fmts["hyperlink_band"] if i % 2 else fmts["hyperlink"]
+                _write_file_url(ws, r, c, output_path, img.image_path, fmt, "Open")
+            elif c == tail_start:
+                ws.write_number(r, c, val, _band(fmts, i))
+            elif tail_start + 1 <= c <= tail_start + 5:
                 ws.write_number(r, c, val, _band(fmts, i, "num2"))
-            elif c in (11, 12):
+            elif c in (tail_start + 7, tail_start + 8):
                 ws.write_number(r, c, val, _band(fmts, i, "pct"))
-            elif c in (13, 14):
+            elif c in (tail_start + 9, tail_start + 10):
                 ws.write_number(r, c, val, _band(fmts, i, "num4"))
-            elif c == 15 and isinstance(val, (int, float)):
+            elif c == tail_start + 11 and isinstance(val, (int, float)):
                 ws.write_number(r, c, val, _band(fmts, i, "num2"))
             else:
                 ws.write(r, c, val, _band(fmts, i))
@@ -347,26 +404,28 @@ def _write_overview(wb, model: ReportModel, images: List[ImageSummary], fmts, na
         mean_ar = float(np.mean([g["aspect_ratio"] for g in all_grains]))
         mean_cov = float(np.mean([i.grain_coverage_pct for i in images]))
         mean_inv = float(np.mean([i.invalid_area_pct for i in images]))
-        ws.write(r, 0, "", fmts["total_label"])
-        ws.write(r, 1, "Combined (all images)", fmts["total_label"])
-        ws.write(r, 2, "", fmts["total_label"])
-        ws.write(r, 3, "", fmts["total_label"])
-        ws.write_number(r, 4, total_grains, fmts["total"])
-        ws.write_number(r, 5, round(float(np.mean(areas)), 3), fmts["total"])
-        ws.write_number(r, 6, round(float(np.median(areas)), 3), fmts["total"])
-        ws.write_number(r, 7, round(float(np.std(areas)), 3), fmts["total"])
-        ws.write_number(r, 8, round(float(np.mean(diams)), 3), fmts["total"])
-        ws.write_number(r, 9, round(float(np.std(diams)), 3), fmts["total"])
-        ws.write(r, 10, f"{au} / {du}" if calibrated_all else "px² / px", fmts["total_label"])
-        ws.write_number(r, 11, round(mean_cov, 2), fmts["total"])
-        ws.write_number(r, 12, round(mean_inv, 2), fmts["total"])
-        ws.write_number(r, 13, round(mean_circ, 4), fmts["total"])
-        ws.write_number(r, 14, round(mean_ar, 4), fmts["total"])
-        ws.write(r, 15, "—", fmts["total"])
+        for c in range(tail_start):
+            ws.write(r, c, "Combined (all images)" if c == 1 else "", fmts["total_label"])
+        t = tail_start
+        ws.write_number(r, t, total_grains, fmts["total"])
+        ws.write_number(r, t + 1, round(float(np.mean(areas)), 3), fmts["total"])
+        ws.write_number(r, t + 2, round(float(np.median(areas)), 3), fmts["total"])
+        ws.write_number(r, t + 3, round(float(np.std(areas)), 3), fmts["total"])
+        ws.write_number(r, t + 4, round(float(np.mean(diams)), 3), fmts["total"])
+        ws.write_number(r, t + 5, round(float(np.std(diams)), 3), fmts["total"])
+        ws.write(r, t + 6, f"{au} / {du}" if calibrated_all else "px² / px", fmts["total_label"])
+        ws.write_number(r, t + 7, round(mean_cov, 2), fmts["total"])
+        ws.write_number(r, t + 8, round(mean_inv, 2), fmts["total"])
+        ws.write_number(r, t + 9, round(mean_circ, 4), fmts["total"])
+        ws.write_number(r, t + 10, round(mean_ar, 4), fmts["total"])
+        ws.write(r, t + 11, "—", fmts["total"])
         r += 1
 
     ws.freeze_panes(header_row + 1, 1)
-    widths = [5, 30, 12, 12, 9, 13, 13, 13, 15, 14, 13, 11, 10, 15, 15, 9]
+    if hier:
+        widths = [5, 30, 16] + [14] * len(level_cols) + [9, 13, 13, 13, 15, 14, 13, 11, 10, 15, 15, 9]
+    else:
+        widths = [5, 30, 12, 12, 9, 13, 13, 13, 15, 14, 13, 11, 10, 15, 15, 9]
     for c, w in enumerate(widths):
         ws.set_column(c, c, w)
 
@@ -413,7 +472,7 @@ def _write_summary_charts(wb, model: ReportModel, images: List[ImageSummary], fm
     for i, img in enumerate(images):
         _, _, _, dm_i = resolve_units(img.px_per_um, model.units)
         r = tbl_row + 1 + i
-        ws.write(r, 0, os.path.basename(img.image_path), _band(fmts, i))
+        ws.write(r, 0, img.display(), _band(fmts, i))
         ws.write_number(r, 1, round(img.mean_diameter_um * dm_i, 3), _band(fmts, i, "num2"))
         ws.write_number(r, 2, round(img.std_diameter_um * dm_i, 3), _band(fmts, i, "num2"))
         ws.write_number(r, 3, img.grain_count, _band(fmts, i))
@@ -522,7 +581,7 @@ def _write_image_sheet(wb, model: ReportModel, img: ImageSummary, sheet_name, fm
     ws = wb.add_worksheet(sheet_name)
     ws.set_tab_color(TAB_COLORS["image"])
     ws.hide_gridlines(2)
-    ws.merge_range(0, 0, 0, 13, f"Image {img.order}: {os.path.basename(img.image_path)}", fmts["title"])
+    ws.merge_range(0, 0, 0, 13, f"Image {img.order}: {img.display()}", fmts["title"])
     ws.set_row(0, 26)
 
     row_after_images = 3
@@ -541,10 +600,12 @@ def _write_image_sheet(wb, model: ReportModel, img: ImageSummary, sheet_name, fm
     ws.merge_range(stats_row, 0, stats_row, 2, "Summary Statistics", fmts["section"])
     au, am, du, dm = resolve_units(img.px_per_um, model.units)
     r = stats_row + 1
-    stat_rows = [
-        ("Sample", img.sample_id or "—", ""), ("Lot", img.lot_number or "—", ""),
-        ("Total Grains", img.grain_count, "grains"),
-    ]
+    if model.hierarchy:
+        stat_rows = [(label, (val or "—"), "") for (_, label), val in
+                     zip(model.level_columns(), model.row_levels(img))]
+    else:
+        stat_rows = [("Sample", img.sample_id or "—", ""), ("Lot", img.lot_number or "—", "")]
+    stat_rows += [("Total Grains", img.grain_count, "grains")]
     if img.has_calibration:
         stat_rows += [
             ("Mean Area", round(img.mean_area_um2 * am, 3), au),
@@ -603,8 +664,16 @@ def _write_methods(wb, model: ReportModel, fmts, name: str) -> None:
     ws.merge_range(0, 0, 0, 2, "Methods & Parameters", fmts["title"])
     ws.set_row(0, 26)
 
-    params = model.metadata.get("detection_params") or {}
     r = 2
+    if model.hierarchy:
+        ws.merge_range(r, 0, r, 2, "Hierarchy", fmts["section"]); r += 1
+        for h in model.hierarchy:
+            ws.write(r, 0, str(h.get("label", h.get("key", ""))), fmts["label"])
+            ws.write(r, 1, str(h.get("value", "")), fmts["value"])
+            r += 1
+        r += 1
+
+    params = model.metadata.get("detection_params") or {}
     ws.merge_range(r, 0, r, 2, "Detection", fmts["section"]); r += 1
     rows = [("Mode", model.metadata.get("detection_mode", "—"))]
     rows += [(k, v) for k, v in params.items()]
@@ -654,7 +723,7 @@ def _write_custom_text_sheet(wb, sec: Section, fmts, name: str) -> None:
 # Raw data
 # ---------------------------------------------------------------------------
 
-def _write_raw_sheet(wb, img: ImageSummary, fmts, name: str) -> None:
+def _write_raw_sheet(wb, model: ReportModel, img: ImageSummary, fmts, name: str) -> None:
     ws = wb.add_worksheet(name)
     ws.set_tab_color(TAB_COLORS["raw"])
     ws.hide_gridlines(2)
@@ -670,13 +739,22 @@ def _write_raw_sheet(wb, img: ImageSummary, fmts, name: str) -> None:
         keys = ["id", "area_px", "diameter_px", "perimeter_px", "circularity", "aspect_ratio",
                 "eccentricity", "centroid_x", "centroid_y", "note"]
 
-    ws.merge_range(0, 0, 0, len(headers) - 1, f"Grain Data - {os.path.basename(img.image_path)}", fmts["title"])
+    top = 0
+    if model.hierarchy:
+        # Header block above the table (not leading data columns) so the
+        # raw per-grain columns stay clean/uniform for pivoting.
+        levels = model.row_levels(img)
+        line = " | ".join(f"{label}: {val}" for (_, label), val in zip(model.level_columns(), levels))
+        ws.merge_range(0, 0, 0, len(headers) - 1, line, fmts["subtitle"])
+        top = 1
+
+    ws.merge_range(top, 0, top, len(headers) - 1, f"Grain Data - {img.display()}", fmts["title"])
     for c, h in enumerate(headers):
-        ws.write(1, c, h, fmts["header"])
-    ws.freeze_panes(2, 0)
+        ws.write(top + 1, c, h, fmts["header"])
+    ws.freeze_panes(top + 2, 0)
 
     for ri, g in enumerate(img.grains):
-        r = 2 + ri
+        r = top + 2 + ri
         for c, k in enumerate(keys):
             v = g.get(k, "" if k == "note" else None)
             fmt = _band(fmts, ri, "num4" if k in ("circularity", "aspect_ratio", "eccentricity") else
@@ -686,8 +764,8 @@ def _write_raw_sheet(wb, img: ImageSummary, fmts, name: str) -> None:
             else:
                 ws.write(r, c, v or "", fmt)
 
-    last_row = 1 + len(img.grains)
-    ws.autofilter(1, 0, max(last_row, 1), len(headers) - 1)
+    last_row = top + 1 + len(img.grains)
+    ws.autofilter(top + 1, 0, max(last_row, top + 1), len(headers) - 1)
     last_col = len(headers) - 1
     for c in range(len(headers)):
         width = 30 if c == last_col else (14 if c else 8)
