@@ -24,5 +24,12 @@ PySide6 desktop app for grain detection/measurement on SEM images (Python 3.11).
 - Commit on `v3-dev`; never push until GitHub auth is fixed (`handoff/SESSION_STATE.md`).
 - After each completed task run `/save-handoff` (scribe agent) — the user requires regular handoff saves.
 
+## Context & usage discipline (user request — keep token usage low)
+- **Save the handoff after EVERY commit**, not just at the end of a phase: `/save-handoff` (scribe runs on haiku — cheap). `handoff/SESSION_STATE.md` must always be good enough to resume cold.
+- **Clear context often.** After every 2–3 committed tasks, or whenever the conversation is long / a phase ends: (1) make sure nothing is uncommitted and no background agent is still running (wait for their reports, commit, save handoff), (2) tell the user in one line: "Handoff saved — safe to `/clear` now, then say: *Read handoff/SESSION_STATE.md and continue*." Claude cannot run `/clear` itself; the user types it.
+- **On resume after a clear:** read only `handoff/SESSION_STATE.md` first, then the specific files/specs the next task needs. Do NOT re-read the whole handoff folder, the codebase analysis, or big source files "for context".
+- **Keep the coordinator's context small:** delegate implementation to agents; ask agents for capped reports; don't paste or re-read large files, diffs, or test output (use `tail`/`grep`, `-q` pytest); view screenshots only when judging a UI deliverable.
+- **Prefer cheap models** for mechanical work (scribe/haiku, reviewers/sonnet); use opus only for design-heavy UI or algorithm work.
+
 ## Team
 Agents in `.claude/agents/` (models pinned; never run agents on Fable). Roster and concurrency rules: `handoff/02_TEAM_ROSTER.md`.
