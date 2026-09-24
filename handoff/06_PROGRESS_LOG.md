@@ -38,3 +38,10 @@
 - Full test suite verified: **412 passed / 0 failed**.
 - Screenshots captured: 15 PNGs in scratch/ui/.
 - Three follow-ups identified for next sprint: (a) open wizard doesn't relabel when Settings change, (b) wizard date-field arrow slightly clipped, (c) Excel/PowerPoint export not re-verified against HIER-01 acceptance criteria (hierarchy labels, export basename).
+
+## 2026-09-24 — HIER follow-ups completed (Opus coordinator)
+- **HIER-02 done (276d579)**: New Session wizard now relabels dynamically when Settings "Folder structure & naming" changes; entered data preserved. Tests in tests/test_ui_hierarchy.py.
+- **HIER-03 done (276d579)**: Date-field dropdown arrow no longer clipped (ui/design/theme.py theme fix).
+- **HIER-04 done (276d579)**: Excel/PPTX export re-verified vs HIER-01 spec (hierarchy labels, export basename, renamed levels, filename sanitisation). 3 acceptance tests pass; no defects. Tests in tests/test_hier01_export_acceptance.py.
+- Full suite: **417 passed / 0 failed**. SESSION_STATE.md cleaned (UTF-8 encoding, ASCII punctuation).
+- Next: UI-09 + UI-11 in parallel (file management and scale-bar calibration), then UI-10.
