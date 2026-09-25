@@ -19,6 +19,7 @@ import numpy as np
 
 TAB_COLORS = {
     "overview": "#1A2B4A",   # navy
+    "summary": "#2E5FA3",    # blue — cross-lot summary sheets (UX-13 Lot Comparison)
     "charts": "#2E7D32",     # green
     "image": "#00796B",      # teal
     "methods": "#F9A825",    # amber

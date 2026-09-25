@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import os
 import tempfile
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from pptx import Presentation
@@ -118,6 +118,9 @@ def _build_plan(model: ReportModel, images: List[ImageSummary]) -> List[Tuple[st
         if s.type == "combined_distribution":
             if s.enabled and images:
                 plan.append(("charts", s))
+        elif s.type == "lot_comparison":
+            if s.enabled and s.payload.get("parts"):
+                plan.append(("lot_comparison", s))
         elif s.type == "parameters":
             if s.enabled:
                 plan.append(("methods", s))
@@ -181,6 +184,10 @@ def render_pptx(model: ReportModel, output_path: str, template_path: Optional[st
                 if opts["diameter"]["enabled"]:
                     _distribution_slide(new_slide(), model, images, kind="diameter", series=series,
                                         navy=navy)
+                    _add_footer(prs.slides[-1], model, page[0], navy)
+            elif kind == "lot_comparison":
+                for part in sec.payload.get("parts") or []:
+                    _lot_comparison_slide(new_slide(), part, navy)
                     _add_footer(prs.slides[-1], model, page[0], navy)
             elif kind == "images":
                 for img in images:
@@ -814,6 +821,86 @@ def _methods_slide(slide, model: ReportModel, navy: RGBColor = NAVY, *,
         lines = _methods_lines(model)
     _textbox(slide, Inches(0.8), Inches(METHODS_BOX_TOP_IN), Inches(METHODS_BOX_W_IN),
               Inches(METHODS_SAFE_BOTTOM_IN - METHODS_BOX_TOP_IN), "\n".join(lines), size=METHODS_FONT_PT)
+
+
+def _lot_comparison_slide(slide, part: Dict[str, Any], navy: RGBColor = NAVY) -> None:
+    """UX-13: one slide per part -- a per-lot G summary table, plus either
+    the equivalence-vs-baseline table (when that part has a baseline lot)
+    or the ΔG matrix (when it does not but has >= 2 lots). ``part`` is one
+    entry of ``reports.multi_lot.build_multi_lot_report_model``'s
+    ``Section(type="lot_comparison").payload["parts"]``."""
+    title = f"Lot Comparison — {part.get('part', '')}"
+    if part.get("job"):
+        title += f" (Job {part['job']})"
+    _slide_heading(slide, title, navy)
+    cmp_ = part["comparison"]
+    summaries = cmp_["summaries"]
+
+    headers = ["Lot", "Fields (n)", "Mean G", "95 % CI (±)", "Std Dev G"]
+    rows = len(summaries) + 1
+    table_shape = slide.shapes.add_table(rows, len(headers), Inches(0.6), Inches(1.15),
+                                         Inches(6.2), Inches(0.4) * rows)
+    table = table_shape.table
+    for c, h in enumerate(headers):
+        cell = table.cell(0, c)
+        cell.text = h
+        _style_header_cell(cell, navy)
+    for r, s in enumerate(summaries, start=1):
+        ci = (s["mean"] - s["ci_low"]) if s.get("mean") is not None and s.get("ci_low") is not None \
+            else None
+        vals = [s["label"], str(s["n"]),
+                f"{s['mean']:.2f}" if s.get("mean") is not None else "—",
+                f"{ci:.2f}" if ci is not None else "—",
+                f"{s['sd']:.2f}" if s.get("sd") is not None else "—"]
+        for c, v in enumerate(vals):
+            cell = table.cell(r, c)
+            cell.text = v
+            _style_body_cell(cell)
+
+    baseline, equiv = part.get("baseline"), cmp_.get("equivalence") or {}
+    right_x = Inches(7.1)
+    if baseline and equiv:
+        _textbox(slide, right_x, Inches(1.15), Inches(5.6), Inches(0.35),
+                 f"Equivalence vs baseline ({baseline})", size=14, bold=True)
+        headers2 = ["Lot", "ΔG", "90 % CI", "Verdict"]
+        rows2 = len(equiv) + 1
+        t2 = slide.shapes.add_table(rows2, len(headers2), right_x, Inches(1.55), Inches(5.6),
+                                    Inches(0.4) * rows2).table
+        for c, h in enumerate(headers2):
+            cell = t2.cell(0, c)
+            cell.text = h
+            _style_header_cell(cell, navy)
+        for r, (lot, eq) in enumerate(equiv.items(), start=1):
+            ci_txt = (f"[{eq['ci_low']:.2f}, {eq['ci_high']:.2f}]"
+                     if eq.get("ci_low") is not None and eq.get("ci_high") is not None else "—")
+            vals = [lot, f"{eq['dG']:.2f}" if eq.get("dG") is not None else "—", ci_txt,
+                    str(eq.get("verdict", "—"))]
+            for c, v in enumerate(vals):
+                cell = t2.cell(r, c)
+                cell.text = v
+                _style_body_cell(cell)
+    elif len(summaries) >= 2:
+        _textbox(slide, right_x, Inches(1.15), Inches(5.6), Inches(0.35),
+                 "ΔG matrix (row → column; + = column finer)", size=14, bold=True)
+        labels = [s["label"] for s in summaries]
+        matrix = cmp_["matrix"]
+        n = len(labels)
+        t3 = slide.shapes.add_table(n + 1, n + 1, right_x, Inches(1.55), Inches(5.6),
+                                    Inches(0.4) * (n + 1)).table
+        t3.cell(0, 0).text = ""
+        for j, lb in enumerate(labels, start=1):
+            cell = t3.cell(0, j)
+            cell.text = lb
+            _style_header_cell(cell, navy)
+        for i, lb in enumerate(labels, start=1):
+            cell = t3.cell(i, 0)
+            cell.text = lb
+            _style_header_cell(cell, navy)
+            for j in range(n):
+                v = matrix[i - 1][j]["dG"]
+                cell = t3.cell(i, j + 1)
+                cell.text = f"{v:+.2f}" if v is not None else "—"
+                _style_body_cell(cell)
 
 
 def _appendix_slide(slide, model: ReportModel, navy: RGBColor = NAVY) -> None:

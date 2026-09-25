@@ -185,6 +185,9 @@ def _build_plan(model: ReportModel, images: List[ImageSummary]) -> List[Tuple[st
         if s.type == "combined_distribution":
             if s.enabled and images:
                 plan.append(("charts", s))
+        elif s.type == "lot_comparison":
+            if s.enabled and s.payload.get("parts"):
+                plan.append(("lot_comparison", s))
         elif s.type == "parameters":
             if s.enabled:
                 plan.append(("methods", s))
@@ -216,6 +219,8 @@ def render_excel(model: ReportModel, output_path: str) -> str:
         for kind, sec in plan:
             if kind == "charts":
                 sheet_names[id(sec)] = _safe_sheet_name(sec.title or "Summary Charts", used_names)
+            elif kind == "lot_comparison":
+                sheet_names[id(sec)] = _safe_sheet_name(sec.title or "Lot Comparison", used_names)
             elif kind == "methods":
                 sheet_names[id(sec)] = _safe_sheet_name(sec.title or "Methods", used_names)
             elif kind == "custom_text":
@@ -239,6 +244,8 @@ def render_excel(model: ReportModel, output_path: str) -> str:
         for kind, sec in plan:
             if kind == "charts":
                 _write_summary_charts(wb, model, images, fmts, series, sheet_names[id(sec)])
+            elif kind == "lot_comparison":
+                _write_lot_comparison(wb, model, sec, fmts, series, sheet_names[id(sec)])
             elif kind == "methods":
                 _write_methods(wb, model, fmts, sheet_names[id(sec)])
             elif kind == "custom_text":
@@ -303,6 +310,15 @@ def _build_formats(wb: "xlsxwriter.Workbook", series: Dict[str, str] = SERIES
     f["verdict_inconclusive"] = wb.add_format({"bold": True, "font_size": 14, "font_color": "#FFFFFF",
                                                 "bg_color": "#E9A400", "align": "center", "valign": "vcenter"})
     f["verdict_rule"] = wb.add_format({"font_size": 10, "align": "left", "indent": 1, "border": 1})
+    # UX-13: ΔG matrix band colours (core.lot_compare.Band) -- soft tints,
+    # distinct from the bold verdict badges above.
+    f["cell_green"] = wb.add_format({"bg_color": "#C8E6C9", "border": 1, "align": "center",
+                                      "num_format": "+0.00;-0.00"})
+    f["cell_amber"] = wb.add_format({"bg_color": "#FFE0B2", "border": 1, "align": "center",
+                                      "num_format": "+0.00;-0.00"})
+    f["cell_red"] = wb.add_format({"bg_color": "#FFCDD2", "border": 1, "align": "center",
+                                    "num_format": "+0.00;-0.00"})
+    f["cell_none"] = wb.add_format({"bg_color": SERIES["band"], "border": 1, "align": "center"})
     return f
 
 
@@ -712,6 +728,102 @@ def _write_hist_block(ws, fmts, wb, start_row, values, n_bins, unit, label, colo
     ws.set_column(0, 0, 18)
     ws.set_column(1, 2, 12)
     return start_row + nb + 1
+
+
+# ---------------------------------------------------------------------------
+# Lot comparison (UX-13)
+# ---------------------------------------------------------------------------
+
+_BAND_FMT = {"green": "cell_green", "amber": "cell_amber", "red": "cell_red", "none": "cell_none"}
+
+
+def _write_lot_comparison(wb, model: ReportModel, sec: Section, fmts, series: Dict[str, str],
+                          sheet_name: str) -> None:
+    """UX-13: one sheet, one block per part — a per-lot summary table, the
+    ΔG matrix (band-coloured, ``core.lot_compare.delta_matrix``) and, when
+    that part has a baseline lot, a TOST equivalence table.
+    ``sec.payload["parts"]`` is ``reports.multi_lot.
+    build_multi_lot_report_model``'s output (one ``core.lot_compare.
+    compare_lots`` result per part)."""
+    ws = wb.add_worksheet(sheet_name)
+    ws.set_tab_color(TAB_COLORS["summary"])
+    ws.hide_gridlines(2)
+    ws.merge_range(0, 0, 0, 7, sec.title or "Lot Comparison", fmts["title"])
+    ws.set_row(0, 26)
+    row = 2
+    for part in sec.payload.get("parts") or []:
+        cmp_ = part["comparison"]
+        summaries = cmp_["summaries"]
+        header = str(part.get("part", "")) + (f"  (Job {part['job']})" if part.get("job") else "")
+        ws.merge_range(row, 0, row, 7, header, fmts["section"])
+        row += 1
+
+        ws.write_row(row, 0, ["Lot", "Fields (n)", "Mean G", "95% CI (±)", "Std Dev G"],
+                     fmts["header"])
+        row += 1
+        for i, s in enumerate(summaries):
+            ws.write(row, 0, s["label"], _band(fmts, i))
+            ws.write_number(row, 1, s["n"], _band(fmts, i))
+            if s["mean"] is not None:
+                ws.write_number(row, 2, round(s["mean"], 3), _band(fmts, i, "num2"))
+                ci = s["mean"] - s["ci_low"] if s.get("ci_low") is not None else None
+                ws.write(row, 3, round(ci, 2) if ci is not None else "—", _band(fmts, i))
+            else:
+                ws.write(row, 2, "—", _band(fmts, i))
+                ws.write(row, 3, "—", _band(fmts, i))
+            ws.write(row, 4, round(s["sd"], 3) if s.get("sd") is not None else "—", _band(fmts, i))
+            row += 1
+        anova = cmp_.get("anova") or {}
+        if anova.get("F") is not None:
+            ws.write(row, 0, f"Welch ANOVA: F={anova['F']:.2f}, p={anova['p']:.3f}"
+                              f" (k={anova.get('k', len(summaries))} lots)", fmts["caption"])
+            row += 1
+        row += 1
+
+        labels = [s["label"] for s in summaries]
+        if len(labels) >= 2:
+            ws.write(row, 0, "ΔG matrix (row → column; + = column finer)", fmts["label"])
+            row += 1
+            ws.write(row, 0, "", fmts["header"])
+            for j, lb in enumerate(labels, start=1):
+                ws.write(row, j, lb, fmts["header"])
+            row += 1
+            matrix = cmp_["matrix"]
+            for i, lb in enumerate(labels):
+                ws.write(row, 0, lb, fmts["header"])
+                for j in range(len(labels)):
+                    cell = matrix[i][j]
+                    fmt = fmts[_BAND_FMT.get(cell.get("band"), "cell_none")]
+                    if cell.get("dG") is None:
+                        ws.write(row, j + 1, "—", fmt)
+                    else:
+                        ws.write_number(row, j + 1, round(cell["dG"], 2), fmt)
+                row += 1
+            row += 1
+
+        baseline = part.get("baseline")
+        equiv = cmp_.get("equivalence") or {}
+        if baseline and equiv:
+            ws.write(row, 0, f"Equivalence vs baseline ({baseline})", fmts["label"])
+            row += 1
+            ws.write_row(row, 0, ["Lot", "ΔG", "90% CI", "Verdict"], fmts["header"])
+            row += 1
+            for i, (lot, eq) in enumerate(equiv.items()):
+                ws.write(row, 0, lot, _band(fmts, i))
+                ws.write(row, 1, round(eq["dG"], 2) if eq.get("dG") is not None else "—",
+                         _band(fmts, i))
+                if eq.get("ci_low") is not None and eq.get("ci_high") is not None:
+                    ci_txt = f"[{eq['ci_low']:.2f}, {eq['ci_high']:.2f}]"
+                else:
+                    ci_txt = "—"
+                ws.write(row, 2, ci_txt, _band(fmts, i))
+                ws.write(row, 3, eq.get("verdict", "—"), _band(fmts, i))
+                row += 1
+            row += 1
+        row += 1
+
+    ws.set_column(0, 0, 22)
+    ws.set_column(1, 7, 13)
 
 
 # ---------------------------------------------------------------------------

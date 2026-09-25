@@ -42,6 +42,7 @@ from reports.charts import TAB_COLORS  # noqa: E402
 
 SECTION_COLORS = {
     "cover": TAB_COLORS["overview"], "overview_table": TAB_COLORS["overview"],
+    "lot_comparison": TAB_COLORS["summary"],
     "combined_distribution": TAB_COLORS["charts"], "image": TAB_COLORS["image"],
     "images": TAB_COLORS["image"], "parameters": TAB_COLORS["methods"],
     "raw_data": TAB_COLORS["raw"], "custom_text": "#6A4C93",
@@ -49,6 +50,7 @@ SECTION_COLORS = {
 
 SECTION_LABELS = {
     "cover": "Cover", "overview_table": "Overview table",
+    "lot_comparison": "Lot comparison",
     "combined_distribution": "Summary charts", "images": "Images",
     "parameters": "Methods", "raw_data": "Raw data", "custom_text": "Text",
 }
@@ -57,6 +59,7 @@ SECTION_LABELS = {
 SECTION_TARGETS = {
     "cover": ("Overview sheet header", "Title slide"),
     "overview_table": ("Overview sheet", "Executive summary slide"),
+    "lot_comparison": ("Lot Comparison sheet (blue tab)", "Lot comparison slide(s)"),
     "combined_distribution": ("Summary Charts sheet", "2 distribution slides"),
     "image": ("One sheet per image", "One slide per image"),
     "parameters": ("Methods sheet", "Methods slide"),
