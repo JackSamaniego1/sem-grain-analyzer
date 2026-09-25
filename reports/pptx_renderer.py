@@ -245,7 +245,7 @@ def _footer_text(model: ReportModel, page_num: int) -> str:
     """'<Job #> 24-117 · <Part Number> 7718-A · <Lot> L-44A · page n' when a
     hierarchy is set; otherwise the legacy '<title> ... page' footer."""
     if model.hierarchy:
-        levels = " · ".join(f"{h.get('label', '')} {h.get('value', '')}".strip()
+        levels = " · ".join(f"{h.get('label', '')} {model.hierarchy_value(h)}".strip()
                                   for h in model.hierarchy)
         return f"{levels} · page {page_num}" if levels else f"page {page_num}"
     return model.title or "Grain Analysis Report"
@@ -389,7 +389,7 @@ def _title_slide(slide, model: ReportModel, navy: RGBColor = NAVY, accent2: RGBC
 
     if model.hierarchy:
         for h in model.hierarchy:
-            line = f"{h.get('label', '')}: {h.get('value', '')}"
+            line = f"{h.get('label', '')}: {model.hierarchy_value(h)}"
             _textbox(slide, Inches(0.8), top, Inches(11.7), Inches(0.4), line, size=16, color=GREY)
             top += Inches(0.4)
         _textbox(slide, Inches(0.8), top, Inches(11.7), Inches(0.4), model.date, size=16, color=GREY)
@@ -768,7 +768,7 @@ def _methods_lines(model: ReportModel) -> List[str]:
     params = model.metadata.get("detection_params") or {}
     lines: List[str] = []
     if model.hierarchy:
-        lines += [f"{h.get('label', '')}: {h.get('value', '')}" for h in model.hierarchy]
+        lines += [f"{h.get('label', '')}: {model.hierarchy_value(h)}" for h in model.hierarchy]
     lines.append(f"Detection mode: {model.metadata.get('detection_mode', '—')}")
     for k, v in params.items():
         lines.append(f"{k}: {v}")

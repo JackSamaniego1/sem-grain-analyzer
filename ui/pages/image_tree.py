@@ -611,17 +611,22 @@ class ImageTree(ThemeAware, QWidget):
                          lambda r=list(recs): self.restore_requested.emit(r)))
         return acts
 
-    def _menu(self, pos) -> None:
-        it = self.tree.itemAt(pos)
+    def build_menu(self, it: QTreeWidgetItem) -> Optional[QMenu]:
         acts = self.menu_actions(it)
         if not acts:
-            return
+            return None
         m = QMenu(self)
         for text, fn in acts:
             a = m.addAction(icons.icon("mdi6.image-remove-outline" if text.startswith("Remove")
                                        else "mdi6.image-refresh-outline"), text)
-            a.triggered.connect(fn)
-        m.exec(self.tree.viewport().mapToGlobal(pos))
+            # triggered(bool) would land in the lambdas' bound default arg
+            a.triggered.connect(lambda _checked=False, f=fn: f())
+        return m
+
+    def _menu(self, pos) -> None:
+        m = self.build_menu(self.tree.itemAt(pos))
+        if m is not None:
+            m.exec(self.tree.viewport().mapToGlobal(pos))
 
     def _on_theme_changed(self) -> None:
         self.tree.viewport().update()

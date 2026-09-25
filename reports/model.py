@@ -460,16 +460,23 @@ class ReportModel:
         secs = [
             Section(id="cover", type="cover", title=self.title, enabled=True, order=0),
             Section(id="overview_table", type="overview_table", title="Overview", enabled=True, order=1),
+            # One distribution chart per lot (Excel only) -- right after the
+            # Overview, before the combined charts/per-image sheets. Always
+            # present (toggle-able like any other section); the renderer
+            # skips the actual sheet when no image carries a lot value, so a
+            # report with no lot info at all renders exactly as before this
+            # section existed.
+            Section(id="lot_summary", type="lot_summary", title="Lot Summary", enabled=True, order=2),
             Section(id="combined_distribution", type="combined_distribution",
-                    title="Summary Charts", enabled=True, order=2),
+                    title="Summary Charts", enabled=True, order=3),
         ]
-        for i, img in enumerate(self.images, start=3):
+        for i, img in enumerate(self.images, start=4):
             secs.append(Section(
                 id=f"image_{img.id}", type="image",
                 title=img.display() or img.id,
                 enabled=True, order=i, payload={"image_id": img.id},
             ))
-        n = len(self.images) + 3
+        n = len(self.images) + 4
         secs.append(Section(id="parameters", type="parameters", title="Methods", enabled=True, order=n))
         secs.append(Section(id="raw_data", type="raw_data", title="Raw Data", enabled=True, order=n + 1))
         return secs
@@ -509,8 +516,20 @@ class ReportModel:
     def hierarchy_header(self) -> str:
         """'Job #: 24-117 | Part Number: 7718-A | Lot: L-44A' or '' when no
         hierarchy is set (legacy models)."""
-        return " | ".join(f"{h.get('label', h.get('key', ''))}: {h.get('value', '')}"
+        return " | ".join(f"{h.get('label', h.get('key', ''))}: {self.hierarchy_value(h)}"
                            for h in self.hierarchy)
+
+    def hierarchy_value(self, h: Dict[str, str]) -> str:
+        """A header level's value; when blank (multi-lot reports tag each
+        image instead), the distinct per-image values, e.g. 'L-1, L-2'."""
+        if h.get("value"):
+            return h["value"]
+        key, seen = h.get("key", ""), []
+        for img in self.images:
+            v = img.level_value(key, "")
+            if v and v not in seen:
+                seen.append(v)
+        return ", ".join(seen)
 
     def level_columns(self) -> List[Tuple[str, str]]:
         """[(key, label), ...] for the per-image table columns — the user's

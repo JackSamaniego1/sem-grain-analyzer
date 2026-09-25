@@ -112,7 +112,12 @@ def test_sheet_order_and_tab_colours(tmp_path):
     wb = openpyxl.load_workbook(out)
     names = wb.sheetnames
     assert names[0] == "Overview"
-    assert names[1] == "Summary Charts"
+    # _build_model tags every image with lot_number="L1" -- a (single) lot
+    # value is present, so the Lot Summary sheet renders right after
+    # Overview, ahead of Summary Charts (product requirement: still fine to
+    # include it for a single-lot report).
+    assert names[1] == "Lot Summary"
+    assert names[2] == "Summary Charts"
     img_sheets = [n for n in names if n.startswith("Img ")]
     raw_sheets = [n for n in names if n.startswith("Raw")]
     assert len(img_sheets) == 3
@@ -126,6 +131,7 @@ def test_sheet_order_and_tab_colours(tmp_path):
         return "#" + wb[sheet_name].sheet_properties.tabColor.rgb[-6:]
 
     assert tab_hex("Overview") == "#1A2B4A"
+    assert tab_hex("Lot Summary") == TAB_COLORS["summary"]
     assert tab_hex("Summary Charts") == "#2E7D32"
     for n in img_sheets:
         assert tab_hex(n) == "#00796B"
@@ -897,6 +903,146 @@ def test_overlay_opacity_default_keeps_overlay_colouring(tmp_path):
     assert not np.array_equal(overlay_embedded, orig_arr)
 
 
+# ---------------------------------------------------------------------------
+# Lot Summary sheet: one grain-diameter distribution chart per lot
+# ---------------------------------------------------------------------------
+
+def _lot_model(tmp_path, lots=("L-1", "L-2"), per_lot=2, hierarchy=True, px_per_um=8.0):
+    det = GrainDetector()
+    items = []
+    seed = 1
+    for lot in lots:
+        for _ in range(per_lot):
+            gray, _ = make_mosaic(seed=seed, h=200, w=200, n_grains=20)
+            bgr = np.repeat(gray[:, :, None], 3, axis=2)
+            res = det.analyze(bgr, px_per_um=px_per_um, params=DetectionParams())
+            img_path = str(tmp_path / f"lot_{lot}_{seed}.png")
+            cv2.imwrite(img_path, bgr)
+            kw = dict(image_path=img_path, result=res, image_bgr=bgr,
+                     sample_id="7718-A", lot_number=lot)
+            if hierarchy:
+                kw["levels"] = {"project": "24-117", "sample": "7718-A", "lot": lot}
+            items.append(ReportImageInput(**kw))
+            seed += 1
+    hier = [{"key": "project", "label": "Job #"}, {"key": "sample", "label": "Part Number"},
+            {"key": "lot", "label": "Lot"}] if hierarchy else None
+    return ReportModel.from_results(items, title="Lot Summary Test", operator="Jack",
+                                    asset_dir=str(tmp_path / "assets"), hierarchy=hier)
+
+
+def _label_values(ws, label):
+    return [row[1].value for row in ws.iter_rows() if row and row[0].value == label]
+
+
+def test_lot_summary_sheet_present_right_after_overview_before_charts_and_images(tmp_path):
+    model = _lot_model(tmp_path)
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    names = openpyxl.load_workbook(out).sheetnames
+    assert names[0] == "Overview"
+    assert names[1] == "Lot Summary"
+    assert names[2] == "Summary Charts"
+    img_start = min(i for i, n in enumerate(names) if n.startswith("Img "))
+    raw_start = min(i for i, n in enumerate(names) if n.startswith("Raw"))
+    assert names.index("Lot Summary") < img_start < raw_start
+
+
+def test_lot_summary_tab_colour_is_the_summary_blue(tmp_path):
+    model = _lot_model(tmp_path)
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    ws = openpyxl.load_workbook(out)["Lot Summary"]
+    assert "#" + ws.sheet_properties.tabColor.rgb[-6:] == TAB_COLORS["summary"]
+
+
+def test_lot_summary_one_chart_per_lot_titled_with_the_lot_name(tmp_path):
+    model = _lot_model(tmp_path, lots=("L-1", "L-2", "L-3"))
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    ws = openpyxl.load_workbook(out)["Lot Summary"]
+    assert len(ws._charts) == 3
+    titles = sorted(c.title.tx.rich.p[0].r[0].t for c in ws._charts)
+    assert titles == ["L-1", "L-2", "L-3"]
+    # axis titles still carry units, like every other chart in the report
+    assert all("Diameter" in c.x_axis.title.tx.rich.p[0].r[0].t for c in ws._charts)
+    assert all("Number of Grains" in c.y_axis.title.tx.rich.p[0].r[0].t for c in ws._charts)
+
+
+def test_lot_summary_stats_block_matches_the_model(tmp_path):
+    model = _lot_model(tmp_path, lots=("L-1", "L-2"), per_lot=2)
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    ws = openpyxl.load_workbook(out)["Lot Summary"]
+    assert _label_values(ws, "Lot") == ["L-1", "L-2"]
+    assert _label_values(ws, "Images") == [2, 2]
+    by_lot = {lot: [i for i in model.images if i.levels.get("lot") == lot] for lot in ("L-1", "L-2")}
+    expected_grains = [sum(i.grain_count for i in by_lot[lot]) for lot in ("L-1", "L-2")]
+    assert _label_values(ws, "Total Grains") == expected_grains
+
+
+def test_lot_summary_uses_legacy_lot_number_without_a_hierarchy(tmp_path):
+    model = _lot_model(tmp_path, hierarchy=False)
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    wb = openpyxl.load_workbook(out)
+    assert "Lot Summary" in wb.sheetnames
+    ws = wb["Lot Summary"]
+    assert len(ws._charts) == 2
+    assert _label_values(ws, "Lot") == ["L-1", "L-2"]
+
+
+def test_lot_summary_sheet_skipped_when_no_image_has_a_lot_value(tmp_path):
+    det = GrainDetector()
+    gray, _ = make_mosaic(seed=1, h=200, w=200, n_grains=20)
+    bgr = np.repeat(gray[:, :, None], 3, axis=2)
+    res = det.analyze(bgr, px_per_um=8.0, params=DetectionParams())
+    p = str(tmp_path / "no_lot.png")
+    cv2.imwrite(p, bgr)
+    model = ReportModel.from_results([ReportImageInput(image_path=p, result=res, image_bgr=bgr)],
+                                     title="No lot", asset_dir=str(tmp_path / "assets"))
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    assert "Lot Summary" not in openpyxl.load_workbook(out).sheetnames
+
+
+def test_disabling_lot_summary_section_removes_the_sheet(tmp_path):
+    model = _lot_model(tmp_path)
+    model.get_section("lot_summary").enabled = False
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    assert "Lot Summary" not in openpyxl.load_workbook(out).sheetnames
+
+
+def test_lot_summary_section_round_trips_through_json(tmp_path):
+    model = _lot_model(tmp_path)
+    restored = ReportModel.from_dict(model.to_dict())
+    sec = restored.get_section("lot_summary")
+    assert sec is not None and sec.type == "lot_summary" and sec.enabled is True
+
+
+def test_lot_summary_backward_compatible_with_report_json_saved_before_the_feature(tmp_path):
+    """An old report.json (no ``lot_summary`` section at all) gets one
+    inserted right after Overview the next time the report is normalized --
+    ``ui.pages.report_builder.normalize`` is what every build/merge/refresh
+    path already calls."""
+    from ui.pages import report_builder as rb
+    model = _lot_model(tmp_path)
+    d = model.to_dict()
+    d["sections"] = [s for s in d["sections"] if s["type"] != "lot_summary"]
+    old_style = ReportModel.from_dict(d)
+    assert old_style.get_section("lot_summary") is None
+
+    rb.normalize(old_style)
+    sec = old_style.get_section("lot_summary")
+    assert sec is not None and sec.enabled
+    ordered = [s.type for s in sorted(old_style.sections, key=lambda s: s.order)]
+    assert ordered.index("lot_summary") == ordered.index("overview_table") + 1
+
+    out = str(tmp_path / "report.xlsx")
+    render_excel(old_style, out)
+    assert "Lot Summary" in openpyxl.load_workbook(out).sheetnames
+
+
 def test_sample_output_written_to_scratch():
     """Definition-of-done artifact for the coordinator to open."""
     scratch = os.path.join(ROOT, "scratch", "reports")
@@ -926,3 +1072,25 @@ def test_sample_output_written_to_scratch():
     names = openpyxl.load_workbook(out).sheetnames
     assert "Notes - Sample Preparation" in names
     assert "Notes - Conclusions" in names
+
+
+def test_lot_summary_keeps_same_lot_name_in_different_parts_apart(tmp_path):
+    from reports.excel_renderer import _lots_with_values
+    model = _lot_model(tmp_path, lots=("L-1", "L-2"), per_lot=1)
+    model.images[1].levels = {"project": "24-117", "sample": "9900-B", "lot": "L-1"}
+    model.images[1].sample_id, model.images[1].lot_number = "9900-B", "L-1"
+    groups = _lots_with_values(model, model.images)
+    assert [t for t, _ in groups] == ["7718-A · L-1", "9900-B · L-1"]
+    assert all(len(imgs) == 1 for _, imgs in groups)
+    # unique lot names keep the plain lot name as the title
+    plain = _lot_model(tmp_path / "p", per_lot=1)
+    assert [t for t, _ in _lots_with_values(plain, plain.images)] == ["L-1", "L-2"]
+
+
+def test_hierarchy_header_fills_blank_values_from_images(tmp_path):
+    model = _lot_model(tmp_path, per_lot=1)
+    for h in model.hierarchy:
+        h.pop("value", None)
+    assert model.hierarchy_header() == "Job #: 24-117 | Part Number: 7718-A | Lot: L-1, L-2"
+    model.hierarchy[0]["value"] = "J-9"                     # an explicit value wins
+    assert model.hierarchy_header().startswith("Job #: J-9 |")

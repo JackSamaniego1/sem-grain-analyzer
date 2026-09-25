@@ -42,7 +42,7 @@ from reports.charts import TAB_COLORS  # noqa: E402
 
 SECTION_COLORS = {
     "cover": TAB_COLORS["overview"], "overview_table": TAB_COLORS["overview"],
-    "lot_comparison": TAB_COLORS["summary"],
+    "lot_comparison": TAB_COLORS["summary"], "lot_summary": TAB_COLORS["summary"],
     "combined_distribution": TAB_COLORS["charts"], "image": TAB_COLORS["image"],
     "images": TAB_COLORS["image"], "parameters": TAB_COLORS["methods"],
     "raw_data": TAB_COLORS["raw"], "custom_text": "#6A4C93",
@@ -50,7 +50,7 @@ SECTION_COLORS = {
 
 SECTION_LABELS = {
     "cover": "Cover", "overview_table": "Overview table",
-    "lot_comparison": "Lot comparison",
+    "lot_comparison": "Lot comparison", "lot_summary": "Lot summary",
     "combined_distribution": "Summary charts", "images": "Images",
     "parameters": "Methods", "raw_data": "Raw data", "custom_text": "Text",
 }
@@ -60,6 +60,7 @@ SECTION_TARGETS = {
     "cover": ("Overview sheet header", "Title slide"),
     "overview_table": ("Overview sheet", "Executive summary slide"),
     "lot_comparison": ("Lot Comparison sheet (blue tab)", "Lot comparison slide(s)"),
+    "lot_summary": ("Lot Summary sheet (blue tab)", "Not included in PowerPoint"),
     "combined_distribution": ("Summary Charts sheet", "2 distribution slides"),
     "image": ("One sheet per image", "One slide per image"),
     "parameters": ("Methods sheet", "Methods slide"),
@@ -288,6 +289,16 @@ def collect_inputs(state, images=None) -> List[ReportImageInput]:
     HIER-01: each image carries its display name (the stem of the file name
     the profile's image-name template produced on import).
 
+    BUG (multi-lot Overview showed one lot/sample for every image): each
+    image gets its *own* project/sample/lot from :func:`image_levels`
+    (``AppState.session.record_for(im)`` — correct even when several lots'
+    worth of images are open together, e.g. UX-09's "load several lots" or
+    any session whose images carry per-record metadata), not the single
+    session-wide value every image used to be stamped with. A per-image
+    value that comes back empty (no record / not a hierarchy workspace)
+    falls back to the session's own sample/lot, so a plain single-lot
+    session renders exactly as before.
+
     Memory for large loads: only the per-grain numbers are snapshotted; the
     overlay comes from ``overlay_loader`` (``AppState.overlay_job``), drawn
     again from compressed labels on the report thread one image at a time
@@ -300,10 +311,14 @@ def collect_inputs(state, images=None) -> List[ReportImageInput]:
         res = light_snapshot(im.result)
         path = str(im.path) if im.path else im.filename
         job = state.overlay_job(im) if hasattr(state, "overlay_job") else None
+        lv = image_levels(state, im)
+        levels = {k: v for k, v in lv.items() if v}   # empty -> fall back to report hierarchy
         out.append(ReportImageInput(image_path=path, result=res,
                                     overlay_bgr=getattr(im.result, "overlay_image", None),
                                     overlay_loader=job,
-                                    sample_id=sample, lot_number=lot,
+                                    sample_id=lv.get("sample") or sample,
+                                    lot_number=lv.get("lot") or lot,
+                                    levels=levels,
                                     display_name=im.display_name))
     return out
 
@@ -324,8 +339,35 @@ def light_snapshot(result):
 # HIER-01: hierarchy labels / names from the workspace profile
 # ======================================================================
 
+def _distinct_level_values(state, key: str) -> List[str]:
+    """Distinct non-empty :func:`image_levels` values of ``key`` across the
+    open session's analysed images, in first-seen order — e.g. the "lot"
+    values of every image when several lots' worth of images are open
+    together (not just the session's single ``meta`` value)."""
+    s = state.session
+    if s is None:
+        return []
+    out: List[str] = []
+    for im in state.images():
+        if im.result is None:
+            continue
+        v = image_levels(state, im).get(key, "")
+        if v and v not in out:
+            out.append(v)
+    return out
+
+
 def report_context(state) -> dict:
-    """Template context of the open session / lot record."""
+    """Template context of the open session / lot record.
+
+    BUG fix: when the open session's images actually span more than one
+    project/sample/lot (per-image ``image_levels``, not just the session's
+    own single ``meta`` value — e.g. UX-09's "load several lots"), the
+    report-level header/title shows every distinct value ("L-1, L-2")
+    instead of silently picking one — this feeds both
+    ``ReportModel.hierarchy`` (the Overview sheet's header line) and the
+    title template, so neither ever implies a report covers only its first
+    lot when it does not."""
     from ui import hierarchy_ui as hui
     s = state.session
     prof = state.profile
@@ -338,6 +380,10 @@ def report_context(state) -> dict:
                 ctx[k] = v
         if not ctx.get("operator"):
             ctx["operator"] = s.meta.operator or state.operator()
+        for k in ("project", "sample", "lot"):
+            vals = _distinct_level_values(state, k)
+            if len(vals) > 1:
+                ctx[k] = ", ".join(vals)
     return ctx
 
 
@@ -764,6 +810,18 @@ def normalize(model: ReportModel) -> None:
     for fixed, title in (("parameters", "Methods"), ("raw_data", "Raw Data")):
         if model.get_section(fixed) is None:
             model.sections.append(Section(id=fixed, type=fixed, title=title, order=20_000))
+    # Lot Summary sheet: backward compatibility for report.json files saved
+    # before this section existed -- inserted right after Overview (where
+    # ``ReportModel._default_sections()`` puts it in new reports), not just
+    # tacked on the end with parameters/raw_data.
+    if model.get_section("lot_summary") is None:
+        sec = Section(id="lot_summary", type="lot_summary", title="Lot Summary",
+                     enabled=True, order=0)
+        model.sections.append(sec)
+        top = [t for t in outline_order(model) if t != sec.id]
+        anchor = "overview_table" if "overview_table" in top else top[0]
+        top.insert(top.index(anchor) + 1, sec.id)
+        apply_order(model, top, [i.id for i in sorted(model.images, key=lambda i: i.order)])
     images_sorted = [i.id for i in sorted(model.images, key=lambda i: i.order)]
     apply_order(model, outline_order(model), images_sorted)
 

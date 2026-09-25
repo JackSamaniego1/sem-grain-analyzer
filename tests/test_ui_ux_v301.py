@@ -520,3 +520,34 @@ def test_results_table_columns_widths_and_hiding(env, qtbot):
     shell2 = _open(qtbot, make_session(env, 1, label="Again"))
     assert shell2.analyze.table.tree.isColumnHidden(COL_SCAN)   # remembered
     shell2.close()
+
+
+def test_ux06_remove_via_real_menu_actions(env, qtbot):
+    """Regression: QAction.triggered(bool) used to land in the menu
+    lambdas' default arg, so "Remove from analyzer" emitted False."""
+    from PySide6.QtWidgets import QTreeWidgetItemIterator
+    from ui.pages.image_tree import ROLE_KIND
+
+    def items(tree):
+        it = QTreeWidgetItemIterator(tree)
+        while it.value():
+            yield it.value()
+            it += 1
+
+    shell = _shell(qtbot)
+    st, a = shell.state, shell.analyze
+    shell.load_into_analyzer([_lots(env, 2, 3)])
+    qtbot.waitUntil(lambda: st.session is not None and not st.is_loading(), timeout=TIMEOUT)
+    assert len(st.images()) == 6
+    img = next(i for i in items(a.film.tree) if i.data(0, ROLE_KIND) == "image")
+    m = a.film.build_menu(img)
+    m.actions()[0].trigger()                                 # "Remove from analyzer"
+    assert len(st.images()) == 5
+    lot = next(i for i in items(a.film.tree) if i.data(0, ROLE_KIND) == "lot")
+    acts = {x.text(): x for x in a.film.build_menu(lot).actions()}
+    next(x for t, x in acts.items() if t.startswith("Remove")).trigger()
+    assert len(st.images()) == 3
+    for row in list(a.film.restore_rows().values()):         # "Add back" rows
+        a.film.build_menu(row).actions()[0].trigger()
+    qtbot.waitUntil(lambda: len(st.images()) == 6, timeout=TIMEOUT)
+    shell.close()

@@ -8,6 +8,10 @@ and the PowerPoint renderer):
                                each independently toggle-able.
   * Raw - <name>    (grey)   — always last (the lab manager's requirement).
 Between those, any mix/order of:
+  * Lot Summary     (blue)   — one grain-diameter distribution chart per lot
+                                (title = the lot's name) + a small stats
+                                block, stacked vertically; only emitted when
+                                at least one image carries a lot value.
   * Summary Charts  (green)  — combined histograms, per-image mean-diameter
                                 bar w/ error bars, grain-count-per-image bar.
   * Img n - <name>  (teal)   — original + overlay, stats, per-image histograms,
@@ -185,6 +189,9 @@ def _build_plan(model: ReportModel, images: List[ImageSummary]) -> List[Tuple[st
         if s.type == "combined_distribution":
             if s.enabled and images:
                 plan.append(("charts", s))
+        elif s.type == "lot_summary":
+            if s.enabled and _lots_with_values(model, images):
+                plan.append(("lot_summary", s))
         elif s.type == "lot_comparison":
             if s.enabled and s.payload.get("parts"):
                 plan.append(("lot_comparison", s))
@@ -219,6 +226,8 @@ def render_excel(model: ReportModel, output_path: str) -> str:
         for kind, sec in plan:
             if kind == "charts":
                 sheet_names[id(sec)] = _safe_sheet_name(sec.title or "Summary Charts", used_names)
+            elif kind == "lot_summary":
+                sheet_names[id(sec)] = _safe_sheet_name(sec.title or "Lot Summary", used_names)
             elif kind == "lot_comparison":
                 sheet_names[id(sec)] = _safe_sheet_name(sec.title or "Lot Comparison", used_names)
             elif kind == "methods":
@@ -244,6 +253,8 @@ def render_excel(model: ReportModel, output_path: str) -> str:
         for kind, sec in plan:
             if kind == "charts":
                 _write_summary_charts(wb, model, images, fmts, series, sheet_names[id(sec)])
+            elif kind == "lot_summary":
+                _write_lot_summary(wb, model, images, fmts, series, sheet_names[id(sec)])
             elif kind == "lot_comparison":
                 _write_lot_comparison(wb, model, sec, fmts, series, sheet_names[id(sec)])
             elif kind == "methods":
@@ -739,6 +750,123 @@ def _write_hist_block(ws, fmts, wb, start_row, values, n_bins, unit, label, colo
 
 
 # ---------------------------------------------------------------------------
+# Lot Summary — one grain-size distribution chart per lot
+# ---------------------------------------------------------------------------
+
+def _lot_groups(model: ReportModel, images: List[ImageSummary]) -> List[Tuple[str, List[ImageSummary]]]:
+    """``images`` grouped by their Lot value, in first-seen order.
+
+    Uses the same "lot" key the Overview table shows (``model.hierarchy``'s
+    "lot" level, honouring each image's per-row override -- see
+    ``ReportModel.row_levels``) when a hierarchy is set (this is what
+    ``reports.multi_lot`` tags every image with), else the legacy
+    ``ImageSummary.lot_number`` field. Images with no lot value at all are
+    grouped together under ``""``.
+    """
+    lot_idx = part_idx = None
+    if model.hierarchy:
+        for i, (key, _label) in enumerate(model.level_columns()):
+            if key == "lot":
+                lot_idx = i
+            elif key in ("sample", "part"):
+                part_idx = i
+    # Keyed by (part, lot): two parts may both have a "Lot 1".
+    order: List[Tuple[str, str]] = []
+    groups: Dict[Tuple[str, str], List[ImageSummary]] = {}
+    for img in images:
+        lv = model.row_levels(img)
+        lot = (lv[lot_idx] if lot_idx is not None else img.lot_number) or ""
+        part = (lv[part_idx] if part_idx is not None else img.sample_id) or ""
+        k = (part, lot)
+        if k not in groups:
+            groups[k] = []
+            order.append(k)
+        groups[k].append(img)
+    parts_per_lot: Dict[str, set] = {}
+    for part, lot in order:
+        parts_per_lot.setdefault(lot, set()).add(part)
+
+    def title(part: str, lot: str) -> str:
+        return f"{part} · {lot}" if lot and part and len(parts_per_lot[lot]) > 1 else lot
+    return [(title(p, l), groups[(p, l)]) for p, l in order]
+
+
+def _lots_with_values(model: ReportModel, images: List[ImageSummary]
+                      ) -> List[Tuple[str, List[ImageSummary]]]:
+    return [(lot, imgs) for lot, imgs in _lot_groups(model, images) if lot]
+
+
+_LOT_SUMMARY_CHART_ROWS = 18  # vertical clearance (rows) reserved per lot block for a 300px chart
+
+
+def _write_lot_summary(wb, model: ReportModel, images: List[ImageSummary], fmts,
+                       series: Dict[str, str], name: str) -> None:
+    """New sheet: one grain-diameter distribution chart per lot (all of that
+    lot's images combined), titled with the lot's name, with a small stats
+    block beside it -- lots stacked vertically. Reuses the same histogram
+    machinery, ``chart_options`` and palette as the Summary Charts sheet
+    (``_write_hist_block``) so both read as one system."""
+    ws = wb.add_worksheet(name)
+    ws.set_tab_color(TAB_COLORS["summary"])
+    ws.hide_gridlines(2)
+    ws.merge_range(0, 0, 0, 9, "Lot Summary", fmts["title"])
+    ws.set_row(0, 26)
+
+    groups = _lots_with_values(model, images)
+    opts = resolve_chart_options(model.chart_options)
+    diam_opt = opts["diameter"]
+    color = diam_opt["color"] or series["diameter_bar"]
+    n_bins = model.bins.get("diameter", 0)
+
+    row = 2
+    for lot, imgs in groups:
+        grains = [g for img in imgs for g in img.grains]
+        calibrated = all(i.has_calibration for i in imgs) and bool(imgs)
+        if calibrated:
+            au, du = _combined_unit(model, imgs)
+            _, am, _, dm = resolve_units(imgs[0].px_per_um, model.units)
+            diam_vals = [g["diameter_um"] * dm for g in grains]
+            area_vals = [g["area_um2"] * am for g in grains]
+        else:
+            au, du = "px²", "px"
+            diam_vals = [g["diameter_px"] for g in grains]
+            area_vals = [g["area_px"] for g in grains]
+
+        astm_vals = [i.astm_g for i in imgs if i.astm_g is not None]
+        mean_diam = float(np.mean(diam_vals)) if diam_vals else 0.0
+        mean_area = float(np.mean(area_vals)) if area_vals else 0.0
+
+        ws.merge_range(row, 0, row, 2, lot, fmts["section"])
+        stats_row = row + 1
+        stats = [
+            ("Lot", lot),
+            ("Images", len(imgs)),
+            ("Total Grains", len(grains)),
+            ("Mean ASTM G", round(float(np.mean(astm_vals)), 2) if astm_vals else "—"),
+            (f"Mean Diameter ({du})", round(mean_diam, 3)),
+            (f"Mean Area ({au})", round(mean_area, 3)),
+        ]
+        for i, (label, val) in enumerate(stats):
+            ws.write(stats_row + i, 0, label, fmts["label"])
+            if isinstance(val, (int, float)):
+                ws.write_number(stats_row + i, 1, val, fmts["value_num2"])
+            else:
+                ws.write(stats_row + i, 1, val, fmts["value"])
+
+        hist_row = stats_row + len(stats) + 1
+        opt = dict(diam_opt)
+        opt["title"] = lot          # UX-13/task: each chart titled with the lot's name
+        next_row = _write_hist_block(ws, fmts, wb, hist_row, diam_vals, n_bins, du,
+                                     "Grain Diameter", color, chart_anchor=(row, 4),
+                                     fit_color=series["normal_fit"], opt=opt,
+                                     show_fit=opts["normal_fit"], metric="diameter")
+        row = max(next_row, row + _LOT_SUMMARY_CHART_ROWS) + 2
+
+    ws.set_column(0, 0, 22)
+    ws.set_column(1, 2, 16)
+
+
+# ---------------------------------------------------------------------------
 # Lot comparison (UX-13)
 # ---------------------------------------------------------------------------
 
@@ -939,7 +1067,7 @@ def _write_methods(wb, model: ReportModel, fmts, name: str) -> None:
         ws.merge_range(r, 0, r, 2, "Hierarchy", fmts["section"]); r += 1
         for h in model.hierarchy:
             ws.write(r, 0, str(h.get("label", h.get("key", ""))), fmts["label"])
-            ws.write(r, 1, str(h.get("value", "")), fmts["value"])
+            ws.write(r, 1, str(model.hierarchy_value(h)), fmts["value"])
             r += 1
         r += 1
 
