@@ -151,3 +151,11 @@
 - **Full suite: 820 passed / 0 failed**. Offline guard clean. Installer rebuilt: GrainAnalyzer_Setup.exe 644 MB, dist 1.3 GB, exe launches OK.
 - **v3.0.0 tag**: Annotated, 709fd7d, local only (main fast-forwarded to v3-dev).
 - **Ready for user**: Install test → fix any bugs (safe on v3-dev before push) → push main/v3-dev/tags → CI builds release → user downloads to flash drive.
+
+## 2026-09-25 — User feedback fixes: FB-01, FB-02, FB-03 complete
+- **Feedback from user review of v3.0.0 GUI** (post-install testing):
+  - **FB-01 (bug) DONE (009530d)**: Excel Overview on multi-lot projects stamped all images with the same lot/part number (collect_inputs() used session's single sample/lot). Fix: per-image hierarchy levels from image_levels(); report header aggregates distinct values ("L-1, L-2"); blank hierarchy headers fall back to per-image values (ReportModel.hierarchy_value).
+  - **FB-02 (feature) DONE (009530d)**: New Excel "Lot Summary" sheet after Overview — one grain-diameter distribution chart per lot (chart title = lot name), stats block (images, total grains, mean ASTM G, mean diameter/area). Grouped by part+lot. Toggleable report section `lot_summary`; old report.json backfilled. **Decision: Lot Summary default ON, Excel-only for v3.0.0** (D-28).
+  - **FB-03 (bug) DONE (009530d)**: "Remove from analyzer" right-click menu threw an error — QAction.triggered(bool) overwrote menu lambdas' uid list. Fixed: ui/pages/image_tree.py new build_menu() structure.
+- **Full suite: 839 passed / 0 failed**. Offline guard clean.
+- **Next**: Rebuild installer at 009530d; locally retag v3.0.0 (move from 709fd7d); user test-installs exe locally; on approval, push main/v3-dev/tags to GitHub (auth ready).

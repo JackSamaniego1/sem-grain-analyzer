@@ -103,6 +103,9 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 | FIX-15 | Lot result field table: Note column clips the exclusion reason (UI layout, CSS padding) | ui-designer | done | 4488f9a |
 | FIX-16 | Calibration check shows "-0.00 %" (negative zero format handling) | detection-engineer | done | 9242703 |
 | FIX-17 | Scale-bar finder fooled by rectangular frame drawn around scale bar (detection robustness) | detection-engineer | done | 9242703 |
+| FB-01 | Excel Overview per-image lot/part (multi-lot projects used session's single lot/part on all images; fix: hierarchy_value fallback) | report-engineer | done | 009530d |
+| FB-02 | New Excel "Lot Summary" sheet (per-lot distribution chart + stats); toggleable; default ON; Excel-only v3.0.0 | report-engineer | done | 009530d |
+| FB-03 | Remove from analyzer menu error (QAction.triggered overwrote lambda uid list; fix: build_menu refactor) | ui-designer | done | 009530d |
 
 ## Code Review
 | ID | Task | Owner | Status | Notes |

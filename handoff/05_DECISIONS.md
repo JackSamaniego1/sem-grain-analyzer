@@ -80,4 +80,9 @@ Context: Innovator INN-run #2 (2026-09-24) generated 11 new ideas (INN-41…INN-
 ### D-27 · 2026-09-25 · accepted (user) — Release hold for user feedback fixes
 Context: User installed v3.0.0 locally and reported 16 UX change requests (UX-01..16) after first-use testing. Coordinator reviewed: all are backwards-compatible, no model/spec breakage, safe to include in v3.0.0 ship. Decision: **Hold release** (main not yet advanced past 8f8753c; v3.0.0 tag local only) until all UX items complete + full test suite green + GrainAnalyzer_Setup.exe rebuilt. Timeline: overnight sprint (2026-09-25 evening) — ui-designer (UX-01..06, UX-08..11), report-engineer (UX-12..16), detection-engineer (UX-07 already done b0437c1). By 2026-09-25 morning: all done, reviewed, suite green, installer rebuilt, main ff'd, tag v3.0.0 re-tagged locally. Then: user test-installs exe locally and pushes if OK. Consequences: v3.0.0 ships with better UX (settings order, pre-analysis validation, multi-lot reports, editable charts, custom palettes); FND-04 GitHub auth is resolved (JackSamaniego1 credential in place).
 
+### D-28 · 2026-09-25 · accepted (user) — Lot Summary sheet: default ON, Excel-only
+Context: FB-02 implemented new "Lot Summary" sheet (per-lot distribution chart + stats block) in Excel reports after Overview. User feedback during v3.0.0 review: feature approved. Decision: **Lot Summary sheet enabled by default** (report section toggle `lot_summary` default true); **Excel-only for v3.0.0** (PPTX counterpart deferred to v3.1+). Old report.json files backfilled with new section. Consequences: multi-lot reports ship with per-lot summary by default; users can toggle off in report designer if not needed; PPTX lot summary is a future feature.
+
+
+
 
