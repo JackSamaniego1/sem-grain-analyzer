@@ -26,7 +26,7 @@ PRIVACY = ("This application works fully offline; no data leaves this computer. 
            "Images, results and reports are stored only in the workspace folder you choose. "
            "There are no update checks, no telemetry and no cloud services.")
 
-MODE_NAMES = {"auto": "Automatic", "boundary": "Boundary", "threshold": "Threshold",
+MODE_NAMES = {"auto": "AI-assisted (SAM)", "boundary": "Boundary", "threshold": "Threshold",
               "sam_astm": "AI-assisted (SAM)"}
 
 
@@ -111,7 +111,8 @@ class SettingsPage(QWidget):
         b1.setToolTip("Make the parameters currently set on the Analyze page the default")
         b1.clicked.connect(self.defaults_from_analyze_requested)
         b2 = AnimatedButton("Factory defaults", "refresh", "ghost")
-        b2.setToolTip("Automatic mode with the built-in parameters")
+        b2.setToolTip("AI-assisted mode (Boundary when the AI model is not installed) "
+                      "with the built-in parameters")
         b2.clicked.connect(self.reset_defaults)
         r2.addWidget(b1)
         r2.addWidget(b2)

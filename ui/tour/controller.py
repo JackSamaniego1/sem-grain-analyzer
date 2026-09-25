@@ -31,9 +31,14 @@ class TourController(QObject):
     step_changed = Signal(int)          # index into ``steps``
     finished = Signal(bool)             # True = completed, False = skipped
 
-    def __init__(self, shell, steps: Optional[Sequence[TourStep]] = None) -> None:
+    def __init__(self, shell, steps: Optional[Sequence[TourStep]] = None,
+                 hint: bool = False) -> None:
+        """``hint=True``: a one-off spotlight (e.g. the UX-02 analysis gate)
+        using the tour's look -- no step counter, no "don't show" box, a
+        single "Got it" button and no "Tour closed" message."""
         super().__init__(shell)
         self.shell = shell
+        self.hint = bool(hint)
         self.steps: List[TourStep] = list(steps if steps is not None else default_steps())
         self.overlay: Optional[TourOverlay] = None
         self.index = -1
@@ -113,7 +118,7 @@ class TourController(QObject):
         at = self.index
         self._close(False)
         toasts = getattr(self.shell, "toasts", None)
-        if toasts is not None and at < len(self.steps) - 1:
+        if toasts is not None and at < len(self.steps) - 1 and not self.hint:
             try:
                 toasts.show_toast("Tour closed", "Replay it any time from Help › Show tour.",
                                   "info", "Undo", lambda: self.start(at), timeout_ms=6000)
@@ -178,7 +183,9 @@ class TourController(QObject):
         ov.set_spot(target)
         counted = self._counted()
         first, last = index == 0, index == len(self.steps) - 1
-        if index in counted:
+        if self.hint:
+            step_text, dots = "", (0, 0)
+        elif index in counted:
             n = counted.index(index)
             step_text, dots = f"Step {n + 1} of {len(counted)}", (n, len(counted))
         elif step.kind == "welcome":
@@ -191,7 +198,13 @@ class TourController(QObject):
         cb.blockSignals(False)
         ov.show_callout(step.text("title", self.shell), step.text("body", self.shell),
                         step_text, dots, step.centred, step.icon, first, last,
-                        show_check=first or last, target=target)
+                        show_check=(first or last) and not self.hint, target=target)
+        if self.hint:
+            b = ov.callout.btn_next
+            b.setText("Got it")
+            b.setMinimumWidth(b.sizeHint().width())
+            ov.callout.btn_skip.hide()
+            ov.callout.btn_back.hide()
         ov.set_pulsing(step.kind == "click")
         ov.setFocus()
         ov.callout.btn_next.setFocus()

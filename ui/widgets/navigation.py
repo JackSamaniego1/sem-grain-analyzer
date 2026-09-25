@@ -4,14 +4,18 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Sequence
 
 from PySide6.QtCore import (
-    QAbstractAnimation, QEasingCurve, QParallelAnimationGroup, QPoint, QPropertyAnimation, QRectF,
-    QSize, Qt, QTimer, Signal,
+    QAbstractAnimation, QEasingCurve, QEvent, QParallelAnimationGroup, QPoint, QPropertyAnimation,
+    QRect, QRectF, QSize, Qt, QTimer, Signal,
 )
 from PySide6.QtGui import QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import (
     QGraphicsOpacityEffect, QHBoxLayout, QLabel, QSizePolicy, QStackedWidget, QToolButton,
-    QVBoxLayout, QWidget,
+    QToolTip, QVBoxLayout, QWidget,
 )
+
+# UX-10: the rail's page labels appear almost at once on hover (Qt's own
+# tooltip delay is ~700 ms)
+NAV_TIP_DELAY_MS = 120
 
 from ui.design import icons
 from ui.design.theme import reduced_motion, ui_font
@@ -44,20 +48,44 @@ class _NavItem(ThemeAware, QWidget):
         self.setAttribute(Qt.WA_Hover)
         self.setToolTip(label)
         self.setAccessibleName(label)
+        self._tip_timer = QTimer(self)
+        self._tip_timer.setSingleShot(True)
+        self._tip_timer.setInterval(NAV_TIP_DELAY_MS)
+        self._tip_timer.timeout.connect(self.show_label_tip)
         self._connect_theme()
 
     def _set_hover(self, v) -> None:
         self.hover = float(v)
         self.update()
 
+    def show_label_tip(self) -> None:
+        """Page name beside the (collapsed) rail entry."""
+        if self.rail.is_expanded() or not self.isVisible():
+            return
+        pos = self.mapToGlobal(QPoint(self.width() + 6, self.height() // 2 - 12))
+        QToolTip.showText(pos, self.toolTip() or self.label, self, QRect(), 4000)
+
+    def event(self, e) -> bool:
+        if e.type() == QEvent.ToolTip:
+            # our own fast tooltip is shown instead (collapsed rail only)
+            if not self.rail.is_expanded():
+                self.show_label_tip()
+            e.accept()
+            return True
+        return super().event(e)
+
     def enterEvent(self, e) -> None:
         stop(self._anim)
         self._anim = animate_value(self, self.hover, 1.0, MOTION.fast, self._set_hover)
+        self._tip_timer.start()
         super().enterEvent(e)
 
     def leaveEvent(self, e) -> None:
         stop(self._anim)
         self._anim = animate_value(self, self.hover, 0.0, MOTION.base, self._set_hover)
+        self._tip_timer.stop()
+        if QToolTip.isVisible() and QToolTip.text() == (self.toolTip() or self.label):
+            QToolTip.hideText()
         super().leaveEvent(e)
 
     def mouseReleaseEvent(self, e) -> None:

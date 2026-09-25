@@ -69,6 +69,23 @@ SHORTCUTS = {
 }
 
 
+DEVICE_TIP_CPU = ("AI-assisted detection runs on this computer's processor (CPU). "
+                  "A supported NVIDIA graphics card (GPU) would make it faster. Boundary and "
+                  "Threshold modes always use the processor. Everything runs on this PC; "
+                  "nothing is sent anywhere.")
+DEVICE_TIP_GPU = ("AI-assisted detection runs on the graphics card (GPU): {name}. This is "
+                  "much faster than the processor. Everything runs on this PC; nothing is "
+                  "sent anywhere.")
+
+
+def device_chip_text(probe: str) -> tuple:
+    """(chip text, tooltip, badge kind) for a ``_probe_device`` result."""
+    if probe.startswith("GPU"):
+        name = probe.split("·", 1)[1].strip() if "·" in probe else "GPU"
+        return f"AI runs on: GPU ({name})", DEVICE_TIP_GPU.format(name=name), "accent"
+    return "AI runs on: CPU", DEVICE_TIP_CPU, "neutral"
+
+
 def _probe_device() -> str:
     try:
         import torch  # heavy; imported lazily and off the GUI thread
@@ -168,7 +185,7 @@ class AppShell(QMainWindow):
             self.rail.add_page(key, ic, text)
         self.rail.add_page("settings", "settings", "Settings", bottom=True)
         for key in self.rail.keys():
-            self.rail.item(key).setToolTip(key.capitalize())
+            self.rail.item(key).setToolTip(self.rail.item(key).label)
         h.addWidget(self.rail)
 
         main = QWidget()
@@ -206,8 +223,9 @@ class AppShell(QMainWindow):
         self.progress.setToolTip("Overall analysis progress")
         self.progress.hide()
         sb.addPermanentWidget(self.progress)
-        self.chip_device = Badge("CPU", "neutral", icon="cpu")
-        self.chip_device.setToolTip("Processing device for the AI-assisted mode")
+        # UX-11: say in plain words where the AI-assisted detection runs
+        self.chip_device = Badge("AI runs on: CPU", "neutral", icon="cpu")
+        self.chip_device.setToolTip(DEVICE_TIP_CPU)
         self.chip_cal = Badge("Not calibrated", "warning", dot=True)
         self.chip_cal.setToolTip("Scale of the current image (Ctrl+K to set)")
         self.chip_save = Badge("No session", "neutral", icon="save")
@@ -317,6 +335,7 @@ class AppShell(QMainWindow):
     def _wire(self) -> None:
         st = self.state
         self.rail.page_selected.connect(self._on_page)
+        self.rail.expanded_changed.connect(self._on_rail_expanded)
         self.rail.reselected.connect(self._on_rail_reselected)
         self.crumb.segment_clicked.connect(self._on_crumb)
         self.search.search_changed.connect(self._run_search)
@@ -355,6 +374,8 @@ class AppShell(QMainWindow):
         self.analyze.review_requested.connect(lambda: self.go("review"))
         self.analyze.add_images_requested.connect(self.open_images)
         self.analyze.progress_changed.connect(self._on_progress)
+        self.analyze.setup_required.connect(self.show_setup_hint)
+        self.projects.load_requested.connect(self.load_into_analyzer)
         self.review.export_requested.connect(self.export_all_excel)
         self.review.open_projects_requested.connect(lambda: self.go("projects"))
         self.reports.empty_session.action_triggered.connect(lambda: self.go("projects"))
@@ -378,6 +399,10 @@ class AppShell(QMainWindow):
         self.compare.set_lots(list(lot_paths or []))
         self.stack.set_current_widget(self.compare)
         self._update_breadcrumb("projects")
+
+    def _on_rail_expanded(self, on: bool) -> None:
+        """UX-10: labels stay shown next time when the rail was expanded."""
+        self.state.ui_state["rail_expanded"] = bool(on)
 
     def _on_rail_reselected(self, key: str) -> None:
         """Clicking "Projects" while on its Compare sub-page goes back."""
@@ -615,17 +640,26 @@ class AppShell(QMainWindow):
             length = suggest_bar_length_um(bar.get("length_px", 0), float(sug[0])) \
                 if sug else None
             dlg.prefill(bar, length)
-        per_image = self.analyze.cal_override.isChecked()
-        dlg.btn_apply.setText("Apply to this image" if per_image else "Apply to all images")
+        n = len(self.state.images())
+        dlg.btn_apply.setText(f"Apply to all {n} images" if n > 1 else "Apply to all images")
 
         def apply(px):
-            self.state.set_calibration(px, im.uid if per_image else None)
+            per_image = dlg.apply_scope == "image"
             analysed = any(x.result is not None for x in self.state.images())
+            if per_image:
+                self.state.set_calibration(px, im.uid)
+                m = dlg.measured()
+                if m:
+                    im.bar_px, im.bar_um = float(m[0]), float(m[1])
+                snap = None
+            else:
+                snap = self.state.set_calibration_all(px)
             self.toasts.show_toast(
-                "Scale set", f"{px:.4f} px/µm — " + ("this image" if per_image else "all images")
+                "Scale set", f"{px:.4f} px/µm — " + ("this image only" if per_image
+                                                     else "all images")
                 + (". Re-analyse to apply it to existing results." if analysed else "."),
-                "success", "Analyze all" if analysed else None,
-                self.analyze_all if analysed else None)
+                "success", "Undo" if snap else None,
+                (lambda s=snap: self.state.restore_scales(s)) if snap else None)
         dlg.calibration_set.connect(apply)
         dlg.exec()
 
@@ -702,12 +736,19 @@ class AppShell(QMainWindow):
             full = w >= W and h >= H
             # session: full frame = no scan area; this image only: an explicit
             # full-frame override (a reset to the session's area is a button)
-            rect = (None if not this_only else (0, 0, W, H)) if full else (x, y, w, h)
-            self.state.set_scan_rect(rect, im.uid if this_only else None)
-            self.toasts.show_toast("Scan area cleared" if rect is None else "Scan area set",
-                                   "Using the full image." if rect is None else
-                                   f"{w} × {h} px — {'this image' if this_only else 'all images'}. "
-                                   "Border grains will be excluded.", "success")
+            if this_only:
+                rect = (0, 0, W, H) if full else (x, y, w, h)
+                self.state.set_scan_rect(rect, im.uid)
+                snap = None
+            else:
+                rect = None if full else (x, y, w, h)
+                snap = self.state.set_scan_rect_all(rect)   # every image in the analyzer
+            self.toasts.show_toast("Scan area set",
+                                   ("Full image" if full else f"{w} × {h} px") + " — "
+                                   + ("this image" if this_only else "all images") + "."
+                                   + ("" if full else " Border grains will be excluded."),
+                                   "success", "Undo" if snap else None,
+                                   (lambda s=snap: self.state.restore_scans(s)) if snap else None)
         dlg.scan_area_set.connect(apply)
         dlg.exec()
 
@@ -744,9 +785,11 @@ class AppShell(QMainWindow):
     def _status(self, msg: str) -> None:
         self.status_msg.setText(msg)
 
-    def _set_device(self, text: str) -> None:
+    def _set_device(self, probe: str) -> None:
+        text, tip, kind = device_chip_text(probe or "CPU")
         self.chip_device.set_text(text)
-        self.chip_device.set_kind("accent" if text.startswith("GPU") else "neutral")
+        self.chip_device.setToolTip(tip)
+        self.chip_device.set_kind(kind)
         self.chip_device.updateGeometry()
 
     def _update_cal_chip(self) -> None:
@@ -832,6 +875,8 @@ class AppShell(QMainWindow):
         if last in ("analyze", "review"):
             last = "projects"  # nothing is open yet at start-up
         self.rail.set_current(last if last in self.pages else "projects", emit=False, animate=False)
+        if ui.get("rail_expanded"):
+            self.rail.set_expanded(True, animate=False)
         self.stack.setCurrentWidget(self.pages.get(last, self.projects))
 
     def closeEvent(self, e) -> None:
@@ -859,6 +904,57 @@ class AppShell(QMainWindow):
         dlg.setAttribute(Qt.WA_DeleteOnClose)
         self.about_dialog = dlg
         dlg.open()
+
+    # ------------------------------------------------------------------ UX-02 / UX-09
+    def show_setup_hint(self, title: str, text: str) -> None:
+        """Spotlight the Analyze page's "Scan area & scale" tile exactly like
+        the guided tour does, with the gate text."""
+        from ui.tour import TourController
+        from ui.tour.steps import TourStep
+        if self.tour.is_active():
+            return
+        old = getattr(self, "setup_hint", None)
+        if old is not None and old.is_active():
+            old.finish()
+        self.search_popup.hide()
+        step = TourStep("setup_gate", title, text, kind="point", page="analyze",
+                        targets=("tourSetupTile",), fallbacks=(("tourCalibration",),))
+        self.setup_hint = TourController(self, [step], hint=True)
+        self.setup_hint.start()
+
+    def load_into_analyzer(self, paths) -> None:
+        """UX-09: every image under the given jobs / parts / lots / sessions
+        into the analyzer (folders found off-thread, pixels stream in)."""
+        paths = [Path(p) for p in paths or []]
+        if not paths:
+            return
+        if self.analyze.queue.is_running():
+            self.toasts.show_toast("Analysis is running",
+                                   "Wait for it to finish (or Cancel) before loading other "
+                                   "images.", "info")
+            return
+        self._status("Finding images…")
+
+        def found(recs):
+            if not recs:
+                self.toasts.show_toast("No images found",
+                                       "The selected folders contain no images yet.", "info")
+                self._status("Ready")
+                return
+
+            def done(ok):
+                if ok and self.state.session is not None:
+                    self.go("analyze")
+                    self.projects.reload()
+                    self._status(f"Loading {len(self.state.images())} images from "
+                                 f"{len(recs)} folder{'s' if len(recs) != 1 else ''}…"
+                                 if self.state.is_loading() else "Ready")
+            self.state.open_records(recs, on_done=done)
+
+        from ui.app_state import records_under
+        run_task(records_under, self.state.root, paths, on_done=found,
+                 on_error=lambda m: self.toasts.show_toast("Could not read the folders",
+                                                           m.splitlines()[0], "danger"))
 
     # ------------------------------------------------------------------ tour (UI-10)
     def start_tour(self, index: int = 0) -> None:

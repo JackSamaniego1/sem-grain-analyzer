@@ -1,38 +1,49 @@
 """
-Analyze page (UI-04, DET-06, DET-07-lite, DET-09).
+Analyze page (UI-04, DET-06, DET-07-lite, DET-09; v3.0.1 UX-01..06, 08, 09).
 
 Layout
-  left   : filmstrip — thumbnails with per-image status + inline progress
-  centre : toolbar (view switch, zoom) · canvas · session summary StatCards
-  right  : run card (Analyze all / current / Cancel + overall ProgressRing),
-           grain filters (appears after the first result), detection mode cards,
-           calibration (session scale + per-image override), scan area,
-           excluded (black) regions, advanced parameters
-States     : no session (empty state) · idle · running · results
-Nothing blocks: analysis runs on a QThread, filtering/saving on the pool.
+  left   : image tree -- Job > Part > Lot (> Session) > images, with counts,
+           analysis and scale status per group; right-click removes an image
+           from the analyzer (never from the lot), "Add back" restores it
+  centre : title · [Image | Results table] · view switch · zoom
+           Image  : canvas + "Scan area & scale" tile (auto-find for all
+                    images, current image's scan area / scale with source and
+                    Edit, scale-bar length entry)
+           Table  : one row per image with Job / Part / Lot, group + sort
+           summary StatCards underneath
+  right  : run card (Analyze all / current / Cancel + ProgressRing), then
+           1 Detection mode (AI-assisted first, default) · 2 Calibration ·
+           3 Scan area · 4 Grain filters (after the first result) ·
+           5 Excluded (black) regions · 6 Advanced parameters (hidden while
+           AI-assisted is selected) · Overlay opacity
+States     : no session (empty state) · loading (folders stream in) · idle ·
+             needs setup (gate) · running · results
+Nothing blocks: analysis runs on a QThread; loading, auto-find, filtering
+and saving run on the thread pool.
 """
 from __future__ import annotations
 
-import os
-import sys
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QSize, Qt, QTimer, Signal
+from PySide6.QtCore import SIGNAL, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QDoubleSpinBox, QFormLayout, QGridLayout, QHBoxLayout, QSizePolicy, QSpinBox,
+    QCheckBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QSizePolicy, QSlider, QSpinBox,
     QVBoxLayout, QWidget,
 )
 
 from core.grain_detector import DetectionParams
-from ui.app_state import params_from_dict, params_to_dict
+from ui.app_state import params_from_dict
 from ui.canvas import GrainCanvas
 from ui.canvas.edit_actions import GrainEditController
 from ui.design import icons
 from ui.design.tokens import SPACE
-from ui.format import astm_g, fmt_int, fmt_px_per_um, smart_format
+from ui.detection_modes import AI_MODE, MODES, default_mode, normalize_mode, \
+    sam_model_available
+from ui.format import astm_g, fmt_int, fmt_px_per_um
 from ui.pages.common import CardGrid, MetricCard, Panel, SelectableCard, scroll
-from ui.pages.filmstrip import Filmstrip
 from ui.pages.filter_card import FilterCard, Reveal
+from ui.pages.image_tree import ImageTree
+from ui.pages.results_table import ResultsTable
 from ui.widgets import (
     AnimatedButton, Badge, Card, CollapsibleSection, EmptyState, FadeStackedWidget,
     IconButton, KeyValueList, ProgressRing, SegmentedControl, label,
@@ -40,25 +51,18 @@ from ui.widgets import (
 from ui.widgets.layout import ResponsiveToolbar, group as tool_group
 from ui.workers import AnalysisJob, AnalysisQueue
 
-MODES = [
-    ("auto", "Automatic", "target",
-     "Picks threshold or boundary detection from the image — recommended"),
-    ("boundary", "Boundary", "grains",
-     "Dense grain mosaics separated by thin dark grooves"),
-    ("threshold", "Threshold", "histogram",
-     "Distinct grains or particles on a contrasting background"),
-    ("sam_astm", "AI-assisted", "layers",
-     "Segment-Anything model + ASTM E112 refinement — slowest"),
-]
+# UX-02: shown (spotlighted like the guided tour) when Analyze is pressed
+# before every image has a confirmed scan area and scale
+GATE_TEXT = ("This must be set. Check the scan regions and magnifications on each image "
+             "and edit any that are wrong before starting analysis.")
+GATE_TITLE = "Scan area and scale needed"
 
+_SOURCE = {"auto": ("Auto", "info"), "metadata": ("Metadata", "info"),
+           "manual": ("Manual", "success"), "all": ("All images", "neutral"),
+           "saved": ("Saved", "neutral"), "": ("", "neutral")}
 
-def sam_model_available() -> bool:
-    here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    base = getattr(sys, "_MEIPASS", here)
-    name = "sam_vit_b_01ec64.pth"
-    return any(os.path.isfile(os.path.join(d, name)) for d in
-               (os.path.join(base, "models"), os.path.join(here, "models"), here,
-                os.path.join(here, "core")))
+__all__ = ["AnalyzePage", "ParamPanel", "SetupTile", "ModeCard", "GATE_TEXT", "MODES",
+           "sam_model_available"]
 
 
 class ModeCard(SelectableCard):
@@ -76,6 +80,8 @@ class ModeCard(SelectableCard):
         top.addWidget(label(title, "body_strong"), 1)
         if not available:
             top.addWidget(Badge("Not installed", "warning"))
+        elif key == AI_MODE:
+            top.addWidget(Badge("Default", "accent"))
         self.body_layout().addLayout(top)
         d = label(desc, "caption")
         d.setWordWrap(True)
@@ -89,9 +95,11 @@ class ModeCard(SelectableCard):
 
 
 class ParamPanel(QWidget):
-    """Detection parameters (mode cards + excluded regions + advanced)."""
+    """Detection mode, excluded regions and advanced parameters.  The page
+    inserts calibration, scan area and grain filters between them."""
 
     changed = Signal()
+    mode_changed = Signal(str)
     show_excluded_regions = Signal(bool)
 
     def __init__(self, parent=None) -> None:
@@ -99,7 +107,7 @@ class ParamPanel(QWidget):
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(SPACE.md)
-        self._mode = "auto"
+        self._mode = default_mode()
 
         self.sec_mode = CollapsibleSection("Detection mode", expanded=True)
         grid = QVBoxLayout()
@@ -107,8 +115,8 @@ class ParamPanel(QWidget):
         grid.setContentsMargins(0, 0, 0, 0)
         self.mode_cards: Dict[str, ModeCard] = {}
         sam_ok = sam_model_available()
-        for i, (key, title, ic, desc) in enumerate(MODES):
-            c = ModeCard(key, title, ic, desc, available=(key != "sam_astm" or sam_ok))
+        for key, title, ic, desc in MODES:
+            c = ModeCard(key, title, ic, desc, available=(key != AI_MODE or sam_ok))
             c.clicked.connect(lambda k=key: self.set_mode(k, emit=True))
             self.mode_cards[key] = c
             grid.addWidget(c)
@@ -151,7 +159,7 @@ class ParamPanel(QWidget):
         self.sec_invalid.add_widget(cap)
         v.addWidget(self.sec_invalid)
 
-        # --- advanced
+        # --- advanced (hidden while AI-assisted is selected, UX-01)
         self.sec_adv = CollapsibleSection("Advanced parameters", expanded=False)
         a = QFormLayout()
         a.setVerticalSpacing(SPACE.sm)
@@ -196,7 +204,8 @@ class ParamPanel(QWidget):
         for cb in (self.clahe, self.watershed, self.adaptive, self.dark_grains):
             self.sec_adv.add_widget(cb)
         self.reset_btn = AnimatedButton("Reset to defaults", "refresh", "ghost", "sm")
-        self.reset_btn.setToolTip("Restore factory detection parameters (mode: Automatic)")
+        self.reset_btn.setToolTip("Restore the factory detection parameters "
+                                  "(mode: AI-assisted when installed)")
         self.reset_btn.clicked.connect(self.reset)
         self.sec_adv.add_widget(self.reset_btn)
         v.addWidget(self.sec_adv)
@@ -206,7 +215,7 @@ class ParamPanel(QWidget):
         for cb in (self.clahe, self.watershed, self.adaptive, self.dark_grains):
             cb.toggled.connect(self._changed)
         self._loading = False
-        self.set_params(DetectionParams())
+        self.set_params(DetectionParams(detection_mode=default_mode()))
 
     def _dspin(self, lo, hi, dec, step, tip) -> QDoubleSpinBox:
         s = QDoubleSpinBox()
@@ -222,11 +231,14 @@ class ParamPanel(QWidget):
             self.changed.emit()
 
     def set_mode(self, key: str, emit: bool = False) -> None:
+        key = normalize_mode(key)
         if key not in self.mode_cards or not self.mode_cards[key].available:
-            key = "auto"
+            key = normalize_mode("")
         self._mode = key
         for k, c in self.mode_cards.items():
             c.set_selected(k == key)
+        self.sec_adv.setVisible(key != AI_MODE)
+        self.mode_changed.emit(key)
         if emit:
             self.changed.emit()
 
@@ -234,13 +246,13 @@ class ParamPanel(QWidget):
         return self._mode
 
     def reset(self) -> None:
-        """DET-06: defaults come from DetectionParams (mode 'auto'), not 'sam_astm'."""
-        self.set_params(DetectionParams())
+        """Factory parameters with the default mode (AI-assisted if installed)."""
+        self.set_params(DetectionParams(detection_mode=default_mode()))
         self.changed.emit()
 
     def set_params(self, p: DetectionParams) -> None:
         self._loading = True
-        self.set_mode(p.detection_mode or "auto")
+        self.set_mode(p.detection_mode)
         self.blur.setValue(p.blur_sigma)
         self.edge.setValue(p.edge_sensitivity)
         self.thr_off.setValue(p.threshold_offset)
@@ -272,6 +284,201 @@ class ParamPanel(QWidget):
         return p
 
 
+class SetupTile(Card):
+    """UX-02: scan area + scale of the images, shown under the canvas.
+
+    Row 1: readiness of every image + "Auto-find scan area & scale bar
+    (all images)".  Row 2: the current image's scan area and scale with
+    where they came from and Edit.  Row 3 (when a scale bar was found but
+    its length is unknown): type the bar's length in µm."""
+
+    auto_find_requested = Signal()
+    edit_scan_requested = Signal()
+    edit_scale_requested = Signal()
+    bar_length_entered = Signal(float, bool)       # µm, also same-bar images
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent=parent)
+        self.setObjectName("setupTile")
+        self.layout().setContentsMargins(SPACE.lg, SPACE.md, SPACE.lg, SPACE.md)
+        self.layout().setSpacing(SPACE.sm)
+        b = self.body_layout()
+        b.setSpacing(SPACE.sm)
+        top = QHBoxLayout()
+        top.setSpacing(SPACE.sm)
+        ic = label()
+        ic.setPixmap(icons.pixmap("scan_area", 18))
+        top.addWidget(ic)
+        top.addWidget(label("Scan area & scale", "h3"))
+        self.status = Badge("Not checked", "warning", dot=True)
+        self.status.setToolTip("Every image needs a confirmed scan area and scale "
+                               "(magnification) before it is analysed")
+        top.addWidget(self.status)
+        self.progress = label("", "caption")
+        top.addWidget(self.progress, 1)
+        self.btn_auto = AnimatedButton("Auto-find scan area & scale bar (all images)",
+                                       "mdi6.auto-fix", "secondary", "sm")
+        self.btn_auto.setToolTip("Find the SEM info bar (left out of the scan area) and the "
+                                 "scale from the file's metadata or the scale bar, on every "
+                                 "image in the analyzer. Values you set by hand are kept.")
+        self.btn_auto.clicked.connect(self.auto_find_requested)
+        top.addWidget(self.btn_auto)
+        b.addLayout(top)
+
+        row = QHBoxLayout()
+        row.setSpacing(SPACE.xl)
+        self.scan_col, self.scan_val, self.scan_src, self.btn_scan = self._column(
+            "SCAN AREA", "Edit the analysed rectangle of this image (Ctrl+R)")
+        self.scale_col, self.scale_val, self.scale_src, self.btn_scale = self._column(
+            "SCALE", "Measure the scale bar of this image (Ctrl+K)")
+        self.btn_scan.clicked.connect(self.edit_scan_requested)
+        self.btn_scale.clicked.connect(self.edit_scale_requested)
+        row.addLayout(self.scan_col, 1)
+        row.addLayout(self.scale_col, 1)
+        b.addLayout(row)
+
+        self.bar_row = QWidget()
+        br = QHBoxLayout(self.bar_row)
+        br.setContentsMargins(0, 0, 0, 0)
+        br.setSpacing(SPACE.sm)
+        self.bar_lbl = label("", "caption")
+        br.addWidget(self.bar_lbl)
+        self.bar_um = QDoubleSpinBox()
+        self.bar_um.setRange(0.0, 100000.0)
+        self.bar_um.setDecimals(3)
+        self.bar_um.setSuffix(" µm")
+        self.bar_um.setSpecialValueText("length?")
+        self.bar_um.setToolTip("The length printed next to the scale bar in the info bar")
+        self.bar_um.setMinimumWidth(110)
+        br.addWidget(self.bar_um)
+        self.bar_same = QCheckBox("Also images with the same scale bar")
+        self.bar_same.setChecked(True)
+        self.bar_same.setToolTip("Use this length for every image whose scale bar has the same "
+                                 "length in pixels (same magnification) and no scale from its "
+                                 "metadata or set by hand")
+        br.addWidget(self.bar_same)
+        br.addStretch(1)
+        self.btn_bar = AnimatedButton("Apply", "check", "primary", "sm")
+        self.btn_bar.setToolTip("Scale = scale-bar pixels ÷ the length you entered")
+        self.btn_bar.clicked.connect(lambda: self.bar_um.value() > 0 and self.bar_length_entered
+                                     .emit(float(self.bar_um.value()), self.bar_same.isChecked()))
+        br.addWidget(self.btn_bar)
+        self.bar_row.hide()
+        b.addWidget(self.bar_row)
+
+    def _column(self, title: str, tip: str):
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        head = QHBoxLayout()
+        head.setSpacing(SPACE.sm)
+        head.addWidget(label(title, "overline"))
+        src = Badge("", "neutral")
+        src.setToolTip("Where this value came from")
+        head.addWidget(src)
+        head.addStretch(1)
+        btn = AnimatedButton("Edit…", "edit", "ghost", "sm")
+        btn.setToolTip(tip)
+        head.addWidget(btn)
+        col.addLayout(head)
+        val = label("", "body")
+        val.setWordWrap(True)
+        val.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        col.addWidget(val)
+        return col, val, src, btn
+
+    @staticmethod
+    def _set_src(badge: Badge, key: str) -> None:
+        text, kind = _SOURCE.get(key, (key.capitalize(), "neutral"))
+        badge.set_text(text)
+        badge.set_kind(kind)
+        badge.setVisible(bool(text))
+
+    def refresh(self, state, im) -> None:
+        """Show the readiness of every image and the current image's values."""
+        imgs = [x for x in state.images() if not x.loading and x.image_bgr is not None]
+        n = len(imgs)
+        ready = sum(1 for x in imgs if state.setup_ready(x))
+        loading = sum(1 for x in state.images() if x.loading)
+        if state.is_setting_up():
+            pass
+        elif loading:
+            self.status.set_text(f"Loading {loading} image{'s' if loading != 1 else ''}…")
+            self.status.set_kind("neutral")
+        elif n and ready == n:
+            self.status.set_text(f"All {n} image{'s' if n != 1 else ''} ready")
+            self.status.set_kind("success")
+        else:
+            self.status.set_text(f"{n - ready} of {n} image{'s' if n != 1 else ''} "
+                                 "need checking" if n else "No images")
+            self.status.set_kind("warning" if n else "neutral")
+        self.btn_auto.setEnabled(bool(n) and not state.is_setting_up())
+        doc = state.session
+        if im is None or doc is None:
+            self.scan_val.setText("—")
+            self.scale_val.setText("—")
+            self._set_src(self.scan_src, "")
+            self._set_src(self.scale_src, "")
+            self.bar_row.hide()
+            return
+        if im.loading or im.image_bgr is None:
+            self.scan_val.setText("Loading…" if im.loading else "Image not readable")
+            self.scale_val.setText("—")
+            self._set_src(self.scan_src, "")
+            self._set_src(self.scale_src, "")
+            self.bar_row.hide()
+            return
+        # scan area
+        rect = state.scan_for(im)
+        H, W = im.image_bgr.shape[:2]
+        if rect is None:
+            self.scan_val.setText("Not set — run Auto-find or Edit")
+            self.scan_val.setProperty("tone", "warning")
+            self._set_src(self.scan_src, "")
+        else:
+            x, y, w, h = rect
+            info = state.info_bar_for(im)
+            ar = tuple(info.get("analysis_rect") or ()) if info else ()
+            what = ("info bar left out" if ar and tuple(rect) == ar else
+                    "full image" if (x, y, w, h) == (0, 0, W, H) else f"at ({x}, {y})")
+            self.scan_val.setText(f"{w} × {h} px — {what}")
+            self.scan_val.setProperty("tone", None)
+            self._set_src(self.scan_src, im.scan_source or ("all" if im.scan_rect is None
+                                                            else "saved"))
+        # scale
+        px = state.px_for(im)
+        if px <= 0:
+            self.scale_val.setText(
+                f"Not set — scale bar found ({im.bar_px:.0f} px); enter its length"
+                if im.bar_px > 0 else "Not set — no scale bar or metadata found; use Edit")
+            self.scale_val.setProperty("tone", "warning")
+            self._set_src(self.scale_src, "")
+        else:
+            bar = (f"  ·  bar {im.bar_px:.0f} px = {im.bar_um:g} µm"
+                   if im.bar_px > 0 and im.bar_um > 0 else "")
+            self.scale_val.setText(f"{px:.4g} px/µm  ({1.0 / px:.4g} µm/px){bar}")
+            self.scale_val.setProperty("tone", None)
+            self._set_src(self.scale_src, im.scale_source or (
+                "all" if im.px_override <= 0 else "saved"))
+        for w in (self.scan_val, self.scale_val):
+            w.style().unpolish(w)
+            w.style().polish(w)
+        show_bar = im.bar_px > 0 and (px <= 0 or im.scale_source == "auto")
+        if show_bar:
+            self.bar_lbl.setText(f"Scale bar found: {im.bar_px:.0f} px. Its length:")
+            self.bar_um.blockSignals(True)
+            self.bar_um.setValue(im.bar_um if im.bar_um > 0 else 0.0)
+            self.bar_um.blockSignals(False)
+        self.bar_row.setVisible(show_bar)
+
+    def set_progress(self, done: int, total: int) -> None:
+        running = total > 0 and done < total
+        self.btn_auto.set_loading(running)
+        self.progress.setText(f"Checking {done} of {total} images…" if running else "")
+        if running:
+            self.status.set_text("Checking…")
+            self.status.set_kind("info")
+
+
 class AnalyzePage(QWidget):
     calibrate_requested = Signal()
     scan_area_requested = Signal()
@@ -281,6 +488,7 @@ class AnalyzePage(QWidget):
     add_images_requested = Signal()
     busy_changed = Signal(bool)
     progress_changed = Signal(float, str)     # overall %, message (status bar)
+    setup_required = Signal(str, str)         # UX-02: title, text (shell spotlights the tile)
 
     def __init__(self, state, toasts=None, parent=None) -> None:
         super().__init__(parent)
@@ -289,8 +497,13 @@ class AnalyzePage(QWidget):
         self.queue = AnalysisQueue(self)
         self._batch_total = 0
         self._batch_uids: List = []
+        self._run_btn: Optional[AnimatedButton] = None
         self._rec = "session"            # HIER-01: "lot" when images live in the lot
         self._scale_key = "Session scale"
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.setInterval(120)
+        self._refresh_timer.timeout.connect(self._refresh_setup_all)
         self._build()
         self._wire()
         self._relabel()
@@ -318,9 +531,9 @@ class AnalyzePage(QWidget):
         film_panel = Panel("right")
         fl = QVBoxLayout(film_panel)
         fl.setContentsMargins(0, 0, 0, 0)
-        self.film = Filmstrip()
-        self.film.setMinimumWidth(200)
-        self.film.setMaximumWidth(240)
+        self.film = ImageTree(self.state)
+        self.film.setMinimumWidth(260)
+        self.film.setMaximumWidth(320)
         fl.addWidget(self.film)
         h.addWidget(film_panel)
 
@@ -337,6 +550,10 @@ class AnalyzePage(QWidget):
         for w in (self.img_title, self.img_sub):
             w.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             col.addWidget(w)
+        self.centre_seg = SegmentedControl(["Image", "Results table"])
+        self.centre_seg.setToolTip("The selected image, or a table of every image in the "
+                                   "analyzer (group and sort by job, part or lot)")
+        self.centre_seg.setFixedWidth(210)
         self.view_seg = SegmentedControl(["Original", "Overlay", "Excluded"])
         self.view_seg.setToolTip("Original image · detected grains · areas not analysed")
         self.view_seg.setFixedWidth(270)
@@ -346,11 +563,25 @@ class AnalyzePage(QWidget):
         self.btn_11 = IconButton("target", "Actual pixels, 1:1 (1)")
         # FIX-09: groups wrap onto a second row instead of overlapping
         self.toolbar = ResponsiveToolbar(lead, [
+            tool_group(self.centre_seg),
             tool_group(self.view_seg),
             tool_group(self.btn_zo, self.btn_zi, self.btn_fit, self.btn_11)])
         cv.addWidget(self.toolbar)
-        self.canvas = GrainCanvas(placeholder="Select an image in the filmstrip")
-        cv.addWidget(self.canvas, 1)
+
+        self.centre_stack = FadeStackedWidget()
+        img_page = QWidget()
+        ip = QVBoxLayout(img_page)
+        ip.setContentsMargins(0, 0, 0, 0)
+        ip.setSpacing(SPACE.sm)
+        self.canvas = GrainCanvas(placeholder="Select an image in the list")
+        ip.addWidget(self.canvas, 1)
+        self.setup_tile = SetupTile()
+        ip.addWidget(self.setup_tile)
+        self.centre_stack.addWidget(img_page)
+        self.table = ResultsTable(self.state)
+        self.centre_stack.addWidget(self.table)
+        cv.addWidget(self.centre_stack, 1)
+
         self.st_images = MetricCard("Images analysed", 0, "", 0)
         self.st_grains = MetricCard("Grains (session)", 0, "", 0)
         self.st_diam = MetricCard("Mean diameter", 0, "µm", 2)
@@ -390,11 +621,11 @@ class AnalyzePage(QWidget):
         rl.addLayout(rc, 1)
         run.body_layout().addLayout(rl)
         self.btn_all = AnimatedButton("Analyze all", "run", "primary", "lg")
-        self.btn_all.setToolTip("Analyse every image of the session (F5)")
+        self.btn_all.setToolTip("Analyse every image in the analyzer (F5)")
         self.btn_cur = AnimatedButton("Analyze current", "run", "secondary")
         self.btn_cur.setToolTip("Re-analyse only the selected image (Ctrl+F5)")
         self.btn_cancel = AnimatedButton("Cancel", "stop", "danger")
-        self.btn_cancel.setToolTip("Stop after the image being processed (Esc)")
+        self.btn_cancel.setToolTip("Stop the analysis right away (Esc)")
         self.btn_cancel.hide()
         run.body_layout().addWidget(self.btn_all)
         br = QHBoxLayout()
@@ -403,13 +634,11 @@ class AnalyzePage(QWidget):
         run.body_layout().addLayout(br)
         iv.addWidget(run)
 
-        self.filters = FilterCard()
-        self.filters_host = Reveal(self.filters)
-        iv.addWidget(self.filters_host)
-
+        # 1 detection mode · 5 excluded regions · 6 advanced (ParamPanel)
         self.params = ParamPanel()
         iv.addWidget(self.params)
-        # calibration + scan area sections inserted after mode
+
+        # 2 calibration
         self.sec_cal = CollapsibleSection("Calibration", expanded=True)
         self.cal_badge = Badge("Not calibrated", "warning", dot=True)
         self.sec_cal.header_trailing().addWidget(self.cal_badge)
@@ -430,7 +659,8 @@ class AnalyzePage(QWidget):
         self.meta_row.hide()
         self.sec_cal.add_widget(self.meta_row)
         self.btn_cal = AnimatedButton("Set scale bar…", "calibrate", "secondary")
-        self.btn_cal.setToolTip("Click the two ends of the scale bar and enter its length (Ctrl+K)")
+        self.btn_cal.setToolTip("Click the two ends of the scale bar and enter its length; "
+                                "apply it to this image only or to all images (Ctrl+K)")
         self.sec_cal.add_widget(self.btn_cal)
         self.cal_override = QCheckBox("Use a different scale for this image")
         self.cal_override.setToolTip("Per-image calibration (e.g. a different magnification)")
@@ -449,6 +679,7 @@ class AnalyzePage(QWidget):
         self.sec_cal.add_widget(self.btn_cal_reset)
         self.params.layout().insertWidget(1, self.sec_cal)
 
+        # 3 scan area
         self.sec_scan = CollapsibleSection("Scan area", expanded=False)
         self.scan_lbl = label("Full image", "caption")
         self.scan_lbl.setWordWrap(True)
@@ -473,7 +704,7 @@ class AnalyzePage(QWidget):
         self.btn_scan = AnimatedButton("Set scan area…", "scan_area", "secondary")
         self.btn_scan.setToolTip("Draw the rectangle to analyse, e.g. to leave out the info bar (Ctrl+R)")
         self.btn_scan_clear = AnimatedButton("Full image", None, "ghost")
-        self.btn_scan_clear.setToolTip("Analyse the whole image")
+        self.btn_scan_clear.setToolTip("Analyse the whole frame (this image, or every image)")
         sr.addWidget(self.btn_scan)
         sr.addWidget(self.btn_scan_clear)
         sh = QWidget()
@@ -488,6 +719,34 @@ class AnalyzePage(QWidget):
         self.btn_scan_reset.hide()
         self.sec_scan.add_widget(self.btn_scan_reset)
         self.params.layout().insertWidget(2, self.sec_scan)
+
+        # 4 grain filters (revealed with the first result)
+        self.filters = FilterCard()
+        self.filters_host = Reveal(self.filters)
+        self.params.layout().insertWidget(3, self.filters_host)
+
+        # overlay opacity (UX-05) -- also used for report images
+        self.sec_overlay = CollapsibleSection("Overlay", expanded=True)
+        orow = QHBoxLayout()
+        orow.setSpacing(SPACE.sm)
+        orow.addWidget(label("Opacity", tone="secondary"))
+        self.opacity = QSlider(Qt.Horizontal)
+        self.opacity.setRange(0, 100)
+        self.opacity.setSingleStep(5)
+        self.opacity.setPageStep(10)
+        self.opacity.setToolTip("How strongly the detected grains are drawn over the image. "
+                                "Report images use the same setting.")
+        self.opacity.setAccessibleName("Overlay opacity")
+        orow.addWidget(self.opacity, 1)
+        self.opacity_val = label("100 %", "caption")
+        self.opacity_val.setMinimumWidth(40)
+        self.opacity_val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        orow.addWidget(self.opacity_val)
+        oh = QWidget()
+        oh.setLayout(orow)
+        self.sec_overlay.add_widget(oh)
+        self.params.layout().addWidget(self.sec_overlay)
+
         iv.addStretch(1)
         sv.addWidget(scroll(inner))
         h.addWidget(side)
@@ -502,12 +761,23 @@ class AnalyzePage(QWidget):
         st.result_edited.connect(self._on_result_edited)
         st.current_image_changed.connect(self._on_current)
         st.calibration_changed.connect(self._refresh_calibration)
+        st.calibration_changed.connect(self._refresh_timer.start)
         st.filters_changed.connect(self._refresh_filters)
         st.filtering_changed.connect(
             lambda uid, busy: uid == st.current_uid and self.filters.set_busy(busy))
+        st.setup_changed.connect(self._refresh_timer.start)
+        st.setup_progress.connect(self._on_setup_progress)
+        st.setup_finished.connect(self._on_setup_finished)
+        st.records_loading.connect(self._on_records_loading)
+        st.records_loaded.connect(self._on_records_loaded)
+        st.overlay_opacity_changed.connect(self._sync_opacity)
         self.film.current_changed.connect(st.set_current_image)
         self.film.files_dropped.connect(st.add_images)
         self.film.add_requested.connect(self.add_images_requested)
+        self.film.remove_requested.connect(self.remove_images)
+        self.film.restore_requested.connect(self.restore_images)
+        self.centre_seg.current_changed.connect(self._on_centre_view)
+        self.table.open_image.connect(self._open_from_table)
         self.view_seg.current_changed.connect(
             lambda i: self.canvas.set_view(("original", "overlay", "excluded")[i]))
         self.canvas.view_changed.connect(self._sync_view_seg)
@@ -531,21 +801,30 @@ class AnalyzePage(QWidget):
         self.cal_spin.valueChanged.connect(self._on_cal_spin)
         self.btn_meta_cal.clicked.connect(self._use_meta_cal)
         self.btn_ib_scan.clicked.connect(self._use_info_bar_scan)
+        self.setup_tile.auto_find_requested.connect(self.auto_find)
+        self.setup_tile.edit_scan_requested.connect(self.scan_area_requested)
+        self.setup_tile.edit_scale_requested.connect(self.calibrate_requested)
+        self.setup_tile.bar_length_entered.connect(self._on_bar_length)
         st.info_bar_ready.connect(lambda uid: uid == st.current_uid and self._refresh_info_bar())
         st.sem_metadata_ready.connect(
             lambda uid: uid == st.current_uid and self._refresh_calibration())
         st.profile_changed.connect(self._relabel)
+        st.profile_changed.connect(self.table.relabel)
         self.params.changed.connect(lambda: st.set_params(self.params.get_params()))
         self.params.show_excluded_regions.connect(self.canvas.set_show_excluded_regions)
         self.filters.options_changed.connect(self._on_filter_options)
         self.filters.apply_all_requested.connect(self._apply_filters_all)
+        self.filters.apply_image_requested.connect(self._apply_filters_image)
         self.filters.show_excluded_toggled.connect(self.canvas.set_show_excluded_grains)
+        self.opacity.valueChanged.connect(self._on_opacity)
+        self.opacity.sliderReleased.connect(self.state.persist_ui_state)
         self.queue.job_started.connect(lambda uid: st.set_image_status(uid, "running", 0, "Starting"))
         self.queue.job_progress.connect(self._on_job_progress)
         self.queue.job_finished.connect(self._on_job_finished)
         self.queue.job_failed.connect(self._on_job_failed)
         self.queue.overall_progress.connect(self._on_overall)
         self.queue.queue_finished.connect(self._on_queue_finished)
+        self._sync_opacity(st.overlay_opacity)
 
     # ------------------------------------------------------------------ state sync
     def _on_session(self) -> None:
@@ -563,11 +842,14 @@ class AnalyzePage(QWidget):
         imgs = self.state.images()
         self.film.set_images(imgs)
         self.film.set_current(self.state.current_uid)
+        self.table.mark_dirty()
         self._refresh_summary()
         self._on_current(self.state.current_uid)
+        self._set_idle()
 
     def _on_image_updated(self, uid) -> None:
         self.film.update_item(uid)
+        self.table.mark_dirty()
         if uid == self.state.current_uid:
             im = self.state.current_image()
             if im is not None and (self.canvas.result() is not im.result
@@ -576,6 +858,7 @@ class AnalyzePage(QWidget):
                 self._show_result()
             elif im is not None:
                 self._update_title(im)
+            self.setup_tile.refresh(self.state, im)
         self._refresh_summary()
 
     def _on_result_edited(self, uid) -> None:
@@ -588,6 +871,7 @@ class AnalyzePage(QWidget):
     def _on_current(self, uid) -> None:
         self.film.set_current(uid)
         im = self.state.current_image()
+        self.setup_tile.refresh(self.state, im)
         if im is None:
             self.canvas.set_image(None)
             self.img_title.setText("")
@@ -621,6 +905,27 @@ class AnalyzePage(QWidget):
             self.view_seg.set_current_index(idx)
             self.view_seg.blockSignals(False)
 
+    def _on_centre_view(self, i: int) -> None:
+        self.centre_stack.set_current_index(i)
+        for w in (self.view_seg, self.btn_zo, self.btn_zi, self.btn_fit, self.btn_11):
+            w.setEnabled(i == 0)
+        if i == 1:
+            self.table.mark_dirty()
+
+    def show_image_view(self) -> None:
+        if self.centre_seg.current_index() != 0:
+            self.centre_seg.set_current_index(0)
+            self._on_centre_view(0)
+
+    def show_table_view(self) -> None:
+        if self.centre_seg.current_index() != 1:
+            self.centre_seg.set_current_index(1)
+            self._on_centre_view(1)
+
+    def _open_from_table(self, uid) -> None:
+        self.state.set_current_image(uid)
+        self.show_image_view()
+
     # ------------------------------------------------------------------ HIER-01 labels
     def _relabel(self) -> None:
         """Use the workspace's own words (e.g. "lot" instead of "session")."""
@@ -634,7 +939,7 @@ class AnalyzePage(QWidget):
             lot = hui.kind_label(p, "lot")
             self.empty.set_texts(f"No {rec} open",
                                  f"Create a {hui.level_chain(p)} and add SEM images — they are "
-                                 f"stored in the {rec} folder — or open a {rec} from Projects.",
+                                 f"stored in the {rec} folder — or load images from Projects.",
                                  f"New {lot}")
         else:
             self.empty.set_texts("No session open",
@@ -649,7 +954,7 @@ class AnalyzePage(QWidget):
         self.btn_scan_reset.setText(f"Reset to {rec} scan area")
         self.btn_scan_reset.setToolTip(f"Drop this image's own scan area — it uses the "
                                        f"{rec}'s again")
-        self.btn_all.setToolTip(f"Analyse every image of the {rec} (F5)")
+        self.btn_all.setToolTip("Analyse every image in the analyzer (F5)")
         if self.state.session is not None:
             self._refresh_calibration()
             self._set_idle()
@@ -658,7 +963,7 @@ class AnalyzePage(QWidget):
     def _refresh_info_bar(self) -> None:
         im = self.state.current_image()
         info = self.state.info_bar_for(im)
-        if im is not None and info is None and im.info_bar is None:
+        if im is not None and info is None and im.info_bar is None and not im.loading:
             self.state.probe_info_bar(im.uid)
         self.canvas.set_info_bar_rect(info.get("bar_rect") if info else None)
         self.ib_row.setVisible(bool(info))
@@ -667,10 +972,12 @@ class AnalyzePage(QWidget):
             cur = self.state.scan_for(im)
             self.btn_ib_scan.setEnabled(bool(ar) and (cur is None or tuple(cur) != ar))
             if cur is None:
-                self.scan_lbl.setText("Full image — the info bar is left out automatically")
+                self.scan_lbl.setText("Not set — the info bar is left out automatically once "
+                                      "you run Auto-find")
             conf = float(info.get("confidence", 0.0) or 0.0)
             self.ib_chip.set_text("Info bar excluded" + (" (check)" if conf < 0.7 else ""))
             self.ib_chip.set_kind("info" if conf >= 0.7 else "warning")
+        self.setup_tile.refresh(self.state, im)
 
     def _use_info_bar_scan(self) -> None:
         im = self.state.current_image()
@@ -698,6 +1005,7 @@ class AnalyzePage(QWidget):
         prev = im.px_override
         px = float(im.cal_suggestion[0])
         self.state.set_calibration(px, im.uid)
+        im.scale_source = "metadata"
 
         def undo():
             if prev > 0:
@@ -733,7 +1041,17 @@ class AnalyzePage(QWidget):
         self.img_title.setText(im.display_name)
         self.img_title.setToolTip(im.tooltip())
         parts = []
-        if im.image_bgr is not None:
+        doc = self.state.session
+        if doc is not None and doc.multi:
+            rec = doc.record_for(im)
+            if rec is not None:
+                from ui.pages.results_table import level_ids
+                ids = level_ids(rec)
+                parts.append(" › ".join(x for x in (ids.get("project"), ids.get("sample"),
+                                                     ids.get("lot")) if x))
+        if im.loading:
+            parts.append("Loading…")
+        elif im.image_bgr is not None:
             h, w = im.image_bgr.shape[:2]
             parts.append(f"{w} × {h} px")
         if im.result is not None:
@@ -781,11 +1099,17 @@ class AnalyzePage(QWidget):
             scope = "this image" if (im is not None and im.scan_rect) else "all images"
             self.scan_lbl.setText(f"{w} × {h} px at ({x}, {y}) — {scope}")
         else:
-            self.scan_lbl.setText("Full image (nothing excluded)")
+            self.scan_lbl.setText("Not set — run Auto-find under the image, or set it here")
         self.canvas.set_scan_rect(rect)
         self.btn_cal_reset.setVisible(im is not None and im.px_override > 0)
         self._refresh_meta_row(im)
         self.btn_scan_reset.setVisible(im is not None and im.scan_rect is not None)
+        self.setup_tile.refresh(self.state, im)
+
+    def _refresh_setup_all(self) -> None:
+        self.film.refresh_all()
+        self.table.mark_dirty()
+        self.setup_tile.refresh(self.state, self.state.current_image())
 
     def _refresh_filters(self) -> None:
         im = self.state.current_image()
@@ -799,6 +1123,21 @@ class AnalyzePage(QWidget):
                                    self.state.px_for(im), self.state.has_override(im.uid),
                                    im.result.grain_count if im.result is not None else None)
 
+    # ------------------------------------------------------------------ UX-05 overlay opacity
+    def _on_opacity(self, v: int) -> None:
+        self.opacity_val.setText(f"{v} %")
+        self.canvas.set_overlay_opacity(v / 100.0)
+        self.state.set_overlay_opacity(v / 100.0, persist=not self.opacity.isSliderDown())
+
+    def _sync_opacity(self, v: float) -> None:
+        iv = int(round(float(v) * 100))
+        if self.opacity.value() != iv:
+            self.opacity.blockSignals(True)
+            self.opacity.setValue(iv)
+            self.opacity.blockSignals(False)
+        self.opacity_val.setText(f"{iv} %")
+        self.canvas.set_overlay_opacity(float(v))
+
     # ------------------------------------------------------------------ actions
     def _on_filter_options(self, opts, scope: str) -> None:
         uid = self.state.current_uid if scope == "image" else None
@@ -807,8 +1146,12 @@ class AnalyzePage(QWidget):
     def _apply_filters_all(self, opts) -> None:
         self.state.apply_filters_to_all(opts)
         self._toast("Filters applied to all images",
-                    f"Every image of the {self._rec} now uses the same grain filters.",
+                    "Every image in the analyzer now uses the same grain filters.",
                     "success")
+
+    def _apply_filters_image(self, opts) -> None:
+        self.state.set_filter_options(opts, self.state.current_uid)
+        self._toast("Filters applied", "This image uses its own grain filters.", "success")
 
     def _on_cal_override(self, on: bool) -> None:
         im = self.state.current_image()
@@ -831,7 +1174,10 @@ class AnalyzePage(QWidget):
             h, w = im.image_bgr.shape[:2]
             self.state.set_scan_rect((0, 0, w, h), im.uid)   # this image: whole frame
         else:
-            self.state.set_scan_rect(None, None)
+            snap = self.state.set_scan_rect_all(None)        # every image: its whole frame
+            self._toast_action("Full image for all images",
+                               "Every image is analysed over its whole frame.", "success",
+                               "Undo", lambda: self.state.restore_scans(snap))
 
     def _reset_cal(self) -> None:
         im = self.state.current_image()
@@ -843,24 +1189,157 @@ class AnalyzePage(QWidget):
         if im is not None:
             self.state.reset_image_scan_rect(im.uid)
 
+    # ------------------------------------------------------------------ UX-02 setup
+    def auto_find(self) -> int:
+        """Auto-find scan area & scale bar on every image in the analyzer."""
+        if self.state.session is None:
+            return 0
+        if self.state.is_loading():
+            self._toast("Images are still loading",
+                        "Auto-find starts once every image is loaded.", "info")
+            return 0
+        n = self.state.auto_setup()
+        if not n and not self.state.is_setting_up():
+            self._toast("Nothing to check", f"Add images to the {self._rec} first.", "info")
+        return n
+
+    def _on_setup_progress(self, done: int, total: int) -> None:
+        self.setup_tile.set_progress(done, total)
+        if total and done < total:
+            self.progress_changed.emit(100.0 * done / total,
+                                       f"Finding scan areas and scale bars — {done} of {total}")
+
+    def _on_setup_finished(self, st: dict) -> None:
+        self.setup_tile.set_progress(0, 0)
+        self.progress_changed.emit(-1, "")
+        self._refresh_setup_all()
+        self._refresh_info_bar()
+        n = int(st.get("total", 0))
+        need = [im for im in self.state.images() if not self.state.setup_ready(im)
+                and not im.loading and im.image_bgr is not None]
+        parts = []
+        if st.get("info_bar"):
+            parts.append(f"info bar left out on {st['info_bar']}")
+        if st.get("scale_meta"):
+            parts.append(f"scale from metadata on {st['scale_meta']}")
+        if st.get("scale_bar"):
+            parts.append(f"scale from the scale bar on {st['scale_bar']}")
+        body = (("; ".join(parts) + ". ") if parts else "") + (
+            f"{len(need)} image{'s' if len(need) != 1 else ''} still need a scale — enter the "
+            "scale-bar length under the image or use Edit." if need else
+            "Check each image before starting analysis.")
+        self._toast(f"Checked {n} image{'s' if n != 1 else ''}", body,
+                    "warning" if need else "success")
+        if need and self.state.current_image() not in need:
+            self.state.set_current_image(need[0].uid)
+
+    def _on_bar_length(self, um: float, same: bool) -> None:
+        im = self.state.current_image()
+        if im is None:
+            return
+        snap = self.state.set_bar_length(im.uid, um, same)
+        if snap:
+            n = len(snap)
+            self._toast_action("Scale set", f"{im.bar_px:.0f} px = {um:g} µm → "
+                               f"{im.bar_px / um:.4g} px/µm on {n} image{'s' if n != 1 else ''}.",
+                               "success", "Undo", lambda: self.state.restore_scales(snap))
+
+    def check_setup(self, images) -> bool:
+        """UX-02 gate: True when every image may be analysed; otherwise
+        select the first image that is not ready, show the tile and ask
+        the shell to spotlight it with the gate text."""
+        if self.state.is_loading() or any(im.loading for im in images):
+            self._toast("Images are still loading",
+                        "Analysis can start once every image is loaded.", "info")
+            return False
+        bad = [im for im in images if self.state.setup_issues(im)]
+        if not bad:
+            return True
+        self.show_image_view()
+        if self.state.current_image() not in bad:
+            self.state.set_current_image(bad[0].uid)
+        self.setup_tile.refresh(self.state, self.state.current_image())
+        self.film.refresh_all()
+        self.setup_required.emit(GATE_TITLE, GATE_TEXT)
+        if not self.receivers(SIGNAL("setup_required(QString,QString)")):
+            self._toast(GATE_TITLE, GATE_TEXT, "warning")
+        return False
+
+    # ------------------------------------------------------------------ UX-06 remove / put back
+    def remove_images(self, uids) -> int:
+        uids = list(uids)
+        if self.queue.is_running():
+            busy = set(self.queue.pending_uids()) | {self.queue.current_uid()}
+            if busy & set(uids):
+                self._toast("Analysis is running",
+                            "Wait for it to finish (or Cancel) before removing images.", "info")
+                return 0
+        n = self.state.remove_images(uids)
+        if n:
+            self._toast_action(f"Removed {n} image{'s' if n != 1 else ''} from the analyzer",
+                               f"The files stay in the {self._rec}. Use “Add back” in the image "
+                               "list to return them.", "info", "Undo",
+                               lambda u=uids: self.state.restore_images(uids=u))
+        return n
+
+    def restore_images(self, record_paths=None) -> int:
+        n = self.state.restore_images(record_paths)
+        if n:
+            self._toast("Images added back", f"{n} image{'s' if n != 1 else ''} are in the "
+                        "analyzer again.", "success")
+        return n
+
+    # ------------------------------------------------------------------ UX-09 loading
+    def _on_records_loading(self, done: int, total: int) -> None:
+        if self.queue.is_running() or not total:
+            return
+        if done < total:
+            self.ring.set_tone("accent")
+            self.ring.set_label(None)
+            self.ring.set_value(100.0 * done / total, animate=False)
+            self.ring.set_caption("loading")
+            self.run_title.setText("Loading images…")
+            self.run_sub.setText(f"{done} of {total} folders loaded · "
+                                 f"{len(self.state.images())} images")
+            self.progress_changed.emit(100.0 * done / total, f"Loading images — {done} of "
+                                                             f"{total} folders")
+            self.btn_all.setEnabled(False)
+            self.btn_cur.setEnabled(False)
+
+    def _on_records_loaded(self) -> None:
+        self.btn_all.setEnabled(True)
+        self.btn_cur.setEnabled(True)
+        self.progress_changed.emit(-1, "")
+        self._set_idle()
+        self._refresh_setup_all()
+        doc = self.state.session
+        if doc is not None:
+            self._toast("Images loaded", f"{len(doc.images)} images from "
+                        f"{len(doc.records)} folders. Run Auto-find, check each image's scan "
+                        "area and scale, then Analyze all.", "success")
+
+    # ------------------------------------------------------------------ analysis
     def is_busy(self) -> bool:
         return self.queue.is_running()
 
     def analyze_all(self) -> None:
-        self._start([im for im in self.state.images() if im.image_bgr is not None])
+        imgs = [im for im in self.state.images() if im.image_bgr is not None or im.loading]
+        self._start(imgs, self.btn_all)
 
     def analyze_current(self) -> None:
         im = self.state.current_image()
-        if im is not None and im.image_bgr is not None:
-            self._start([im])
+        if im is not None and (im.image_bgr is not None or im.loading):
+            self._start([im], self.btn_cur)
 
-    def _start(self, images) -> None:
+    def _start(self, images, button: Optional[AnimatedButton] = None) -> None:
         if self.state.session is None or not images:
             self._toast("Nothing to analyse", f"Add images to the {self._rec} first.",
                         "warning")
             return
         if self.queue.is_running():
             self._toast("Analysis already running", "Wait for it to finish or press Cancel.", "info")
+            return
+        if not self.check_setup(images):
             return
         params = self.params.get_params()
         self.state.set_params(params)
@@ -871,8 +1350,12 @@ class AnalyzePage(QWidget):
             self.state.set_image_status(im.uid, "queued")
         self._batch_total = len(jobs)
         self._batch_uids = [j.uid for j in jobs]
-        self.btn_all.set_loading(True)
-        self.btn_cur.setEnabled(False)
+        # UX-08: only the button that was clicked shows the spinner
+        self._run_btn = button or self.btn_all
+        self._run_btn.set_loading(True)
+        for b in (self.btn_all, self.btn_cur):
+            if b is not self._run_btn:
+                b.setEnabled(False)
         self.btn_cancel.show()
         self.ring.set_tone("accent")
         self.ring.set_label(None)
@@ -880,6 +1363,9 @@ class AnalyzePage(QWidget):
         self.run_title.setText(f"Analysing {len(jobs)} image{'s' if len(jobs) != 1 else ''}")
         self.busy_changed.emit(True)
         self.queue.start(jobs)
+
+    def running_button(self) -> Optional[AnimatedButton]:
+        return self._run_btn if self.queue.is_running() else None
 
     def cancel(self) -> None:
         if not self.queue.is_running():
@@ -891,7 +1377,7 @@ class AnalyzePage(QWidget):
                 self.state.set_image_status(uid, "done" if im.result is not None else "pending")
         self.queue.cancel()
         self.run_title.setText("Cancelling…")
-        self.run_sub.setText("The image being processed will finish in the background.")
+        self.run_sub.setText("Analysis stops right away.")
 
     def _on_job_progress(self, uid, pct: int, msg: str) -> None:
         self.state.set_image_status(uid, "running", pct, msg)
@@ -915,8 +1401,10 @@ class AnalyzePage(QWidget):
         self.progress_changed.emit(pct, self.run_sub.text().split("\n")[0])
 
     def _on_queue_finished(self, cancelled: bool) -> None:
-        self.btn_all.set_loading(False)
-        self.btn_cur.setEnabled(True)
+        for b in (self.btn_all, self.btn_cur):
+            b.set_loading(False)
+            b.setEnabled(True)
+        self._run_btn = None
         self.btn_cancel.hide()
         self.busy_changed.emit(False)
         self.progress_changed.emit(-1, "")
@@ -940,8 +1428,7 @@ class AnalyzePage(QWidget):
         self.ring.set_caption("done")
         self.run_title.setText("Analysis complete")
         self.run_sub.setText(f"{len(ok)} image{'s' if len(ok) != 1 else ''} · "
-                             f"{fmt_int(grains)} grains · saved to the {self._rec} "
-                             "automatically")
+                             f"{fmt_int(grains)} grains · saved automatically")
         if self.toasts is not None:
             self.toasts.show_toast("Analysis complete",
                                    f"{len(ok)} image{'s' if len(ok) != 1 else ''} · "
@@ -951,16 +1438,20 @@ class AnalyzePage(QWidget):
                                    lambda: self.review_requested.emit())
 
     def _set_idle(self) -> None:
-        if self.queue.is_running():
+        if self.queue.is_running() or self.state.is_loading():
             return
         self.ring.set_tone("accent")
         self.ring.set_value(0, animate=False)
         self.ring.set_label("—")
         self.ring.set_caption("ready")
-        n = len(self.state.images())
-        done = sum(1 for im in self.state.images() if im.result is not None)
+        imgs = self.state.images()
+        n = len(imgs)
+        done = sum(1 for im in imgs if im.result is not None)
+        doc = self.state.session
+        where = (f"from {len(doc.records)} folders" if doc is not None and doc.multi
+                 else f"in this {self._rec}")
         self.run_title.setText("Ready to analyse" if n else "Add images to begin")
-        self.run_sub.setText(f"{n} image{'s' if n != 1 else ''} in this {self._rec}"
+        self.run_sub.setText(f"{n} image{'s' if n != 1 else ''} {where}"
                              + (f" · {done} already analysed" if done else ""))
 
     def _toast(self, title, body="", sev="info") -> None:

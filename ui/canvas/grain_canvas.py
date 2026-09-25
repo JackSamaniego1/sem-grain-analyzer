@@ -71,6 +71,7 @@ class GrainCanvas(ThemeAware, QWidget):
         self._pm: Dict[str, QPixmap] = {}
         self._view = "original"
         self._show_excluded = False
+        self._overlay_opacity = 1.0     # UX-05
         self._scan_rect = None
         self._info_bar_rect = None      # DET-05: detected SEM data bar (never analysed)
         self._grains: Dict[int, object] = {}
@@ -257,6 +258,16 @@ class GrainCanvas(ThemeAware, QWidget):
         self._ensure_layer(view)
         self.view_changed.emit(view)
         self.update()
+
+    def set_overlay_opacity(self, value: float) -> None:
+        """UX-05: opacity (0-1) of the grain overlay."""
+        v = max(0.0, min(1.0, float(value)))
+        if abs(v - self._overlay_opacity) > 1e-4:
+            self._overlay_opacity = v
+            self.update()
+
+    def overlay_opacity(self) -> float:
+        return self._overlay_opacity
 
     def set_show_excluded_regions(self, on: bool) -> None:
         self._show_excluded = bool(on)
@@ -519,8 +530,10 @@ class GrainCanvas(ThemeAware, QWidget):
         p.drawPixmap(0, 0, pm)
         if self._view == "overlay":
             ov = self._pm.get("overlay")
-            if ov is not None and not ov.isNull():
+            if ov is not None and not ov.isNull() and self._overlay_opacity > 0:
+                p.setOpacity(self._overlay_opacity)
                 p.drawPixmap(0, 0, ov)
+                p.setOpacity(1.0)
         if self._view == "excluded" or self._show_excluded:
             self._ensure_layer("excluded_layer")
             ex = self._pm.get("excluded_layer")

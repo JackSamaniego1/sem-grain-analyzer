@@ -138,9 +138,10 @@ def default_steps() -> Tuple[TourStep, ...]:
                  kind="click", page="analyze", targets=("tourAddImages",),
                  fallbacks=(("tourAnalyzeEmpty",), (rail_anchor("analyze"),))),
         TourStep("scale", "Set the scale",
-                 "The scale is read from the image's own SEM data when it is there. "
-                 "Otherwise use Set scale bar and click the bar's two ends. The SEM info "
-                 "bar at the bottom is left out of the analysis automatically.",
+                 "Every image needs a scan area and a scale before analysis. Auto-find "
+                 "under the image does both for all images: the SEM info bar is left out "
+                 "and the scale comes from the image's own data or its scale bar. Use Set "
+                 "scale bar here to measure a bar by hand.",
                  page="analyze", targets=("tourCalibration",),
                  fallbacks=((rail_anchor("analyze"),),)),
         TourStep("sam", "Choose AI-assisted detection", _sam_body,
@@ -190,6 +191,8 @@ def tag_anchors(shell) -> None:
     tag("tourAnalyzeEmpty", lambda: a.empty.action_button)
     tag("tourAddImages", lambda: a.film.add_btn)
     tag("tourCalibration", lambda: a.sec_cal)
+    tag("tourSetupTile", lambda: a.setup_tile)
+    tag("tourAutoFind", lambda: a.setup_tile.btn_auto)
     tag("tourDetectionMode", lambda: a.params.sec_mode)
     tag("tourSamMode", lambda: a.params.mode_cards["sam_astm"])
     tag("tourRunRing", lambda: a.ring)

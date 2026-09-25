@@ -118,6 +118,7 @@ class ToggleRow(QWidget):
 class FilterCard(Card):
     options_changed = Signal(object, str)     # PostFilterOptions, scope ("session"|"image")
     apply_all_requested = Signal(object)      # PostFilterOptions
+    apply_image_requested = Signal(object)    # UX-04: "Apply" with the "This image" scope
     show_excluded_toggled = Signal(bool)
 
     def __init__(self, parent=None) -> None:
@@ -196,6 +197,7 @@ class FilterCard(Card):
         self.scope.setToolTip("Change the session filters (all images) or give only the "
                               "current image its own filters")
         self.scope.setFixedWidth(180)
+        self.scope.current_changed.connect(lambda _i: self._sync_apply_button())
         row.addWidget(self.scope)
         row.addStretch(1)
         b.addLayout(row)
@@ -207,7 +209,7 @@ class FilterCard(Card):
         self.apply_all = AnimatedButton("Apply to all images", "check", "ghost", "sm")
         self.apply_all.setToolTip("Use these filters for every image of the session "
                                   "(removes per-image filters)")
-        self.apply_all.clicked.connect(lambda: self.apply_all_requested.emit(self.options()))
+        self.apply_all.clicked.connect(self._apply_clicked)
         row2.addWidget(self.apply_all)
         b.addLayout(row2)
         self._base = PostFilterOptions()
@@ -250,6 +252,7 @@ class FilterCard(Card):
         self.scope.blockSignals(True)
         self.scope.set_current_index(1 if image_scope else 0, animate=False)
         self.scope.blockSignals(False)
+        self._sync_apply_button()
         self.update_counts(counts, n_kept)
         self._loading = False
 
@@ -275,6 +278,22 @@ class FilterCard(Card):
 
     def scope_is_image(self) -> bool:
         return self.scope.current_index() == 1
+
+    def _sync_apply_button(self) -> None:
+        """UX-04: "Apply" for this image, "Apply to all images" otherwise."""
+        if self.scope_is_image():
+            self.apply_all.setText("Apply")
+            self.apply_all.setToolTip("Use these filters for this image only")
+        else:
+            self.apply_all.setText("Apply to all images")
+            self.apply_all.setToolTip("Use these filters for every image in the analyzer "
+                                      "(removes per-image filters)")
+
+    def _apply_clicked(self) -> None:
+        if self.scope_is_image():
+            self.apply_image_requested.emit(self.options())
+        else:
+            self.apply_all_requested.emit(self.options())
 
     def options(self) -> PostFilterOptions:
         d = options_to_dict(self._base)

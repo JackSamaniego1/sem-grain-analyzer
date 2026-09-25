@@ -100,7 +100,8 @@ def _to_um(length: float, unit: str) -> float:
 
 
 class CalibrationDialog(QDialog):
-    calibration_set = Signal(float)   # px_per_um
+    calibration_set = Signal(float)   # px_per_um; ``apply_scope`` = "image" | "all"
+    apply_scope = "all"
 
     def __init__(self, image_bgr: np.ndarray, auto_bar_px=None, parent=None,
                  mode: Optional[str] = None, prefs_path=None):
@@ -224,11 +225,20 @@ class CalibrationDialog(QDialog):
         btn_cancel = QPushButton("Cancel")
         btn_cancel.clicked.connect(self.reject)
         btn_row.addWidget(btn_cancel)
+        # UX-03: this image only, or every image in the analyzer
+        self.btn_apply_image = QPushButton("Apply to this image only")
+        self.btn_apply_image.setMinimumHeight(36)
+        self.btn_apply_image.setToolTip("Use this scale for the current image only "
+                                        "(e.g. a different magnification)")
+        self.btn_apply_image.setEnabled(False)
+        self.btn_apply_image.clicked.connect(lambda: self._apply("image"))
+        btn_row.addWidget(self.btn_apply_image)
         self.btn_apply = QPushButton("Apply to all images")
         self.btn_apply.setProperty("variant", "primary")
         self.btn_apply.setMinimumHeight(36)
+        self.btn_apply.setToolTip("Use this scale for every image in the analyzer")
         self.btn_apply.setEnabled(False)
-        self.btn_apply.clicked.connect(self._apply)
+        self.btn_apply.clicked.connect(lambda: self._apply("all"))
         btn_row.addWidget(self.btn_apply)
         lay.addLayout(btn_row)
         self._refresh_state()
@@ -286,7 +296,7 @@ class CalibrationDialog(QDialog):
             u = self.canvas.uncertainty_px() or 0.0
             self.lbl_dist.setText(f"Bar length:  {d:.1f} px  ± {u:.1f} px"
                                   f"  ({100.0 * u / d:.1f} %)")
-            self.btn_apply.setEnabled(True)
+            self._set_apply_enabled(True)
             self._update_result()
         else:
             self._px_distance = None
@@ -298,7 +308,7 @@ class CalibrationDialog(QDialog):
             else:
                 self.lbl_dist.setText("Bar length:  — px")
             self.lbl_result.setText("px/µm:  —")
-            self.btn_apply.setEnabled(False)
+            self._set_apply_enabled(False)
         self._refresh_state()
 
     def _refresh_state(self) -> None:
@@ -341,10 +351,20 @@ class CalibrationDialog(QDialog):
         self._px_distance = None
         self.lbl_dist.setText("Bar length:  — px")
         self.lbl_result.setText("px/µm:  —")
-        self.btn_apply.setEnabled(False)
+        self._set_apply_enabled(False)
         self._refresh_state()
 
-    def _apply(self):
+    def _set_apply_enabled(self, on: bool) -> None:
+        self.btn_apply.setEnabled(on)
+        self.btn_apply_image.setEnabled(on)
+
+    def measured(self):
+        """(bar length px, bar length µm) of the current measurement."""
+        if self._px_distance is None:
+            return None
+        return self._px_distance, _to_um(self.length_spin.value(), self.unit_combo.currentText())
+
+    def _apply(self, scope: str = "all"):
         if self._px_distance is None:
             QMessageBox.warning(self, "No measurement", "Measure the scale bar first.")
             return
@@ -352,5 +372,6 @@ class CalibrationDialog(QDialog):
         if length_um <= 0:
             QMessageBox.warning(self, "Invalid", "Length must be > 0.")
             return
+        self.apply_scope = scope
         self.calibration_set.emit(self._px_distance / length_um)
         self.accept()
