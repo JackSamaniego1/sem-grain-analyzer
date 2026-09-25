@@ -76,7 +76,7 @@ lot, or spotting a process drift between lots of the same material.
 
 ## Exporting reports
 
-From the Reports page, export **Excel** (workbook with charts, per-image overview, and per-grain data), **PowerPoint** (a formatted deck), or **both** at once. Files are written to the session's `exports` folder by default, or choose "Save as…" to pick a different location.
+From the Reports page, export **Excel** (workbook with a per-image overview, a Lot Summary sheet with one chart per lot, summary charts, and per-grain data), **PowerPoint** (a formatted deck), or **both** at once. Files are written to the session's `exports` folder by default, or choose "Save as…" to pick a different location.
 
 ## Troubleshooting
 

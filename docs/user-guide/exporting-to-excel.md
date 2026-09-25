@@ -17,14 +17,36 @@ The Grain Analyzer exports professional Excel reports with images, charts, stati
 
 ## Report Structure
 
+Sheets appear in this order: **Overview**, **Lot Summary**, **Summary
+Charts**, one sheet per image, **Methods**, then the raw per-grain data
+sheets last.
+
 ### Overview Sheet
 
-The first sheet contains:
+- **Report header** — title, operator, date, image count, and the
+  Job / Part / Lot the report covers (all of them, e.g. "Lot: L-1, L-2",
+  when several lots are included)
+- **Per-image table** — one row per image with its own Job, Part and Lot,
+  grain count, mean/median area, mean diameter and ASTM G
+- **Combined (all images)** row at the bottom
 
-- **Report header** — Title, timestamp, image count
-- **Combined summary** — Aggregated statistics across all images
-- **Grain Area Distribution** — Histogram chart with normal fit curve and data table
-- **Grain Diameter Distribution** — Histogram chart with normal fit curve and data table
+### Lot Summary Sheet
+
+One block per lot, stacked down the sheet:
+
+- **Grain-size distribution chart** for all images in that lot combined,
+  titled with the lot name
+- **Stats beside it** — lot, number of images, total grains, mean ASTM G,
+  mean diameter and mean area (in calibrated units)
+
+If two parts both have a lot with the same name, they get separate blocks
+titled "Part · Lot". Turn the sheet off in the report editor's outline if
+you don't need it.
+
+### Summary Charts Sheet
+
+- **Grain Area Distribution** and **Grain Diameter Distribution** —
+  histograms with normal-fit curve for all images combined
 
 ### Per-Image Summary Sheets
 

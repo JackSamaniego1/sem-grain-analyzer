@@ -40,6 +40,11 @@ tests cover the release.
 - **Upgraded Excel workbook** — a per-image overview table, colour-coded
   tabs, charts with correct axis units, and raw per-grain data sheets
   placed last.
+- **Lot Summary sheet (Excel)** — right after the Overview, one
+  grain-size distribution chart per lot, titled with the lot name, with
+  that lot's image count, total grains, mean ASTM G and mean grain
+  diameter/area beside it. Lots with the same name in different parts are
+  kept apart ("Part · Lot"). Can be switched off in the report editor.
 - **PowerPoint deck export** — a formatted 16:9 deck with per-image
   slides, calibration and methods details, and native charts, built with
   the same report model as the Excel export.
@@ -119,6 +124,12 @@ tests cover the release.
 
 ### Fixed
 
+- Excel Overview on a report covering several lots showed the same lot
+  and part number for every image; each image now shows its own, and the
+  report header lists every lot/part included (e.g. "Lot: L-1, L-2").
+- "Remove from analyzer" (right-click in the Analyze image list) raised an
+  error instead of removing the image; the other right-click entries
+  ("Add back", "Remove this lot's images") had the same fault.
 - Numerous PowerPoint export layout bugs: title/subtitle overlap, table
   and methods-section text overflow, distribution chart normal-fit line
   rendering, and calibration details not appearing on the methods slide.
