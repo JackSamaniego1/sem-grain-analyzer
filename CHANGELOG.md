@@ -8,7 +8,7 @@ The v3.0 release is a ground-up rebuild of the app: correct grain detection
 on images with black/invalid regions, a real project/sample/lot data
 library you can browse and reopen, an editable report model behind much
 better Excel and PowerPoint exports, a full visual redesign, a lot
-comparison tool, and a hardened offline/private guarantee. 686 automated
+comparison tool, and a hardened offline/private guarantee. 820 automated
 tests cover the release.
 
 ### Added
