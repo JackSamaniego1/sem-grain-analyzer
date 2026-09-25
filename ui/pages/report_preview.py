@@ -164,6 +164,163 @@ class OverviewPreview(SectionPreview):
         return len(self.sheet.rows)
 
 
+VERDICT_KIND = {"Equivalent": "success", "Not equivalent": "danger",
+                "Inconclusive": "warning"}
+BAND_KIND = {"green": "success", "amber": "warning", "red": "danger"}
+
+
+def _fmt_signed(v, nd: int = 2) -> str:
+    return "—" if v is None else f"{v:+.{nd}f}"
+
+
+class LotComparisonPreview(SectionPreview):
+    """UX-13: per part, the ΔG matrix (G of the column lot minus G of the
+    row lot, coloured by |ΔG| band) and each lot's equivalence verdict vs the
+    part's baseline lot -- exactly what the Lot Comparison sheet / slides
+    show."""
+
+    def __init__(self, page, section) -> None:
+        super().__init__(page, "lot_comparison", "Lot comparison")
+        self.section = section
+        self.cards: List[QWidget] = []
+        self.host = QVBoxLayout()
+        self.host.setSpacing(SPACE.lg)
+        self.body.addLayout(self.host)
+        self.legend = label("", "caption")
+        self.legend.setWordWrap(True)
+        self.body.addWidget(self.legend)
+        self.body.addStretch(1)
+        self.refresh()
+
+    def _clear(self) -> None:
+        for c in self.cards:
+            c.setParent(None)
+            c.deleteLater()
+        self.cards = []
+
+    def refresh(self) -> None:
+        from ui import hierarchy_ui as hui
+        from ui.pages.report_builder import lot_comparison_rows
+        self._clear()
+        prof = getattr(self.page.state, "profile", None)
+
+        def L(k):
+            try:
+                return hui.kind_label(prof, k)
+            except Exception:       # noqa: BLE001
+                return {"project": "Job", "sample": "Part", "lot": "Lot"}[k]
+        parts = lot_comparison_rows(self.section)
+        multi_job = len({p["job"] for p in parts}) > 1
+        for p in parts:
+            title = f"{L('sample')} {p['part']}" + (f"  ·  {L('project')} {p['job']}"
+                                                   if multi_job else "")
+            base = p["baseline"]
+            an = p["anova"] or {}
+            sub = [f"Baseline {L('lot').lower()}: {base}" if base else
+                   f"No baseline {L('lot').lower()} set (star one on Projects ▸ Compare lots)"]
+            if an.get("p") is not None:
+                sub.append(f"Welch ANOVA p = {an['p']:.3g}")
+            card = Card(title, "   ·   ".join(sub))
+            card.add_widget(label("ΔG matrix (column − row)", "overline"))
+            card.add_widget(self._matrix(p))
+            card.add_widget(label("Equivalence vs baseline", "overline"))
+            card.add_widget(self._verdicts(p))
+            self.host.addWidget(card)
+            self.cards.append(card)
+        if not parts:
+            empty = label("No lots to compare.", tone="secondary")
+            self.host.addWidget(empty)
+            self.cards.append(empty)
+        self.legend.setText(
+            "|ΔG| ≤ 0.25 green · ≤ 0.5 amber · > 0.5 red. Verdicts use a TOST equivalence "
+            "test of each lot's mean ASTM G against the baseline lot (90 % CI within "
+            "± the tolerance). Excel: the Lot Comparison sheet (blue tab); PowerPoint: one "
+            "slide per part.")
+        self.title.setText(self.section.title or "Lot comparison")
+
+    def _table(self, rows: int, cols: int, heads: List[str]) -> QTableWidget:
+        t = QTableWidget(rows, cols)
+        t.setHorizontalHeaderLabels(heads)
+        t.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        t.setSelectionMode(QAbstractItemView.NoSelection)
+        t.setFocusPolicy(Qt.NoFocus)
+        t.setShowGrid(True)
+        t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        t.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
+        t.verticalHeader().setDefaultSectionSize(30)
+        t.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        t.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        t.setFixedHeight(t.horizontalHeader().sizeHint().height() + 30 * rows + 4)
+        return t
+
+    def _matrix(self, p: dict) -> QTableWidget:
+        from PySide6.QtGui import QBrush, QColor
+        from ui.design.theme import current_tokens
+        tok = current_tokens()
+        lots = p["lots"]
+        t = self._table(len(lots), len(lots), lots)
+        t.setVerticalHeaderLabels(lots)
+        t.setToolTip("ΔG = mean ASTM G of the column lot minus that of the row lot")
+        for i, row in enumerate(p["matrix"]):
+            for j, v in enumerate(row):
+                it = QTableWidgetItem("0" if i == j and v is not None and abs(v) < 1e-12
+                                      else _fmt_signed(v))
+                it.setTextAlignment(Qt.AlignCenter)
+                band = p["bands"][i][j] if i < len(p["bands"]) and j < len(p["bands"][i]) \
+                    else "none"
+                kind = BAND_KIND.get(band)
+                if kind:
+                    sem = tok.semantic(kind)
+                    it.setBackground(QBrush(QColor(sem.bg)))
+                    it.setForeground(QBrush(QColor(sem.fg)))
+                t.setItem(i, j, it)
+        return t
+
+    def _verdicts(self, p: dict) -> QTableWidget:
+        from PySide6.QtGui import QBrush, QColor
+        from ui.design.theme import current_tokens
+        tok = current_tokens()
+        means = {lot: (m, n) for lot, m, n in p["means"]}
+        ver = {v[0]: v for v in p["verdicts"]}
+        lots = p["lots"]
+        t = self._table(len(lots), 5, ["Lot", "Mean G (fields)", "ΔG vs baseline",
+                                       "90 % CI", "Verdict"])
+        t.verticalHeader().setVisible(False)
+        for r, lot in enumerate(lots):
+            m, n = means.get(lot, (None, None))
+            v = ver.get(lot)
+            is_base = lot == p["baseline"]
+            cells = [lot + ("  (baseline)" if is_base else ""),
+                     "—" if m is None else f"{m:.2f}  ({n or 0})",
+                     "—" if v is None else _fmt_signed(v[2]),
+                     "—" if v is None or v[3] is None or v[4] is None
+                     else f"{v[3]:+.2f} … {v[4]:+.2f}",
+                     "Baseline" if is_base else (v[1] if v else "—")]
+            for c, txt in enumerate(cells):
+                it = QTableWidgetItem(txt)
+                it.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter if c in (0, 4)
+                                    else Qt.AlignRight | Qt.AlignVCenter)
+                if c == 4 and v is not None and not is_base:
+                    kind = VERDICT_KIND.get(v[1])
+                    if kind:
+                        sem = tok.semantic(kind)
+                        it.setBackground(QBrush(QColor(sem.bg)))
+                        it.setForeground(QBrush(QColor(sem.fg)))
+                t.setItem(r, c, it)
+        return t
+
+    def verdict_texts(self) -> List[str]:
+        return [v[1] for p in lot_comparison_rows_safe(self.section) for v in p["verdicts"]]
+
+
+def lot_comparison_rows_safe(section):
+    from ui.pages.report_builder import lot_comparison_rows
+    try:
+        return lot_comparison_rows(section)
+    except Exception:       # noqa: BLE001
+        return []
+
+
 class ChartsPreview(SectionPreview):
     def __init__(self, page, section) -> None:
         super().__init__(page, "combined_distribution", "Summary charts")
@@ -634,10 +791,12 @@ def make_preview(page, key) -> Optional[SectionPreview]:
     if sec is None:
         return None
     cls = {"cover": CoverPreview, "overview_table": OverviewPreview,
+           "lot_comparison": LotComparisonPreview,
            "combined_distribution": ChartsPreview, "parameters": MethodsPreview,
            "raw_data": RawPreview, "custom_text": TextPreview}.get(sec.type)
     return cls(page, sec) if cls else None
 
 
 __all__ = ["make_preview", "SectionPreview", "ImagePreview", "OverviewPreview",
+           "LotComparisonPreview",
            "GrainReportTable"]

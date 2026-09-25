@@ -485,6 +485,7 @@ class AnalyzePage(QWidget):
     new_session_requested = Signal()
     open_projects_requested = Signal()
     review_requested = Signal()
+    report_requested = Signal(object, str)      # UX-13: lot scope | None, action
     add_images_requested = Signal()
     busy_changed = Signal(bool)
     progress_changed = Signal(float, str)     # overall %, message (status bar)
@@ -778,6 +779,7 @@ class AnalyzePage(QWidget):
         self.film.restore_requested.connect(self.restore_images)
         self.centre_seg.current_changed.connect(self._on_centre_view)
         self.table.open_image.connect(self._open_from_table)
+        self.table.report_requested.connect(self.report_requested)
         self.view_seg.current_changed.connect(
             lambda i: self.canvas.set_view(("original", "overlay", "excluded")[i]))
         self.canvas.view_changed.connect(self._sync_view_seg)

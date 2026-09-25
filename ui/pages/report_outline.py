@@ -107,6 +107,9 @@ class ReportOutline(QTreeWidget):
                 it.setCheckState(0, Qt.Checked if s.enabled else Qt.Unchecked)
                 it.setToolTip(0, "Tick to include this section" +
                               (" — drag to move it" if s.type == "custom_text" else ""))
+            if s.type == "lot_comparison":
+                it.setToolTip(0, "Lot comparison — ΔG matrix and equivalence verdicts of each "
+                                 "lot vs the baseline lot. Tick to include this section")
             it.setFlags(flags)
             self.addTopLevelItem(it)
         self._filling = False

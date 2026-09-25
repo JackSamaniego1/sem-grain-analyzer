@@ -5,8 +5,10 @@ One row per image with its Job / Part / Lot (the workspace's own level
 names), analysis status, scan area, scale and the headline results.  "Group
 by" nests the rows under Job, Part or Lot (group rows carry the totals) or
 shows everything together; every column sorts by clicking its header.  A
-double-click opens the image.  The right end of the toolbar is reserved for
-the multi-lot report export (a later wave).
+double-click opens the image.  The right end of the toolbar holds "Export
+report…" (UX-13): one report over everything loaded, or over the lots of the
+selected rows / groups -- opened in the report designer (edit charts,
+palette, captions first) or exported straight to Excel / PowerPoint.
 """
 from __future__ import annotations
 
@@ -82,11 +84,16 @@ class ResultsTable(QWidget):
     """Per-image results, groupable by level."""
 
     open_image = Signal(object)          # uid
+    # UX-13: (scope = lot keys | None for everything, action =
+    # "designer" | "xlsx" | "pptx" | "both")
+    report_requested = Signal(object, str)
 
     def __init__(self, state, parent=None) -> None:
         super().__init__(parent)
         self.state = state
         self._dirty = True
+        self._lot_of: Dict[object, str] = {}        # uid -> lot key
+        self._analysed: set = set()
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(200)
@@ -104,11 +111,21 @@ class ResultsTable(QWidget):
         bar.addWidget(self.group)
         self.summary = label("", "caption")
         bar.addWidget(self.summary, 1)
-        # UX-13 (later wave): the "Export multi-lot report" button goes here,
-        # right-aligned next to the grouping controls.
+        # UX-13: multi-lot report, right-aligned next to the grouping controls
         self.actions = QHBoxLayout()
         self.actions.setSpacing(SPACE.sm)
         bar.addLayout(self.actions)
+        self.report_btn = AnimatedButton("Export report…", "mdi6.file-chart-outline",
+                                         "secondary", "sm")
+        self.report_btn.setToolTip(
+            "One report for everything loaded — or only the lots of the selected rows / "
+            "groups: per-lot summary, lot comparison (ΔG and equivalence vs the baseline "
+            "lot), charts, image pages and raw data. Open it in the report designer or "
+            "export Excel / PowerPoint directly.")
+        self.report_btn.clicked.connect(
+            lambda: self.show_report_menu(self.report_btn.mapToGlobal(
+                self.report_btn.rect().bottomLeft())))
+        self.actions.addWidget(self.report_btn)
         self.columns_btn = AnimatedButton("Columns", "mdi6.table-column", "ghost", "sm")
         self.columns_btn.setToolTip("Show or hide columns (also: right-click a column header)")
         self.columns_btn.clicked.connect(
@@ -247,9 +264,81 @@ class ResultsTable(QWidget):
                             g=(astm_g(r) if r is not None else None)))
         return out
 
+    # ------------------------------------------------------------------ UX-13 report
+    def selected_scope(self) -> Optional[List[str]]:
+        """Lot keys of the selected rows / group rows (None = no selection:
+        the report covers everything loaded)."""
+        keys: List[str] = []
+        for it in self.tree.selectedItems():
+            uid = it.data(0, UID_ROLE)
+            uids = [uid] if uid is not None else \
+                [it.child(i).data(0, UID_ROLE) for i in range(it.childCount())]
+            for u in uids:
+                k = self._lot_of.get(u)
+                if k is not None and k not in keys:
+                    keys.append(k)
+        return keys or None
+
+    def scope_summary(self, scope: Optional[List[str]]) -> tuple:
+        """(lots, analysed images) a report over ``scope`` would cover."""
+        want = set(scope) if scope else None
+        uids = [u for u, k in self._lot_of.items() if want is None or k in want]
+        done = [u for u in uids if u in self._analysed]
+        lots = {self._lot_of[u] for u in done}
+        return len(lots), len(done)
+
+    def show_report_menu(self, gpos=None) -> Optional[object]:
+        from PySide6.QtWidgets import QMenu
+        from ui.design.icons import icon as _icon
+        if self._dirty:
+            self.rebuild()
+        scope = self.selected_scope()
+        n_lots, n_imgs = self.scope_summary(scope)
+        lot_w = hui.kind_label(self.state.profile, "lot").lower()
+        m = QMenu(self)
+        m.setToolTipsVisible(True)
+        if n_imgs:
+            what = "Selected" if scope else "Everything loaded"
+            head = m.addAction(f"{what}: {n_lots} {lot_w}{'s' if n_lots != 1 else ''} · "
+                               f"{n_imgs} analysed image{'s' if n_imgs != 1 else ''}")
+        else:
+            head = m.addAction("Analyse images first — nothing to report yet")
+        head.setEnabled(False)
+        m.addSeparator()
+        items = (("designer", "mdi6.pencil-ruler", "Open in report designer…",
+                  "Edit charts, palette, captions and sections, then export"),
+                 ("xlsx", "mdi6.microsoft-excel", "Export Excel workbook",
+                  "Write the .xlsx to the exports folder now"),
+                 ("pptx", "mdi6.microsoft-powerpoint", "Export PowerPoint deck",
+                  "Write the .pptx to the exports folder now"),
+                 ("both", "mdi6.file-multiple-outline", "Export Excel + PowerPoint",
+                  "Write both files to the exports folder now"))
+        for n, (act, ic, text, tip) in enumerate(items):
+            if n == 1:
+                m.addSeparator()
+            try:
+                a = m.addAction(_icon(ic), text)
+            except Exception:           # noqa: BLE001 -- icon font missing
+                a = m.addAction(text)
+            a.setToolTip(tip)
+            a.setEnabled(bool(n_imgs))
+            a.triggered.connect(lambda _c=False, x=act, sc=scope:
+                                self.report_requested.emit(sc, x))
+        self._report_menu = m
+        if gpos is not None:
+            m.exec(gpos)
+        return m
+
+    def set_report_busy(self, on: bool) -> None:
+        self.report_btn.set_loading(bool(on))
+
     def rebuild(self) -> None:
         self._dirty = False
         rows = self.rows()
+        from ui.pages.report_builder import lot_key
+        self._lot_of = {r["uid"]: lot_key(r) for r in rows}
+        self._analysed = {r["uid"] for r in rows if r["grains"] is not None}
+        self.report_btn.setEnabled(bool(self._analysed))
         level = self.group_level()
         sort_col = self.tree.sortColumn()
         order = self.tree.header().sortIndicatorOrder()

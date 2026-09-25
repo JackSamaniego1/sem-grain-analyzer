@@ -81,11 +81,12 @@ def _session_ids(state) -> Tuple[str, str]:
     return str(sample), str(lot)
 
 
-def results_fingerprint(state) -> str:
+def results_fingerprint(state, images=None) -> str:
     """Hash of the numbers a report would be built from (kept grain ids,
-    their total area and the calibration per analysed image)."""
+    their total area and the calibration per analysed image).  ``images``:
+    only these (a multi-lot report over part of what is loaded)."""
     h = hashlib.sha1()
-    for im in state.images():
+    for im in (state.images() if images is None else images):
         r = im.result
         if r is None:
             continue
@@ -422,6 +423,252 @@ def build_model(inputs: Sequence[ReportImageInput], *, title: str, operator: str
     return model
 
 
+# ======================================================================
+# UX-09 / UX-13: one report over several lots loaded in the analyzer
+# ======================================================================
+
+MULTI_KEY = "multi_lot"          # model.metadata[MULTI_KEY] = {"scope": [...] | None}
+_SEP = "\u241f"                  # never user text (same as reports.multi_lot)
+
+
+def image_levels(state, im) -> Dict[str, str]:
+    """{project, sample, lot} ids of one analyzer image ("" when unknown)."""
+    from ui.pages.results_table import level_ids
+    doc = state.session
+    rec = doc.record_for(im) if doc is not None else None
+    if rec is None:
+        return {"project": "", "sample": "", "lot": ""}
+    return level_ids(rec)
+
+
+def lot_key(levels: Dict[str, str]) -> str:
+    return _SEP.join((levels.get("project", ""), levels.get("sample", ""),
+                      levels.get("lot", "")))
+
+
+def _keyed_images(state, images=None):
+    """[(lot key, image)] -- level ids read once per record."""
+    doc = state.session
+    cache: Dict[int, str] = {}
+    out = []
+    for im in (state.images() if images is None else images):
+        rec = doc.record_for(im) if doc is not None else None
+        k = cache.get(id(rec))
+        if k is None:
+            k = cache[id(rec)] = lot_key(image_levels(state, im))
+        out.append((k, im))
+    return out
+
+
+def lots_loaded(state, analysed_only: bool = True) -> List[str]:
+    """Lot keys of the analyzer's images, in list order."""
+    out: List[str] = []
+    for k, im in _keyed_images(state):
+        if (im.result is not None or not analysed_only) and k not in out:
+            out.append(k)
+    return out
+
+
+def is_multi_lot(state) -> bool:
+    """More than one lot analysed in the analyzer (Load job / part)."""
+    return len(lots_loaded(state)) > 1
+
+
+def is_multi_model(model: Optional[ReportModel]) -> bool:
+    return model is not None and isinstance(model.metadata.get(MULTI_KEY), dict)
+
+
+def model_scope(model: Optional[ReportModel]) -> Optional[List[str]]:
+    if not is_multi_model(model):
+        return None
+    sc = model.metadata[MULTI_KEY].get("scope")
+    return list(sc) if sc else None
+
+
+def scope_images(state, scope: Optional[Sequence[str]] = None) -> list:
+    """Analyzer images of the lots in ``scope`` (None = everything)."""
+    if not scope:
+        return list(state.images())
+    want = set(scope)
+    return [im for k, im in _keyed_images(state) if k in want]
+
+
+def _lot_folder(rec) -> Optional[Path]:
+    if rec is None:
+        return None
+    p = Path(rec.path)
+    return p if (p / "lot.json").exists() else p.parent
+
+
+def lot_groups(state, scope: Optional[Sequence[str]] = None):
+    """``(groups, lot_folders)``: one ``reports.multi_lot.LotGroup`` per lot
+    of the analysed images in ``scope`` (Job > Part > Lot, list order), and
+    each group's lot folder (for the baseline lookup)."""
+    from reports.multi_lot import LotGroup
+    doc = state.session
+    by_key: Dict[str, list] = {}
+    meta: Dict[str, tuple] = {}
+    for k, im in _keyed_images(state, scope_images(state, scope)):
+        if im.result is None:
+            continue
+        if k not in by_key:
+            by_key[k] = []
+            meta[k] = (image_levels(state, im),
+                       _lot_folder(doc.record_for(im) if doc is not None else None))
+        by_key[k].append(im)
+    groups, folders = [], []
+    for k, ims in by_key.items():
+        lv, folder = meta[k]
+        groups.append(LotGroup(job=lv.get("project", ""), part=lv.get("sample", ""),
+                               lot=lv.get("lot", ""), items=collect_inputs(state, ims)))
+        folders.append(folder)
+    return groups, folders
+
+
+def baseline_arg(state, groups, folders) -> Dict[str, str]:
+    """``{part: baseline lot}`` from the workspace's baseline lot per
+    material (INN-43; the star on Projects > Compare lots), for the parts
+    whose baseline lot is among the lots in the report."""
+    out: Dict[str, str] = {}
+    try:
+        ws = state.workspace
+    except Exception:      # noqa: BLE001 -- no workspace: no verdicts
+        return out
+    loaded = {}
+    for g, f in zip(groups, folders):
+        if f is not None:
+            loaded[str(Path(f).resolve())] = g
+    for g, f in zip(groups, folders):
+        if f is None or g.part in out:
+            continue
+        try:
+            base = ws.baseline_lot_for(f)
+        except Exception:  # noqa: BLE001
+            base = None
+        hit = loaded.get(str(Path(base).resolve())) if base is not None else None
+        if hit is not None and hit.part == g.part and hit.job == g.job:
+            out[g.part] = hit.lot
+    return out
+
+
+def multi_lot_title(state, groups) -> Tuple[str, str]:
+    """(title, export base name) of a multi-lot report."""
+    from ui import hierarchy_ui as hui
+    prof = state.profile
+
+    def L(k):
+        return hui.kind_label(prof, k)
+    jobs = list(dict.fromkeys(g.job for g in groups))
+    parts = list(dict.fromkeys((g.job, g.part) for g in groups))
+    n = len(groups)
+    lots = f"{n} {L('lot').lower()}{'s' if n != 1 else ''}"
+    if len(parts) == 1:
+        what = f"{L('sample')} {parts[0][1]}"
+        base = f"{parts[0][0]}_{parts[0][1]}_{n}-lots"
+    elif len(jobs) == 1:
+        what = f"{L('project')} {jobs[0]}"
+        base = f"{jobs[0]}_{len(parts)}-parts_{n}-lots"
+    else:
+        what = f"{len(jobs)} {L('project').lower()}s"
+        base = f"{len(jobs)}-jobs_{n}-lots"
+    return f"Multi-Lot Grain Analysis \u2014 {what} ({lots})", slug(base, "multi-lot")
+
+
+def multi_lot_args(state, scope: Optional[Sequence[str]] = None) -> Optional[dict]:
+    """GUI thread: everything :func:`build_multi_model` needs, or None when
+    nothing in ``scope`` is analysed."""
+    groups, folders = lot_groups(state, scope)
+    if not groups:
+        return None
+    s = state.session
+    defaults = state.ui_state.get("report_defaults", {}) or {}
+    title, base = multi_lot_title(state, groups)
+    settings = getattr(state, "settings", None)
+    extras = report_extras_arg(state, [it for g in groups for it in g.items])
+    return dict(groups=groups, title=title, operator=state.operator(),
+                organization=defaults.get("organization", ""),
+                metadata=session_metadata(state),
+                asset_dir=str(Path(s.path) / REPORT_ASSETS),
+                fingerprint=results_fingerprint(state, scope_images(state, scope)),
+                export_basename=base, baseline=baseline_arg(state, groups, folders),
+                stats_cfg={"required_fields": int(getattr(settings, "required_fields", 5) or 5),
+                           "target_RA_pct": float(getattr(settings, "target_RA_pct", 10.0)
+                                                  or 10.0)},
+                extras=extras, scope=list(scope) if scope else None,
+                overlay_opacity=overlay_opacity_arg(state),
+                chart_options=chart_options_arg(state))
+
+
+def build_multi_model(groups, *, title: str, operator: str, organization: str = "",
+                      logo_path: Optional[str] = None, metadata: Optional[dict] = None,
+                      asset_dir: Optional[str] = None, fingerprint: str = "",
+                      export_basename: str = "", baseline: Optional[dict] = None,
+                      stats_cfg: Optional[dict] = None, extras: Optional[dict] = None,
+                      scope: Optional[list] = None, overlay_opacity: float = 1.0,
+                      chart_options: Optional[dict] = None) -> ReportModel:
+    """Pool thread: multi-lot ``ReportModel`` (overview per lot, lot
+    comparison dG matrix + equivalence vs the baseline lot, per-image pages,
+    combined charts, raw data with Job/Part/Lot) ready for the designer.
+    Overlays are drawn lazily one image at a time (``overlay_loader``)."""
+    from reports.multi_lot import build_multi_lot_report_model
+    cal = None
+    if extras:
+        try:
+            cal = calibration_for_report(extras)
+        except Exception:      # noqa: BLE001 -- optional block, never fatal
+            cal = None
+    if asset_dir:
+        os.makedirs(asset_dir, exist_ok=True)
+    meta = dict(metadata or {})
+    meta["results_fingerprint"] = fingerprint
+    meta.setdefault("exports", [])
+    meta["auto_title"] = title
+    meta[MULTI_KEY] = {"scope": list(scope) if scope else None,
+                       "baseline": dict(baseline or {})}
+    if export_basename:
+        meta["auto_export_basename"] = export_basename
+    model = build_multi_lot_report_model(
+        groups, title=title, operator=operator, organization=organization,
+        logo_path=logo_path, metadata=meta, asset_dir=asset_dir, baseline=baseline,
+        stats_cfg=stats_cfg, overlay_opacity=overlay_opacity, chart_options=chart_options,
+        calibration=cal)
+    model.export_basename = export_basename or model.export_basename
+    apply_calibration(model, cal)
+    normalize(model)
+    return model
+
+
+def lot_comparison_rows(section: Section) -> List[dict]:
+    """Plain rows for the designer preview of a ``lot_comparison`` section,
+    one per part: ``{job, part, lots, baseline, matrix [[dG|None]], bands
+    [[green|amber|red|none]], verdicts [(lot, verdict, dG, lo, hi)], means
+    [(lot, mean G, n)], anova}``."""
+    out = []
+    for p in (section.payload or {}).get("parts") or []:
+        cmp_ = p.get("comparison") or {}
+        lots = list(p.get("lots") or [])
+        m = cmp_.get("matrix") or []
+        matrix = [[(c or {}).get("dG") for c in row] for row in m]
+        bands = [[str(_val((c or {}).get("band")) or "none") for c in row] for row in m]
+        verdicts = []
+        for lot, eq in (cmp_.get("equivalence") or {}).items():
+            eq = eq or {}
+            verdicts.append((lot, str(_val(eq.get("verdict")) or "\u2014"), eq.get("dG"),
+                             eq.get("ci_low"), eq.get("ci_high")))
+        sums = {str(x.get("label")): x for x in (cmp_.get("summaries") or [])}
+        means = [(lot, (sums.get(lot) or {}).get("mean"), (sums.get(lot) or {}).get("n"))
+                 for lot in lots]
+        out.append({"job": p.get("job", ""), "part": p.get("part", ""), "lots": lots,
+                    "baseline": p.get("baseline"), "matrix": matrix, "bands": bands,
+                    "verdicts": verdicts, "means": means,
+                    "anova": cmp_.get("anova") or {}})
+    return out
+
+
+def _val(v):
+    return getattr(v, "value", v)
+
+
 def chart_options_arg(state) -> dict:
     """UX-14: chart options a *new* report should start with — "Save as my
     default" in the Charts panel copies the current report's
@@ -547,7 +794,9 @@ def remove_section(model: ReportModel, section_id: str) -> None:
 # ======================================================================
 
 def _key(img: ImageSummary) -> str:
-    return os.path.basename(img.image_path or img.id).lower()
+    # multi-lot reports: the same file name can exist in several lots
+    lv = "|".join(str(v) for v in (img.levels or {}).values())
+    return f"{lv}|{os.path.basename(img.image_path or img.id).lower()}"
 
 
 def merge_refresh(old: ReportModel, new: ReportModel) -> ReportModel:
@@ -671,9 +920,15 @@ def render_outputs(model_dict: dict, jobs: Sequence[Tuple[str, str]],
 def only_image_model(model: ReportModel, image_path: str) -> ReportModel:
     """Copy of ``model`` restricted to one image (Export current image)."""
     m = ReportModel.from_dict(copy.deepcopy(model.to_dict()))
-    key = os.path.basename(image_path).lower()
+
+    def norm(p):
+        return os.path.normcase(os.path.abspath(p)) if p else ""
+    full = norm(image_path) if os.path.dirname(image_path or "") else ""
+    exact = full and any(norm(i.image_path) == full for i in m.images)
+    key = os.path.basename(image_path or "").lower()
     for img in m.images:
-        img.include = _key(img) == key
+        img.include = (norm(img.image_path) == full if exact
+                       else os.path.basename(img.image_path or img.id).lower() == key)
     return m
 
 
@@ -852,5 +1107,7 @@ __all__ = [
     "remove_section", "merge_refresh", "prepare_render_model",
     "render_outputs", "only_image_model", "slug",
     "default_export_path", "copy_logo", "record_export", "save_report", "load_report",
-    "problem_hints", "image_sections",
+    "problem_hints", "image_sections", "MULTI_KEY", "lots_loaded", "is_multi_lot",
+    "is_multi_model", "model_scope", "scope_images", "lot_groups", "baseline_arg",
+    "multi_lot_args", "build_multi_model", "lot_comparison_rows", "light_snapshot",
 ]

@@ -438,6 +438,8 @@ class ReportsPage(QWidget):
         self._relabel()
         if self.model is None or self.state.session is None or self._busy:
             return
+        if rb.is_multi_model(self.model):
+            return                   # Job / Part / Lot columns: not one record's labels
         if rb.apply_profile(self.model, rb.hierarchy_defaults(self.state)):
             self.inspector.load()
             self.inspector.show_selection(self._current_key)
@@ -449,6 +451,9 @@ class ReportsPage(QWidget):
     def build_from_session(self, then: Optional[Callable[[], None]] = None) -> None:
         s = self.state.session
         if s is None or self._busy:
+            return
+        if rb.is_multi_lot(self.state):          # UX-13: several lots analysed together
+            self.build_multi_lot(None, then=then, reuse=False)
             return
         inputs = rb.collect_inputs(self.state)
         if not inputs:
@@ -481,6 +486,65 @@ class ReportsPage(QWidget):
                 self._toast("Could not build the report", msg.splitlines()[0], "danger")
 
         run_task(rb.build_model, inputs, on_done=done, on_error=failed, **kw)
+
+    # ---------------------------------------------------------------- UX-09 / UX-13
+    def build_multi_lot(self, scope=None, then: Optional[Callable[[], None]] = None,
+                        reuse: bool = True) -> None:
+        """One report over several lots loaded in the analyzer (``scope``:
+        lot keys from ``report_builder.lots_loaded``; None = everything).
+        An open multi-lot report over the same lots is refreshed instead
+        (keeps captions, order, chart and palette edits)."""
+        s = self.state.session
+        if s is None:
+            return
+        if self._busy:
+            self._after_ready.append(lambda: self.build_multi_lot(scope, then, reuse))
+            return
+        scope = list(scope) if scope else None
+        if reuse and rb.is_multi_model(self.model) and rb.model_scope(self.model) == scope:
+            if self._fingerprint() == self.model.metadata.get("results_fingerprint"):
+                if then:
+                    then()
+                return
+            self.refresh_numbers(silent=True, then=then)
+            return
+        args = rb.multi_lot_args(self.state, scope)
+        if args is None:
+            self._toast("No results to report", "Analyse the images first.", "info")
+            return
+        if then:
+            self._after_ready.append(then)
+        self._gen += 1
+        gen = self._gen
+        groups = args.pop("groups")
+        n = sum(len(g.items) for g in groups)
+        self._set_model(None)
+        self.skeleton_caption.setText(f"Building the report from {len(groups)} lots, "
+                                      f"{n} image{'s' if n != 1 else ''}…")
+        self._set_busy("build", "Building the multi-lot report…")
+
+        def done(model):
+            if gen != self._gen:
+                return
+            self._set_busy("")
+            self._install(model, select=("section", "lot_comparison"))
+            self.save_now()
+            self._run_after_ready()
+
+        def failed(msg):
+            if gen == self._gen:
+                self._after_ready.clear()
+                self._set_busy("")
+                self._toast("Could not build the report", msg.splitlines()[0], "danger")
+
+        run_task(rb.build_multi_model, groups, on_done=done, on_error=failed, **args)
+
+    def _fingerprint(self) -> str:
+        """Fingerprint of the numbers the open report covers."""
+        if rb.is_multi_model(self.model):
+            return rb.results_fingerprint(
+                self.state, rb.scope_images(self.state, rb.model_scope(self.model)))
+        return rb.results_fingerprint(self.state)
 
     def _ask_rebuild(self) -> None:
         if self.toasts is None:
@@ -523,14 +587,25 @@ class ReportsPage(QWidget):
             if then:
                 self._after_ready.append(then)
             return
-        inputs = rb.collect_inputs(self.state)
+        multi = rb.is_multi_model(self.model)
+        if multi:
+            kw = rb.multi_lot_args(self.state, rb.model_scope(self.model))
+            if kw is None:
+                if then:
+                    then()
+                return
+            inputs = kw.pop("groups")
+            builder = rb.build_multi_model
+        else:
+            inputs = rb.collect_inputs(self.state)
+            kw = self._build_args()
+            kw["sample_statistics"] = rb.sample_statistics_arg(self.state, inputs)
+            kw["extras"] = rb.report_extras_arg(self.state, inputs)
+            builder = rb.build_model
         if then:
             self._after_ready.append(then)
         self._gen += 1
         gen = self._gen
-        kw = self._build_args()
-        kw["sample_statistics"] = rb.sample_statistics_arg(self.state, inputs)
-        kw["extras"] = rb.report_extras_arg(self.state, inputs)
         old = ReportModel.from_dict(self.model.to_dict())
         self._set_busy("refresh", "Refreshing the numbers…")
 
@@ -555,7 +630,7 @@ class ReportsPage(QWidget):
                 self._set_busy("")
                 self._toast("Could not refresh the report", msg.splitlines()[0], "danger")
 
-        run_task(rb.build_model, inputs, on_done=done, on_error=failed, **kw)
+        run_task(builder, inputs, on_done=done, on_error=failed, **kw)
 
     def _run_after_ready(self) -> None:
         cbs, self._after_ready = self._after_ready, []
@@ -570,7 +645,7 @@ class ReportsPage(QWidget):
         if self._busy or self.state.is_filtering():
             self._check_timer.start()
             return
-        fp = rb.results_fingerprint(self.state)
+        fp = self._fingerprint()
         if fp == self.model.metadata.get("results_fingerprint"):
             self._self_edits.clear()
             self._stale = False
@@ -706,6 +781,10 @@ class ReportsPage(QWidget):
 
     # ---------------------------------------------------------------- grains
     def image_doc(self, img):
+        full = os.path.normcase(os.path.abspath(img.image_path)) if img.image_path else ""
+        for im in self.state.images():      # same file name may be in several lots
+            if full and im.path and os.path.normcase(os.path.abspath(str(im.path))) == full:
+                return im
         name = os.path.basename(img.image_path or "")
         for im in self.state.images():
             if im.filename == name:
@@ -943,7 +1022,7 @@ class ReportsPage(QWidget):
         if self._busy:
             self._after_ready.append(lambda: self.export(kinds, ask, only_uid, refresh_first))
             return
-        if refresh_first and rb.results_fingerprint(self.state) != \
+        if refresh_first and self._fingerprint() != \
                 self.model.metadata.get("results_fingerprint"):
             self.refresh_numbers(silent=True,
                                  then=lambda: self.export(kinds, ask, only_uid, False))
@@ -956,7 +1035,7 @@ class ReportsPage(QWidget):
             if im is None or im.result is None:
                 self._toast("No results for this image", "Analyse it first.", "info")
                 return
-            model = rb.only_image_model(model, im.filename)
+            model = rb.only_image_model(model, str(im.path) if im.path else im.filename)
             stem_title = Path(im.filename).stem
             if basename:
                 basename = f"{basename}_{im.display_name}"

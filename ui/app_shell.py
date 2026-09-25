@@ -372,6 +372,7 @@ class AppShell(QMainWindow):
         self.analyze.new_session_requested.connect(self.new_session)
         self.analyze.open_projects_requested.connect(lambda: self.go("projects"))
         self.analyze.review_requested.connect(lambda: self.go("review"))
+        self.analyze.report_requested.connect(self.report_from_analyzer)
         self.analyze.add_images_requested.connect(self.open_images)
         self.analyze.progress_changed.connect(self._on_progress)
         self.analyze.setup_required.connect(self.show_setup_hint)
@@ -778,6 +779,52 @@ class AppShell(QMainWindow):
     # Every export goes through the report pipeline (ReportModel → renderers):
     # the report is built on demand, refreshed if the results changed, and the
     # file lands in <session>/exports/.  Save-as lives on the Reports page.
+    def report_from_analyzer(self, scope=None, action: str = "designer") -> None:
+        """UX-13: "Export report…" on the Analyze results table.  Several lots
+        -> one multi-lot report (per-lot summary, lot comparison vs the
+        baseline lot, charts, image pages, raw data with Job/Part/Lot);
+        a single lot -> the usual report.  ``action``: "designer" opens it
+        in the Reports designer (edit charts / palette first); "xlsx",
+        "pptx" or "both" export at once with progress on the button and a
+        toast when the files are written."""
+        from ui.pages import report_builder as rb
+        st, r = self.state, self.reports
+        if st.session is None or not any(im.result is not None for im in st.images()):
+            self.toasts.show_toast("No results to report", "Analyse images first.", "info")
+            return
+        # several lots loaded: always the multi-lot report (a selection of one
+        # lot of them gives that lot only, still with Job / Part / Lot columns)
+        multi = rb.is_multi_lot(st)
+        if action == "designer":
+            self.go("reports")
+            if multi:
+                r.build_multi_lot(scope)
+            elif r.model is None or rb.is_multi_model(r.model):
+                r.build_from_session()
+            return
+        kinds = ["xlsx", "pptx"] if action == "both" else [action]
+        table = self.analyze.table
+        table.set_report_busy(True)
+
+        def export():
+            r.export(kinds, refresh_first=not multi)
+        if multi:
+            r.build_multi_lot(scope, then=export)
+        elif rb.is_multi_model(r.model):
+            r.build_from_session(then=export)
+        else:
+            export()
+        self._watch_report_busy()
+
+    def _watch_report_busy(self) -> None:
+        """Keep the results-table button spinning while the report builds and
+        the files are written (never blocks: polled on the event loop)."""
+        from PySide6.QtCore import QTimer
+        if self.reports.is_busy() or self.reports._after_ready:
+            QTimer.singleShot(250, self._watch_report_busy)
+            return
+        self.analyze.table.set_report_busy(False)
+
     def export_all_excel(self, only_current: bool = False) -> None:
         if not any(im.result is not None for im in self.state.images()):
             self.toasts.show_toast("No results to export", "Analyse images first.", "info")
