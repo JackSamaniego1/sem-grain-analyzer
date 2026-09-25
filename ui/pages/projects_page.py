@@ -852,6 +852,7 @@ class ProjectsPage(QWidget):
     new_session_requested = Signal(object)           # dict prefill
     import_requested = Signal(list)                  # image paths (no lot selected)
     choose_workspace_requested = Signal()
+    compare_requested = Signal(list)                 # INN-43: lot Paths (2 or more)
 
     def __init__(self, state, toasts=None, parent=None) -> None:
         super().__init__(parent)
@@ -1006,6 +1007,7 @@ class ProjectsPage(QWidget):
         self.selbar.move_requested.connect(lambda: self.start_move(self.selected_items()))
         self.selbar.clear_requested.connect(self.clear_selection)
         self.selbar.select_all_requested.connect(self.select_all)
+        self.selbar.compare_requested.connect(self.compare_selected)
         cv.addWidget(self.selbar)
 
         self.stack = FadeStackedWidget()
@@ -1838,6 +1840,19 @@ class ProjectsPage(QWidget):
         self.selbar.set_count(n, self._noun(items) if n else "")
         k, why = self._move_kind(items)
         self.selbar.set_move_enabled(k is not None, why)
+        self.selbar.set_compare_visible(len(self.selected_lot_paths()) >= 2)
+
+    def selected_lot_paths(self) -> List[Path]:
+        """INN-43: the selected lots (only when the selection is all lots)."""
+        items = self.selected_items()
+        if not items or any(it["kind"] != "lot" for it in items):
+            return []
+        return [Path(it["path"]) for it in items]
+
+    def compare_selected(self) -> None:
+        paths = self.selected_lot_paths()
+        if len(paths) >= 2:
+            self.compare_requested.emit(paths)
 
     def _card_trash(self, card: NodeCard) -> None:
         key = str(card.item["path"])

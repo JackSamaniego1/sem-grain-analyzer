@@ -119,6 +119,7 @@ class NavRail(ThemeAware, QWidget):
     """Vertical icon rail with animated selection pill; expands to show labels. Emits ``page_selected(key)``."""
 
     page_selected = Signal(str)
+    reselected = Signal(str)      # the already-current entry was clicked again
     expanded_changed = Signal(bool)
 
     def __init__(self, parent: Optional[QWidget] = None, expand_on_hover: bool = False,
@@ -236,6 +237,8 @@ class NavRail(ThemeAware, QWidget):
         self.update()
 
     def _on_activated(self, key: str) -> None:
+        if key == self._current:
+            self.reselected.emit(key)
         self.set_current(key)
 
     def _focus_step(self, item: _NavItem, step: int) -> None:

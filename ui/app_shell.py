@@ -33,6 +33,7 @@ from ui.design.tokens import SPACE
 from ui.dialogs.new_session_wizard import NewSessionWizard
 from ui.format import fmt_date_utc, fmt_int
 from ui.pages.analyze_page import AnalyzePage
+from ui.pages.lot_compare_page import LotComparePage
 from ui.pages.common import Panel
 from ui.pages.projects_page import ProjectsPage
 from ui.pages.reports_page import ReportsPage
@@ -189,6 +190,9 @@ class AppShell(QMainWindow):
                       "reports": self.reports, "settings": self.settings_page}
         for w in self.pages.values():
             self.stack.addWidget(w)
+        # INN-43: a sub-page of Projects (the rail keeps "Projects" selected)
+        self.compare = LotComparePage(self.state, self.toasts)
+        self.stack.addWidget(self.compare)
         self.search_popup = SearchPopup(central)
         self.search_popup.setFixedWidth(460)
 
@@ -297,6 +301,10 @@ class AppShell(QMainWindow):
         for i, (key, ic, text) in enumerate(PAGES + [("settings", "settings", "Settings")]):
             self._act(vm, text, lambda _=False, k=key: self.go(k), f"Ctrl+{i + 1}", ic)
         vm.addSeparator()
+        self._act(vm, "Co&mpare lots…", lambda: self.show_compare(
+            self.projects.selected_lot_paths()), None, "mdi6.compare-horizontal",
+            "Compare the lots selected in Projects: grain-size differences and "
+            "equivalence to the baseline lot")
         self._act(vm, "Toggle &theme", self.toggle_theme, "Ctrl+Shift+L")
         hm = mb.addMenu("&Help")
         self.act_tour = self._act(hm, "Show &tour", self.start_tour, None, "help",
@@ -309,6 +317,7 @@ class AppShell(QMainWindow):
     def _wire(self) -> None:
         st = self.state
         self.rail.page_selected.connect(self._on_page)
+        self.rail.reselected.connect(self._on_rail_reselected)
         self.crumb.segment_clicked.connect(self._on_crumb)
         self.search.search_changed.connect(self._run_search)
         self.search.submitted.connect(lambda _t: self._open_search_item())
@@ -337,6 +346,8 @@ class AppShell(QMainWindow):
         self.projects.new_session_requested.connect(lambda pre: self.new_session(prefill=pre))
         self.projects.import_requested.connect(lambda paths: self.new_session(images=paths))
         self.projects.choose_workspace_requested.connect(self.settings_page.choose_workspace)
+        self.projects.compare_requested.connect(self.show_compare)
+        self.compare.back_requested.connect(lambda: self.go("projects"))
         self.analyze.calibrate_requested.connect(self.open_calibration)
         self.analyze.scan_area_requested.connect(self.open_scan_area)
         self.analyze.new_session_requested.connect(self.new_session)
@@ -360,8 +371,23 @@ class AppShell(QMainWindow):
             if self.stack.currentWidget() is not self.pages[key]:
                 self._on_page(key)
 
+    def show_compare(self, lot_paths=()) -> None:
+        """INN-43: open the lot comparison sub-page for ``lot_paths``."""
+        self.rail.set_current("projects", emit=False)
+        self.search_popup.hide()
+        self.compare.set_lots(list(lot_paths or []))
+        self.stack.set_current_widget(self.compare)
+        self._update_breadcrumb("projects")
+
+    def _on_rail_reselected(self, key: str) -> None:
+        """Clicking "Projects" while on its Compare sub-page goes back."""
+        if key in self.pages and self.stack.currentWidget() is not self.pages[key]:
+            self._on_page(key)
+
     def current_page(self) -> str:
         w = self.stack.currentWidget()
+        if w is getattr(self, "compare", None):
+            return "compare"
         for k, p in self.pages.items():
             if p is w:
                 return k

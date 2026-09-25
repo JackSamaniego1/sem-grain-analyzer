@@ -378,6 +378,69 @@ class Workspace:
             path = self._require_within_root(Path(project))
         return self._update_meta_file(path / "lot.json", LotMeta, **fields)
 
+    # ------------------------------------------------------------------
+    # INN-43: baseline lot per material
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def baseline_group(lot_path: Union[str, Path]) -> str:
+        """Key of the group a lot's baseline flag is unique within: the
+        sample's material (case-insensitive), or -- when the material is
+        blank -- the sample folder itself, so a blank material never links
+        unrelated samples."""
+        sample = Path(lot_path).parent
+        try:
+            material = str(read_json(sample / "sample.json").get("material") or "").strip()
+        except (OSError, ValueError):
+            material = ""
+        return ("material:" + material.lower()) if material else ("sample:" + str(sample))
+
+    def all_lot_paths(self) -> List[Path]:
+        """Every lot folder (with a lot.json) of every project/sample."""
+        out: List[Path] = []
+        for pm in self.list_projects():
+            for sm in self._list_children_with_meta(Path(pm.path), "sample.json", SampleMeta):
+                out += [Path(lm.path) for lm in
+                        self._list_children_with_meta(Path(sm.path), "lot.json", LotMeta)]
+        return out
+
+    def set_baseline_lot(self, lot_path: Union[str, Path], on: bool = True) -> List[Path]:
+        """Mark (``on``) or un-mark a lot as the baseline for its material.
+        Marking un-marks every other lot of the same material (see
+        :meth:`baseline_group`).  Returns the lot folders whose flag changed."""
+        lot = self._require_within_root(Path(lot_path))
+        changed: List[Path] = []
+        if on:
+            group = self.baseline_group(lot)
+            for lp in self.all_lot_paths():
+                if lp.resolve() == lot.resolve():
+                    continue
+                try:
+                    flagged = bool(read_json(lp / "lot.json").get("is_baseline"))
+                except (OSError, ValueError):
+                    continue
+                if flagged and self.baseline_group(lp) == group:
+                    self._update_meta_file(lp / "lot.json", LotMeta, is_baseline=False)
+                    changed.append(lp)
+        cur = LotMeta.from_dict(read_json(lot / "lot.json")) if (lot / "lot.json").exists() \
+            else LotMeta()
+        if bool(cur.is_baseline) != bool(on):
+            self._update_meta_file(lot / "lot.json", LotMeta, is_baseline=bool(on))
+            changed.append(lot)
+        return changed
+
+    def baseline_lot_for(self, lot_path: Union[str, Path]) -> Optional[Path]:
+        """The baseline lot of ``lot_path``'s material (may be itself), or None."""
+        group = self.baseline_group(lot_path)
+        for lp in self.all_lot_paths():
+            try:
+                flagged = bool(read_json(lp / "lot.json").get("is_baseline"))
+            except (OSError, ValueError):
+                continue
+            if flagged and self.baseline_group(lp) == group:
+                return lp
+        return None
+
     def update_session_meta(self, session_path: Path, **fields) -> SessionMeta:
         session_path = self._require_within_root(Path(session_path))
         return self._update_meta_file(session_path / "manifest.json", SessionMeta, **fields)

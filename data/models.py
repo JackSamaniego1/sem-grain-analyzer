@@ -273,6 +273,10 @@ class LotMeta:
     notes: str = ""
     spec_limits: dict = field(default_factory=dict)  # placeholder for INN-02
     created_utc: str = ""
+    # INN-43: the qualified reference lot for its material (SampleMeta.material);
+    # at most one per material -- Workspace.set_baseline_lot keeps that true.
+    # Absent in older lot.json files -> False.
+    is_baseline: bool = False
     path: Optional[str] = None
 
     def to_dict(self) -> dict:

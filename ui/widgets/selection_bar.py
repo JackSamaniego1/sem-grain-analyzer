@@ -1,6 +1,7 @@
 """SelectionBar — contextual action bar shown while items are selected (UI-09).
 
-Layout: [check] "N selected" · Select all ····· Move to… · Delete · Clear
+Layout: [check] "N selected" · Select all ····· Compare · Move to… · Delete · Clear
+(Compare -- INN-43 -- is shown only when two or more lots are selected.)
 Slides open (animated height, 200 ms ease-out) when the first item is
 selected and collapses when the selection is cleared. The Delete button is
 the danger variant so deleting is always visible, never hidden in a menu.
@@ -19,6 +20,7 @@ from ui.widgets.buttons import AnimatedButton
 from ui.widgets.cards import Card, label
 
 MOVE_ICON = "mdi6.folder-move-outline"
+COMPARE_ICON = "mdi6.compare-horizontal"
 
 
 class SelectionBar(Card):
@@ -28,6 +30,7 @@ class SelectionBar(Card):
     move_requested = Signal()
     clear_requested = Signal()
     select_all_requested = Signal()
+    compare_requested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent=parent, elevation=2)
@@ -47,6 +50,11 @@ class SelectionBar(Card):
         self.select_all_btn.setToolTip("Select every item shown below (Ctrl+A)")
         row.addWidget(self.select_all_btn, 0, Qt.AlignVCenter)
         row.addStretch(1)
+        self.compare_btn = AnimatedButton("Compare", COMPARE_ICON, "primary", "sm")
+        self.compare_btn.setToolTip("Compare the selected lots: grain-size differences and "
+                                    "equivalence to the baseline lot")
+        self.compare_btn.hide()
+        row.addWidget(self.compare_btn, 0, Qt.AlignVCenter)
         self.move_btn = AnimatedButton("Move to…", MOVE_ICON, "secondary", "sm")
         self.move_btn.setToolTip("Move the selected items to another folder of the same level")
         self.delete_btn = AnimatedButton("Delete", "delete", "danger", "sm")
@@ -59,6 +67,7 @@ class SelectionBar(Card):
         self.body_layout().addLayout(row)
         self.select_all_btn.clicked.connect(self.select_all_requested)
         self.move_btn.clicked.connect(self.move_requested)
+        self.compare_btn.clicked.connect(self.compare_requested)
         self.delete_btn.clicked.connect(self.delete_requested)
         self.clear_btn.clicked.connect(self.clear_requested)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
@@ -88,6 +97,10 @@ class SelectionBar(Card):
         self.move_btn.setEnabled(on)
         self.move_btn.setToolTip("Move the selected items to another folder of the same level"
                                  if on else (reason or "These items cannot be moved"))
+
+    def set_compare_visible(self, on: bool) -> None:
+        """INN-43: offer Compare only for a selection of two or more lots."""
+        self.compare_btn.setVisible(on)
 
     def is_open(self) -> bool:
         return self._open
