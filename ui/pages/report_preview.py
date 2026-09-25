@@ -481,8 +481,9 @@ class ImagePreview(SectionPreview):
     def __init__(self, page, img) -> None:
         super().__init__(page, "image", img.display())
         self.img = img
-        orig, ovl = page.pixmaps(img)
-        self.slide = ImageSlide(page.model, img, orig, ovl, self._number())
+        ready = page.is_pixmaps_ready(img)
+        orig, ovl = page.request_pixmaps(img, lambda pm, src=img: self._on_pixmaps(src, pm))
+        self.slide = ImageSlide(page.model, img, orig, ovl, self._number(), loading=not ready)
         self.body.addWidget(self.slide)
 
         text = Card("Caption & notes", "Printed under the images on the slide and on the "
@@ -522,8 +523,18 @@ class ImagePreview(SectionPreview):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed
                                    | QAbstractItemView.SelectedClicked)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        # UX-12: NOT QHeaderView.ResizeToContents — with real SEM images
+        # (hundreds to thousands of grains) that mode makes Qt re-measure
+        # every cell in every column on every layout pass, which is the
+        # actual cause of the Images-tab freeze (profiled: tens of thousands
+        # of model.data() calls for a table of a few dozen rows). Fixed,
+        # user-resizable column widths make opening an image O(1) instead of
+        # O(grains × columns).
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        header.setStretchLastSection(True)
+        for c, w in enumerate((78, 52, 104, 104, 96, 96, 160)):
+            self.table.setColumnWidth(c, w)
         self.table.setMinimumHeight(300)
         self.table.setToolTip("Tick = included in the report. Double-click a Note cell to annotate.")
         grains.add_widget(self.table)
@@ -539,6 +550,17 @@ class ImagePreview(SectionPreview):
             if i.id == self.img.id:
                 return n
         return 0
+
+    def _on_pixmaps(self, src, pm) -> None:
+        """UX-12: the background decode landed — apply it only if this
+        preview is still showing the image it was requested for (the user
+        may have picked another image, or the report may have reloaded,
+        while the file was decoding on the pool thread)."""
+        if src.image_path != self.img.image_path or src.overlay_path != self.img.overlay_path:
+            return
+        self.slide.original, self.slide.overlay = pm
+        self.slide.loading = False
+        self.slide.update()
 
     def _on_caption(self, text: str) -> None:
         self.img.caption = text
@@ -565,8 +587,11 @@ class ImagePreview(SectionPreview):
     def refresh(self) -> None:
         self.slide.model = self.page.model
         self.slide.number = self._number()
-        orig, ovl = self.page.pixmaps(self.img)
+        ready = self.page.is_pixmaps_ready(self.img)
+        orig, ovl = self.page.request_pixmaps(
+            self.img, lambda pm, src=self.img: self._on_pixmaps(src, pm))
         self.slide.original, self.slide.overlay = orig, ovl
+        self.slide.loading = not ready
         self.slide.update()
         self.gmodel.reload()
         self._update_count()

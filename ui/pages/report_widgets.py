@@ -59,6 +59,29 @@ def file_pixmap(path: Optional[str]) -> QPixmap:
     return bgr_pixmap(read_image(path))
 
 
+# ----------------------------------------------------------------------
+# UX-12: thread-safe (no QPixmap) decode helpers for background loading.
+# QImage — unlike QPixmap — is safe to build off the GUI thread; callers
+# wrap the result in QPixmap.fromImage(...) back on the GUI thread once the
+# background task hands the QImage back (see ``ReportsPage.pixmaps``).
+# ----------------------------------------------------------------------
+
+def arr_thumb_qimage(arr, max_w: int = 1100, max_h: int = 800):
+    from ui.workers import thumb_qimage
+    if arr is None:
+        from PySide6.QtGui import QImage
+        return QImage()
+    return thumb_qimage(arr, max_w, max_h)
+
+
+def file_thumb_qimage(path: Optional[str], max_w: int = 1100, max_h: int = 800):
+    from PySide6.QtGui import QImage
+    if not path or not os.path.exists(path):
+        return QImage()
+    from ui.workers import read_image
+    return arr_thumb_qimage(read_image(path), max_w, max_h)
+
+
 # ======================================================================
 # Paper base
 # ======================================================================
@@ -204,11 +227,15 @@ class ImageSlide(Paper):
     """Per-image slide: original + overlay, six metric callouts, caption."""
 
     def __init__(self, model, img, original: QPixmap, overlay: QPixmap, number: int,
-                 parent=None) -> None:
+                 parent=None, loading: bool = False) -> None:
         super().__init__(parent=parent)
         self.model, self.img = model, img
         self.original, self.overlay = original, overlay
         self.number = number
+        # UX-12: true while the real pixmaps are still decoding on a
+        # background thread (see ``ReportsPage.pixmaps``) — the placeholder
+        # then reads "Loading..." instead of "Image file not found".
+        self.loading = loading
 
     def metrics(self) -> List[tuple]:
         from reports.excel_renderer import _row_size_stats
@@ -227,11 +254,11 @@ class ImageSlide(Paper):
         if not self.original.isNull():
             p.drawPixmap(_fit(self.original, left).toRect(), self.original)
         else:
-            _placeholder(p, left, "Image file not found")
+            _placeholder(p, left, "Loading..." if self.loading else "Image file not found")
         if not self.overlay.isNull():
             p.drawPixmap(_fit(self.overlay, right).toRect(), self.overlay)
         else:
-            _placeholder(p, right, "No overlay")
+            _placeholder(p, right, "Loading..." if self.loading else "No overlay")
         top, cw = 485.0, 195.0
         for i, (val, lbl) in enumerate(self.metrics()):
             r = QRectF(50 + cw * i, top, cw - 8, 90)
@@ -585,4 +612,5 @@ def swatch_icon(color: str, size: int = 14):
 __all__ = [
     "Paper", "CoverSlide", "ImageSlide", "TextSlide", "MethodsSlide", "OverviewSheet",
     "PerImageBars", "Banner", "Swatch", "swatch_icon", "bgr_pixmap", "file_pixmap",
+    "arr_thumb_qimage", "file_thumb_qimage",
 ]

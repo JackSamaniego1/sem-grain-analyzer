@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QFileDialog, QGridLayout, QHBoxLayout, QMenu, QProgressBar, QSplitter, QToolButton,
     QVBoxLayout, QWidget,
@@ -34,7 +35,7 @@ from ui.pages.common import PageHeader, Panel, scroll
 from ui.pages.report_inspector import ReportInspector
 from ui.pages.report_outline import ReportOutline
 from ui.pages.report_preview import ImagePreview, TextPreview, make_preview
-from ui.pages.report_widgets import Banner, file_pixmap, bgr_pixmap
+from ui.pages.report_widgets import Banner, arr_thumb_qimage, file_thumb_qimage
 from ui.widgets import (
     AnimatedButton, Badge, EmptyState, FadeStackedWidget, IconButton, Skeleton, label,
 )
@@ -63,6 +64,7 @@ class ReportsPage(QWidget):
         self._own_cmds: list = []          # undo commands pushed from this page
         self._undo_index = 0
         self._pix: Dict[tuple, tuple] = {}
+        self._pix_pending: set = set()   # UX-12: keys with a decode already in flight
         self._after_ready: List[Callable[[], None]] = []
         self._current_key = None
         self._model_session = None
@@ -364,6 +366,7 @@ class ReportsPage(QWidget):
         self.progress_host.hide()
         self._set_model(None)
         self._pix.clear()
+        self._pix_pending.clear()
         self._update_view()
 
     def _set_model(self, model: Optional[ReportModel]) -> None:
@@ -534,6 +537,7 @@ class ReportsPage(QWidget):
                 return
             merged = rb.merge_refresh(old, new)
             self._pix.clear()
+            self._pix_pending.clear()
             self._set_busy("")
             # edits made while the refresh ran would be lost; re-apply cheap ones
             self._install(merged, animate=False)
@@ -735,16 +739,53 @@ class ReportsPage(QWidget):
         if cmd is not None and any(cmd is c for c in self._own_cmds):
             self._self_edits.add(getattr(cmd, "uid", None))
 
+    def is_pixmaps_ready(self, img) -> bool:
+        return (img.image_path, img.overlay_path) in self._pix
+
     def pixmaps(self, img):
+        """Cached pixmaps for ``img``, or a blank placeholder if they have
+        not been decoded yet (never decodes on the GUI thread — see
+        ``request_pixmaps``)."""
+        return self._pix.get((img.image_path, img.overlay_path)) or (QPixmap(), QPixmap())
+
+    def request_pixmaps(self, img, on_ready: Callable[[tuple], None]):
+        """UX-12: the Images tab / per-image preview must never block the
+        GUI thread. Returns whatever is cached right now (or a blank
+        placeholder); if the real pixmaps are not cached yet, decodes the
+        file(s) on a pool thread (``ui.workers.read_image`` + downsample —
+        both safe off-thread since they only touch numpy/``QImage``) and
+        calls ``on_ready(pixmaps)`` exactly once when the ``QPixmap`` objects
+        are built back on the GUI thread. Results are cached by
+        ``(image_path, overlay_path)`` so revisiting an image is instant."""
         key = (img.image_path, img.overlay_path)
         hit = self._pix.get(key)
-        if hit is None:
-            doc = self.image_doc(img)
-            orig = bgr_pixmap(doc.image_bgr) if doc is not None and doc.image_bgr is not None \
-                else file_pixmap(img.image_path)
-            hit = (orig, file_pixmap(img.overlay_path))
-            self._pix[key] = hit
-        return hit
+        if hit is not None:
+            return hit
+        if key not in self._pix_pending:
+            self._pix_pending.add(key)
+
+            def work():
+                doc = self.image_doc(img)
+                orig_qi = (arr_thumb_qimage(doc.image_bgr)
+                           if doc is not None and doc.image_bgr is not None
+                           else file_thumb_qimage(img.image_path))
+                ovl_qi = file_thumb_qimage(img.overlay_path)
+                return orig_qi, ovl_qi
+
+            def done(qimages):
+                self._pix_pending.discard(key)
+                pm = (QPixmap.fromImage(qimages[0]), QPixmap.fromImage(qimages[1]))
+                self._pix[key] = pm
+                on_ready(pm)
+
+            def failed(_msg):
+                self._pix_pending.discard(key)
+                pm = (QPixmap(), QPixmap())
+                self._pix[key] = pm
+                on_ready(pm)
+
+            run_task(work, on_done=done, on_error=failed)
+        return (QPixmap(), QPixmap())
 
     # ================================================================== previews
     def _show_preview(self, key, animate: bool = True) -> None:

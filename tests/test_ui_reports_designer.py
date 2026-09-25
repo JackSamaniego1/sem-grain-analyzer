@@ -310,6 +310,51 @@ def test_validation_shows_missing_image_with_hint(analysed, qtbot):
     assert rp.issues_badge.isVisible()
 
 
+def test_images_tab_stays_responsive_with_many_images(env, qtbot, monkeypatch):
+    """UX-12: selecting the Images outline group / stepping through images
+    must never block the GUI thread, even when every image decode is slow
+    (large real-world SEM files) and there are many images in the report.
+
+    Profiling this test is what found the actual freeze: ``QHeaderView.
+    ResizeToContents`` on the per-grain table re-measures every cell in
+    every column on every layout pass, so opening an image was
+    O(grains x columns) — fine for the 3-image fixtures elsewhere, a real
+    hang for a real SEM session. Fixed column widths made it O(1); the
+    image-pixmap decode was also moved off the GUI thread for good measure
+    (real SEM files are large)."""
+    import time
+    from ui import workers as ui_workers
+
+    path = make_session(env, 50, label="Big")
+    shell = _open_shell(qtbot, path)
+    _analyse_all(shell, qtbot)
+    rp = _build(shell, qtbot)
+    assert len(rp.model.images) == 50
+
+    # Simulate slow disk / large SEM files: every image decode sleeps.
+    real_read = ui_workers.read_image
+
+    def slow_read(p):
+        time.sleep(0.05)
+        return real_read(p)
+
+    monkeypatch.setattr(ui_workers, "read_image", slow_read)
+    rp._pix.clear()
+
+    t0 = time.perf_counter()
+    rp.select(("section", "images"))
+    for img in rp.model.images[:20]:
+        ta = time.perf_counter()
+        rp.select(("image", img.id))
+        assert time.perf_counter() - ta < 0.2, f"selecting image {img.id} blocked the GUI thread"
+    elapsed = time.perf_counter() - t0
+    assert elapsed < 2.0, f"opening the Images tab blocked the GUI thread for {elapsed:.2f}s"
+
+    # The slow decodes still complete (off the GUI thread) and get cached.
+    qtbot.waitUntil(lambda: rp.is_pixmaps_ready(rp.model.images[0]), timeout=10000)
+    shell.close()
+
+
 def test_legacy_ui_modules_are_gone():
     import importlib.util
     for mod in ("ui.main_window", "ui.settings_panel", "ui.results_panel",
