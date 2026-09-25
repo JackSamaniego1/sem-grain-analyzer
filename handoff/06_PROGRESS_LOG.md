@@ -159,3 +159,15 @@
   - **FB-03 (bug) DONE (009530d)**: "Remove from analyzer" right-click menu threw an error — QAction.triggered(bool) overwrote menu lambdas' uid list. Fixed: ui/pages/image_tree.py new build_menu() structure.
 - **Full suite: 839 passed / 0 failed**. Offline guard clean.
 - **Next**: Rebuild installer at 009530d; locally retag v3.0.0 (move from 709fd7d); user test-installs exe locally; on approval, push main/v3-dev/tags to GitHub (auth ready).
+
+## 2026-09-25 — v3.0.0 published and tagged; CI build queued
+- **Docs updated (5e99278)**:
+  - CHANGELOG.md: Added "Lot Summary" sheet entry and fixed FB-01/FB-03 entries.
+  - README.md: Added Excel export line (Lot Summary, Overview, per-image hierarchy).
+  - docs/user-guide/exporting-to-excel.md: Rewrote "Report Structure" section for v3 sheet order (Overview, Lot Summary, Distributions).
+- **main fast-forwarded to 5e99278** (all v3-dev work + docs).
+- **v3.0.0 tag (annotated) created at 5e99278 and pushed to origin.**
+- **GitHub push unblocked** (no longer in Blocked section; FND-04 auth confirmed JackSamaniego1).
+- **CI build queued** (Build & Release workflow, GitHub Actions run 36157862797). Builds GrainAnalyzer_Setup.exe and attaches to v3.0.0 Release.
+- **Full suite: 839 passed / 0 failed**. Installer 644 MB, dist 1.3 GB.
+- **Next**: (1) Confirm CI succeeds and Release has GrainAnalyzer_Setup.exe; (2) user downloads to flash drive and installs on work PC; (3) optional follow-ups (Lot Summary preview widget, PowerPoint Lot Summary slide for v3.1+).

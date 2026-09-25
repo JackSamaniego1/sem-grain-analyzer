@@ -83,6 +83,8 @@ Context: User installed v3.0.0 locally and reported 16 UX change requests (UX-01
 ### D-28 · 2026-09-25 · accepted (user) — Lot Summary sheet: default ON, Excel-only
 Context: FB-02 implemented new "Lot Summary" sheet (per-lot distribution chart + stats block) in Excel reports after Overview. User feedback during v3.0.0 review: feature approved. Decision: **Lot Summary sheet enabled by default** (report section toggle `lot_summary` default true); **Excel-only for v3.0.0** (PPTX counterpart deferred to v3.1+). Old report.json files backfilled with new section. Consequences: multi-lot reports ship with per-lot summary by default; users can toggle off in report designer if not needed; PPTX lot summary is a future feature.
 
+### D-29 · 2026-09-25 · accepted — v3.0.0 published; no more retagging
+Context: v3.0.0 tag (annotated, on commit 5e99278) pushed to origin (GitHub). From this point, v3.0.0 is public and immutable. Any further fixes or features must be released as v3.0.1, v3.1.0, etc. (semantic versioning). Decision: **No retagging of v3.0.0 after push.** If a bug is found post-release, create a new version tag and release. Consequences: GitHub Release v3.0.0 is stable; changelog and version.py must advance for next release; handoff board removes any "retag" tasks for v3.0.0.
 
 
 
