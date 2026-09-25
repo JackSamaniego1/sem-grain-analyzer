@@ -71,4 +71,7 @@ Context: v2 overlay export showed only the cropped scan area when auto-crop was 
 ### D-23 · 2026-09-24 · accepted — Calibration verification: newer failed supersedes older pass
 Context: INN-29 (calibration_verify.py) may find that a calibration passes one check then fails a later check (e.g. drift detected). Coordinator pattern: newer result wins. Decision: **in cal_records.py, a failed check record supersedes an older passed record for the same calibration ID.** Flagged in UI as "FAILED" (red chip) not "PASSED then FAILED". Consequences: audit trail shows the ultimate verdict; no ambiguity in report rendering.
 
+### D-25 · 2026-09-24 · accepted (user) — PowerPoint report bugs parked
+Context: FIX-11, FIX-12, FIX-13 are PPTX rendering issues (title overlap, table overflow, chart bars vs line). Found during boss deck build; reported as high priority. User feedback 2026-09-24: "do that later". Decision: **park FIX-11/12/13 and FIX-07 (PPTX calibration render) in todo status; resume only when user explicitly asks.** Focus v3.0.0 on non-PPTX work. Consequences: v3.0.0 ships with Excel + PDF/CSV deliverables; PPTX fixes deferred to v3.1 or on-demand, alongside FIX-07 PPTX render.
+
 

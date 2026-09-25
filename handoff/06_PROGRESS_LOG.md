@@ -91,3 +91,16 @@
   - Scale-bar: finder fooled by rectangular frame around bar → FIX-17 (detection-engineer)
   - Review toolbar: overlap reproduced <1700px width → FIX-09 threshold updated
 - FIX items 11–17 added to task board (todo status). Next: batch FIX assignments; second innovator pass; Phase 6.
+
+## 2026-09-24 — FIX batch (non-PPTX) completed
+- **FIX-06 done (91a1d65)**: BUILD_WINDOWS.bat + .github/workflows/build.yml generate icon.ico via `python -m ui.design.branding resources\icon.ico`. macOS icon step unchanged.
+- **FIX-07 Excel part done (790afdb)**: ReportModel.calibration field added (from metadata["calibration"]), JSON round-trip with backward compat, rendered in Excel Methods sheet only. PPTX render deferred with FIX-11/12/13.
+- **FIX-08 done (4488f9a)**: CalStatusChip mounted in app_shell.status_bar, wired apply_to_session, PASS/FAIL/INC verdict badges on lot tree nodes.
+- **FIX-09 done (4488f9a)**: DPI/layout polish: toolbars wrap <1700px, stat cards 2×2, card titles wrap. New ui/widgets/layout.py module.
+- **FIX-10 done (91a1d65)**: Cleanup: removed unused core/grain_edit.replay_edits/apply_edit functions; THIRD_PARTY_LICENSES.txt removed "CLAUDE.md" mention.
+- **FIX-14 done (790afdb)**: Excel auto-sizes Lot/Sample/Image columns (excel_renderer.py).
+- **FIX-15 done (4488f9a)**: Lot result field table Note column wraps to show full exclusion reason (UI layout CSS padding fix).
+- **FIX-16 done (9242703)**: Calibration check formatting fixed to never show "-0.00 %" (negative-zero handling in cal_verify.py format_percent).
+- **FIX-17 done (9242703)**: Scale-bar finder robustness: rejects rectangular drawn frames, only detects actual scale bars (core/scale_bar.py endpoint logic). Added tests/test_scale_bar_frame.py.
+- **FIX-11/12/13 parked**: PPTX report layout issues (title overlap, table overflow, chart rendering). User request 2026-09-24: do later. Added D-25 decision.
+- **Second innovator pass**: 11 new ideas appended to 07_IDEAS_BACKLOG.md (INN-41..51) with specs; top 3 are INN-41 (control chart), INN-44 (filename template auto-filing), INN-46 (field-outlier check). Full suite: **638 passed / 0 failed**.
