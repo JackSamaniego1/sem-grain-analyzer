@@ -142,3 +142,12 @@
 - **FND-04 RESOLVED**: GitHub credential updated from Harvey-FS to JackSamaniego1 (verified with dry-run push; no commits pushed yet).
 - **Release hold decision (D-27)**: Release will be held for completion of all UX items. Plan: ui-designer handles UX-01..06, UX-08..11 overnight; report-engineer handles UX-12..16 overnight. By morning: all changes complete + full test suite green + GrainAnalyzer_Setup.exe rebuilt locally. Then: main fast-forward (past b06e51a and subsequent UX commits), re-tag v3.0.0 locally (git tag -f), user tests install locally, and pushes when ready.
 - **Overnight sprint**: ui-designer and report-engineer teams in parallel; all UX items targeted for "done" status by morning review.
+
+## 2026-09-25 (overnight) — UX batch complete; v3.0.0 rebuilt and tagged
+- **UX batch (UX-01..16) COMPLETE**: All user feedback items shipped. Commits:
+  - **UI designer (UX-01..06, UX-08..11)**: b0437c1 (UX-07 cancel cooperative), de99be0 (pre-gate, image removal), e01f8d0 (scale scope toggle), bcf1a82 (scope-aware button text, spinner fix), 3e9a3bb (overlay opacity, tooltips, CPU chip). Settings panel reordered; pre-analysis gate enforces scan area + scale; scope toggles for scale and filters; image removal with restore from lot; nav tooltips ≤150 ms; CPU chip shows device type.
+  - **Report engineer (UX-12..16)**: b06e51a (Images tab lazy-load + pixel LRU), 52556a4 (multi-lot report model + TOST matrix), 560deed (custom palettes + palette editor), 435ba01 (editable charts with persist), 1e0a895 (overlay opacity export). Multi-lot report with per-lot summaries, lot comparison (TOST), combined distribution, per-lot sections. Editable charts (bins/units/ranges/titles/fit). Custom palettes (hex/wheel editor, saved locally). Lazy-load Images tab (6 images / 500 MB pixel cache); report export respects opacity.
+  - **Results table**: Job/Part/Lot hierarchy + Grains column; sortable/groupable (2523b26).
+- **Full suite: 820 passed / 0 failed**. Offline guard clean. Installer rebuilt: GrainAnalyzer_Setup.exe 644 MB, dist 1.3 GB, exe launches OK.
+- **v3.0.0 tag**: Annotated, 709fd7d, local only (main fast-forwarded to v3-dev).
+- **Ready for user**: Install test → fix any bugs (safe on v3-dev before push) → push main/v3-dev/tags → CI builds release → user downloads to flash drive.

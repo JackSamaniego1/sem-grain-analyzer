@@ -120,19 +120,19 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 ## Phase 6 — User feedback (2026-09-25 post-install fixes)
 | ID | Task | Owner | Status | Notes |
 |----|------|-------|--------|-------|
-| UX-01 | Settings panel order (Detection mode → Calibration → Scale → Grain filters → Excluded black regions → Advanced); remove Automatic mode, hide Advanced while AI-assisted selected | ui-designer | doing | handoff/08_USER_FEEDBACK_2026-09-25.md |
-| UX-02 | Pre-analysis gate: require scan area + magnification/scale confirmed before analysis starts; auto-find button; result tile with edit; highlight controls if clicked before ready | ui-designer | doing | |
-| UX-03 | Scale bar "this image only" toggle — apply to current image vs all images | ui-designer | doing | |
-| UX-04 | Grain filters button text changes to "Apply" (vs "Apply to all images") when "This image" scope selected | ui-designer | doing | |
-| UX-05 | Overlay opacity slider in analysis settings; feeds ReportModel.overlay_opacity (0–1) for report exports | ui-designer | doing | |
-| UX-06 | Remove image from analyzer (file/lot untouched) + "Add all from lot" button to restore removed images | ui-designer | doing | |
+| UX-01 | Settings panel order (Detection mode → Calibration → Scale → Grain filters → Excluded black regions → Advanced); remove Automatic mode, hide Advanced while AI-assisted selected | ui-designer | done | b0437c1 et al.; settings reordered; mode switch logic |
+| UX-02 | Pre-analysis gate: require scan area + magnification/scale confirmed before analysis starts; auto-find button; result tile with edit; highlight controls if clicked before ready | ui-designer | done | de99be0; pre-gate enforced; controls highlight on demand |
+| UX-03 | Scale bar "this image only" toggle — apply to current image vs all images | ui-designer | done | e01f8d0; toggle in UI; scope persistence |
+| UX-04 | Grain filters button text changes to "Apply" (vs "Apply to all images") when "This image" scope selected | ui-designer | done | bcf1a82; button text dynamic per scope |
+| UX-05 | Overlay opacity slider in analysis settings; feeds ReportModel.overlay_opacity (0–1) for report exports | ui-designer | done | 3e9a3bb; slider wired; export respects opacity |
+| UX-06 | Remove image from analyzer (file/lot untouched) + "Add all from lot" button to restore removed images | ui-designer | done | de99be0; remove/restore in Analyze page; file/lot safe |
 | UX-07 | Cancel is slow — must stop within ~1 s | detection-engineer | done | b0437c1: cooperative cancel via threading.Event → GrainDetector.analyze(cancel=); SAM batch 64→16; 23 tests |
-| UX-08 | Spinner bug — only clicked button should spin, not all "Analyze" buttons | ui-designer | doing | |
-| UX-09 | Load job / part / lot into analyzer with nested tree; multi-lot analyze-all; results table with Job/Part/Lot columns, groupable/sortable | ui-designer | doing | REVISED 2026-09-25 — supersedes original multi-lot analysis |
-| UX-10 | Nav tooltip delay ≤150 ms on hover or permanent labels | ui-designer | doing | |
-| UX-11 | CPU chip clarity — reads "AI runs on: CPU" or GPU name with tooltip | ui-designer | doing | |
-| UX-12 | Report editor Images tab freezes — lazy load thumbnails off-thread, cache, never block UI | report-engineer | doing | b06e51a: partial fix (Images tab now lazy-loads; further optimization if needed) |
-| UX-13 | Multi-lot report format: per-lot summary table (lot, fields, grains, G ± CI, mean ECD, verdict), lot comparison (Δ matrix + TOST vs baseline), per-lot sections, combined distribution, raw data with Lot column; Excel + PPTX | report-engineer | doing | |
-| UX-14 | Editable charts: bin size, units (µm/nm, ECD/area/G), axis ranges, titles, labels, normal fit toggle, colours; "Save as my default" persisted locally | report-engineer | doing | |
-| UX-15 | Custom palettes: create from 3 hex/colour-wheel colours, save locally, selectable next to 4 built-in, drives report colours | report-engineer | doing | |
-| UX-16 | Overlay opacity in report export — use ReportModel.overlay_opacity (UX-05) | report-engineer | doing | |
+| UX-08 | Spinner bug — only clicked button should spin, not all "Analyze" buttons | ui-designer | done | bcf1a82; spinner isolated to active button |
+| UX-09 | Load job / part / lot into analyzer with nested tree; multi-lot analyze-all; results table with Job/Part/Lot columns, groupable/sortable | ui-designer | done | 2523b26; nested tree in Analyze; results table with Job/Part/Lot/Grains columns; sortable/groupable |
+| UX-10 | Nav tooltip delay ≤150 ms on hover or permanent labels | ui-designer | done | 3e9a3bb; tooltips ≤150 ms; persistent labels on nav |
+| UX-11 | CPU chip clarity — reads "AI runs on: CPU" or GPU name with tooltip | ui-designer | done | 3e9a3bb; chip label with GPU/CPU; tooltip shows device |
+| UX-12 | Report editor Images tab freezes — lazy load thumbnails off-thread, cache, never block UI | report-engineer | done | b06e51a: Images tab lazy-loads off-thread; pixel LRU cache (6 images / 500 MB); no UI stall |
+| UX-13 | Multi-lot report format: per-lot summary table (lot, fields, grains, G ± CI, mean ECD, verdict), lot comparison (Δ matrix + TOST vs baseline), per-lot sections, combined distribution, raw data with Lot column; Excel + PPTX | report-engineer | done | 52556a4: multi_lot_report_model(); per-lot summaries + TOST matrix + per-lot sections + combined dist; Excel + PPTX |
+| UX-14 | Editable charts: bin size, units (µm/nm, ECD/area/G), axis ranges, titles, labels, normal fit toggle, colours; "Save as my default" persisted locally | report-engineer | done | 435ba01: chart editor (bin/unit/range/title/fit toggle); defaults saved to chart_defaults.json |
+| UX-15 | Custom palettes: create from 3 hex/colour-wheel colours, save locally, selectable next to 4 built-in, drives report colours | report-engineer | done | 560deed: palette editor (hex input + wheel); palette_library.json; selectable in report UI |
+| UX-16 | Overlay opacity in report export — use ReportModel.overlay_opacity (UX-05) | report-engineer | done | 1e0a895: export respects ReportModel.overlay_opacity; Excel & PPTX apply opacity |
