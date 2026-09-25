@@ -111,7 +111,7 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 ## Phase 6 — Release
 | ID | Task | Owner | Status | Notes |
 |----|------|-------|--------|-------|
-| REL-01 | Journey tests (open→calibrate→analyze→edit→save→reload→report→export) | qa-engineer | todo | |
+| REL-01 | Journey tests (open→calibrate→analyze→edit→save→reload→report→export) | qa-engineer | done | 5845451: 3 journeys (threshold+scale-bar full lifecycle, boundary+FEI metadata+merge, XLSX+PPTX); 641 tests |
 | REL-02 | Update `docs/`, README, GUIDE for v3 | coordinator (haiku agent) | todo | |
 | REL-03 | Local PyInstaller build + install/uninstall test; size report | build-engineer | todo | R13 |
 | REL-04 | Tag `v3.0.0`, CI, release notes | build-engineer | blocked | needs user go + auth |

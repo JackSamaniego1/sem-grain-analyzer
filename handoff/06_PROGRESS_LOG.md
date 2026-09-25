@@ -92,6 +92,11 @@
   - Review toolbar: overlap reproduced <1700px width → FIX-09 threshold updated
 - FIX items 11–17 added to task board (todo status). Next: batch FIX assignments; second innovator pass; Phase 6.
 
+## 2026-09-24 — REL-01 journey tests completed
+- **REL-01 done (5845451)**: tests/test_journey.py with 3 end-to-end journeys via real app shell. Journey 1: threshold mode calibration → analyze → grain editing (lasso/merge) → trash/restore → save/reopen session. Journey 2: boundary mode, FEI metadata auto-calibration, lot sample statistics, verdict badge. Journey 3: both XLSX and PPTX export with exports honour designer edits, verify Methods "Calibrated: No" for uncalibrated images. All journeys pass; no bugs found. SAM detection mode not covered (checkpoint not bundled locally).
+- Full suite: **641 passed / 0 failed**.
+- Next: User triage of INN-41..51; README v3 review; PPTX FIX-11/12/13 resume decision; Phase 6 release (NSIS test, merge to main, tag v3.0.0).
+
 ## 2026-09-24 — FIX batch (non-PPTX) completed
 - **FIX-06 done (91a1d65)**: BUILD_WINDOWS.bat + .github/workflows/build.yml generate icon.ico via `python -m ui.design.branding resources\icon.ico`. macOS icon step unchanged.
 - **FIX-07 Excel part done (790afdb)**: ReportModel.calibration field added (from metadata["calibration"]), JSON round-trip with backward compat, rendered in Excel Methods sheet only. PPTX render deferred with FIX-11/12/13.

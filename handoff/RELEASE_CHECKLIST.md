@@ -2,7 +2,7 @@
 
 - [ ] All Phase 1–4 gates passed; ≥3 innovator ideas shipped
 - [ ] `/run-tests` green on `v3-dev`
-- [ ] Journey tests (REL-01) green
+- [x] Journey tests (REL-01) green
 - [ ] `version.py` = `3.0.0`; README/GUIDE/docs updated; `CHANGELOG.md` written
 - [ ] Local `pyinstaller grain_analyzer.spec --clean --noconfirm` succeeds; `dist\GrainAnalyzer\GrainAnalyzer.exe` launches; bundle size recorded
 - [ ] NSIS installer builds; installs to Program Files; Start-menu + desktop shortcuts; uninstall clean
