@@ -369,12 +369,13 @@ def build_model(inputs: Sequence[ReportImageInput], *, title: str, operator: str
                 fingerprint: str = "", hierarchy: Optional[list] = None,
                 export_basename: str = "", sample_statistics=None,
                 verdict=None, calibration=None, extras: Optional[dict] = None,
-                overlay_opacity: float = 1.0) -> ReportModel:
+                overlay_opacity: float = 1.0, chart_options: Optional[dict] = None) -> ReportModel:
     """Pool-thread: ReportModel from snapshots (writes overlay PNGs).
     ``sample_statistics``: see :func:`sample_statistics_arg` (INN-27).
     ``extras`` (:func:`report_extras_arg`): compute the optional INN-02
     verdict and INN-29 calibration payload here, off the GUI thread.
-    ``overlay_opacity`` (UX-16): see :func:`overlay_opacity_arg`."""
+    ``overlay_opacity`` (UX-16): see :func:`overlay_opacity_arg`.
+    ``chart_options`` (UX-14): see :func:`chart_options_arg`."""
     if extras:
         v, c = compute_report_extras(extras)
         verdict = verdict if verdict is not None else v
@@ -392,10 +393,23 @@ def build_model(inputs: Sequence[ReportImageInput], *, title: str, operator: str
                                      metadata=meta, asset_dir=asset_dir,
                                      hierarchy=hierarchy, export_basename=export_basename,
                                      sample_statistics=sample_statistics,
-                                     verdict=verdict, overlay_opacity=overlay_opacity)
+                                     verdict=verdict, overlay_opacity=overlay_opacity,
+                                     chart_options=chart_options)
     apply_calibration(model, calibration)
     normalize(model)
     return model
+
+
+def chart_options_arg(state) -> dict:
+    """UX-14: chart options a *new* report should start with — "Save as my
+    default" in the Charts panel copies the current report's
+    ``chart_options`` to ``AppSettings.default_chart_options``; new reports
+    (and Rebuild) start from that. ``{}`` (renderer/model defaults) when
+    unset."""
+    try:
+        return dict(getattr(state.settings, "default_chart_options", None) or {})
+    except AttributeError:
+        return {}
 
 
 def overlay_opacity_arg(state) -> float:
@@ -521,10 +535,11 @@ def merge_refresh(old: ReportModel, new: ReportModel) -> ReportModel:
     defaults = {"hierarchy": list(new.hierarchy), "export_basename": new.export_basename,
                 "title": new.metadata.get("auto_title", "")}
     for f in ("title", "operator", "organization", "logo_path", "date", "units", "theme",
-              "export_basename", "overlay_opacity"):
+              "export_basename", "overlay_opacity", "custom_palette"):
         setattr(out, f, getattr(old, f))
     out.hierarchy = [dict(h) for h in old.hierarchy]
     out.bins = dict(old.bins)
+    out.chart_options = dict(old.chart_options)
     meta = dict(old.metadata)
     for k in ("detection_mode", "detection_params", "instrument", "magnification", "session",
               "project", "results_fingerprint"):

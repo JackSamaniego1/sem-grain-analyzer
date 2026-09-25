@@ -390,3 +390,43 @@ def test_validate_catches_custom_theme_without_palette(tmp_path):
     model.theme = "custom:custom-1"
     problems = model.validate()
     assert any("custom_palette" in p for p in problems)
+
+
+# ---------------------------------------------------------------------------
+# UX-14: chart_options
+# ---------------------------------------------------------------------------
+
+def test_chart_options_defaults_to_empty(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    assert model.chart_options == {}
+
+
+def test_chart_options_set_via_from_results(tmp_path):
+    items = _build_items(tmp_path, n=1)
+    opts = {"normal_fit": False, "area": {"enabled": False}}
+    model = ReportModel.from_results(items, asset_dir=str(tmp_path / "assets"),
+                                     chart_options=opts)
+    assert model.chart_options == opts
+
+
+def test_chart_options_round_trip_through_json(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    model.chart_options = {"area": {"min": 1.0, "max": 50.0, "title": "My area chart"}}
+    restored = ReportModel.from_json(model.to_json())
+    assert restored.chart_options == model.chart_options
+    assert restored.to_dict() == model.to_dict()
+
+
+def test_legacy_report_json_without_chart_options_key_loads_cleanly(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    d = model.to_dict()
+    del d["chart_options"]
+    restored = ReportModel.from_dict(d)
+    assert restored.chart_options == {}
+
+
+def test_validate_catches_min_greater_than_max(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    model.chart_options = {"diameter": {"min": 50, "max": 10}}
+    problems = model.validate()
+    assert any("chart_options" in p and "diameter" in p for p in problems)

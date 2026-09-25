@@ -9,8 +9,9 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from reports.charts import (
-    PALETTES, SERIES, derive_custom_palette, new_custom_palette_id, normalize_hex,
-    resolve_palette, series_for, shade,
+    DEFAULT_CHART_OPTIONS, PALETTES, SERIES, build_bins, derive_custom_palette, filter_range,
+    new_custom_palette_id, normalize_hex, resolve_chart_options, resolve_palette, series_for,
+    shade,
 )
 
 
@@ -86,3 +87,43 @@ def test_series_for_reflects_custom_palette():
     assert series["navy"] == custom["accent"]
     # non-palette series entries (typography/bands/gridlines) are unchanged
     assert series["gridline"] == SERIES["gridline"]
+
+
+# ---------------------------------------------------------------------------
+# UX-14: chart options
+# ---------------------------------------------------------------------------
+
+def test_resolve_chart_options_empty_returns_defaults():
+    assert resolve_chart_options(None) == DEFAULT_CHART_OPTIONS
+    assert resolve_chart_options({}) == DEFAULT_CHART_OPTIONS
+
+
+def test_resolve_chart_options_merges_partial_overrides():
+    resolved = resolve_chart_options({"normal_fit": False, "area": {"enabled": False, "min": 5}})
+    assert resolved["normal_fit"] is False
+    assert resolved["area"]["enabled"] is False
+    assert resolved["area"]["min"] == 5
+    assert resolved["area"]["max"] is None            # untouched key keeps its default
+    assert resolved["diameter"] == DEFAULT_CHART_OPTIONS["diameter"]   # untouched metric
+
+
+def test_resolve_chart_options_drops_unknown_keys():
+    resolved = resolve_chart_options({"area": {"bogus": 1, "enabled": False}})
+    assert "bogus" not in resolved["area"]
+    assert resolved["area"]["enabled"] is False
+
+
+def test_filter_range_bounds():
+    assert filter_range([1, 2, 3, 4, 5], vmin=2, vmax=4) == [2, 3, 4]
+    assert filter_range([1, 2, 3], vmin=None, vmax=None) == [1, 2, 3]
+    assert filter_range([1, 2, 3], vmin=10) == []
+
+
+def test_filter_range_then_build_bins_matches_filtered_data():
+    vals = list(range(1, 21))          # 1..20
+    filtered = filter_range(vals, vmin=5, vmax=10)
+    labels, counts, edges = build_bins(filtered, n_bins=3)
+    assert sum(counts) == len(filtered) == 6
+    assert max(filtered) <= edges[-1]         # every filtered value fits inside the bin grid
+    # values outside [5, 10] never entered the histogram at all
+    assert sum(counts) == len([v for v in vals if 5 <= v <= 10])

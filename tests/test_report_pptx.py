@@ -178,6 +178,60 @@ def test_distribution_slides_have_native_charts_with_axis_titles(tmp_path):
     assert any("Diameter" in u for u in units_seen)
 
 
+def test_chart_options_disabling_area_removes_its_slide(tmp_path):
+    model = _build_model(tmp_path, n=2)
+    model.chart_options = {"area": {"enabled": False}}
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    chart_slides = [s for s in prs.slides if any(sh.has_chart for sh in s.shapes)]
+    assert len(chart_slides) == 1
+    chart = next(sh for sh in chart_slides[0].shapes if sh.has_chart).chart
+    assert "Diameter" in chart.category_axis.axis_title.text_frame.text
+
+
+def test_chart_options_normal_fit_off_drops_the_fit_series(tmp_path):
+    model = _build_model(tmp_path, n=2)
+    model.chart_options = {"normal_fit": False}
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    dist_slides = list(prs.slides)[2:4]
+    for slide in dist_slides:
+        chart = next(sh for sh in slide.shapes if sh.has_chart).chart
+        names = [s.name for s in chart.series]
+        assert names == ["Count"]
+
+
+def test_chart_options_custom_title_used_as_chart_title(tmp_path):
+    model = _build_model(tmp_path, n=2)
+    model.chart_options = {"diameter": {"title": "Diameter — coarse fraction"}}
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    dist_slides = list(prs.slides)[2:4]
+    titles = [next(sh for sh in s.shapes if sh.has_chart).chart.chart_title.text_frame.text
+              for s in dist_slides]
+    assert any("coarse fraction" in t for t in titles)
+
+
+def test_chart_options_min_max_restricts_binned_grains(tmp_path):
+    model = _build_model(tmp_path, n=2)
+    out_full = str(tmp_path / "full.pptx")
+    render_pptx(model, out_full)
+    prs_full = Presentation(out_full)
+    diam_full = next(sh for sh in list(prs_full.slides)[3].shapes if sh.has_chart).chart
+    total_full = sum(diam_full.series[0].values)
+
+    model.chart_options = {"diameter": {"min": 0, "max": 7}}
+    out_narrow = str(tmp_path / "narrow.pptx")
+    render_pptx(model, out_narrow)
+    prs_narrow = Presentation(out_narrow)
+    diam_narrow = next(sh for sh in list(prs_narrow.slides)[3].shapes if sh.has_chart).chart
+    total_narrow = sum(diam_narrow.series[0].values)
+    assert total_narrow < total_full
+
+
 def test_image_slides_have_metric_callouts_and_caption(tmp_path):
     model = _build_model(tmp_path, n=2)
     model.images[0].caption = "Notably coarse grains"

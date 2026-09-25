@@ -35,6 +35,12 @@ class HistogramBase(QWidget):
         self._sigma = 0.0
         self._has_data = False
         self._actual_bins = 0
+        self._show_fit = True   # UX-14: normal-fit overlay on/off
+
+    def set_show_fit(self, on: bool) -> None:
+        if self._show_fit != bool(on):
+            self._show_fit = bool(on)
+            self.update()
 
     def set_data(self, values, xlabel="Grain Area", unit="", n_bins=0) -> None:
         self._values = np.asarray(values, dtype=float)
@@ -193,7 +199,7 @@ class ThemedHistogram(HistogramBase):
             path.addRoundedRect(r, 2, 2)
             p.fillPath(path, g)
 
-        if self._sigma > 0 and len(self._values) > 1:
+        if self._show_fit and self._sigma > 0 and len(self._values) > 1:
             curve = QColor(t.dataviz[(self._series + 1) % len(t.dataviz)])
             pen = QPen(curve, 2.0)
             p.setPen(pen)

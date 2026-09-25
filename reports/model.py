@@ -312,6 +312,14 @@ class ReportModel:
     # it in the combo when the report is reopened.
     custom_palette: Optional[Dict[str, str]] = None
 
+    # UX-14: editable chart options — see ``reports.charts.
+    # DEFAULT_CHART_OPTIONS`` for the shape and ``resolve_chart_options`` for
+    # how a partial/empty dict here resolves. Empty (the default) renders
+    # exactly like before UX-14. Editable in the designer's Charts panel;
+    # "Save as my default" copies this to ``AppSettings.default_chart_options``
+    # (read by ``ui.pages.report_builder.chart_options_arg`` for new reports).
+    chart_options: Dict[str, Any] = field(default_factory=dict)
+
     # ------------------------------------------------------------------
     # Construction from analysis results
     # ------------------------------------------------------------------
@@ -336,6 +344,7 @@ class ReportModel:
         verdict: Any = None,
         calibration: Any = None,
         overlay_opacity: float = 1.0,
+        chart_options: Optional[Dict[str, Any]] = None,
     ) -> "ReportModel":
         """Build a model from freshly-analysed images.
 
@@ -354,6 +363,7 @@ class ReportModel:
             hierarchy=[dict(h) for h in hierarchy] if hierarchy else [],
             export_basename=export_basename or "",
             overlay_opacity=float(overlay_opacity) if overlay_opacity is not None else 1.0,
+            chart_options=dict(chart_options) if chart_options else {},
         )
         model.calibration = _resolve_calibration(calibration, model.metadata)
 
@@ -520,6 +530,7 @@ class ReportModel:
             "calibration": dict(self.calibration) if self.calibration else None,
             "overlay_opacity": self.overlay_opacity,
             "custom_palette": dict(self.custom_palette) if self.custom_palette else None,
+            "chart_options": dict(self.chart_options) if self.chart_options else {},
         }
 
     def to_json(self, *, indent: int = 2) -> str:
@@ -549,6 +560,7 @@ class ReportModel:
             # 1.0, the exact look those reports already had.
             overlay_opacity=float(d.get("overlay_opacity", 1.0) or 1.0),
             custom_palette=dict(d["custom_palette"]) if d.get("custom_palette") else None,
+            chart_options=dict(d["chart_options"]) if d.get("chart_options") else {},
         )
 
     @classmethod
@@ -581,6 +593,11 @@ class ReportModel:
             problems.append(f"overlay_opacity must be between 0 and 1, got {self.overlay_opacity!r}.")
         if str(self.theme).startswith("custom") and not self.custom_palette:
             problems.append("theme is a custom palette but custom_palette is not set.")
+        for metric in ("area", "diameter"):
+            opt = (self.chart_options or {}).get(metric) or {}
+            lo, hi = opt.get("min"), opt.get("max")
+            if lo is not None and hi is not None and float(lo) > float(hi):
+                problems.append(f"chart_options[{metric!r}]: min ({lo}) is greater than max ({hi}).")
 
         ids = [i.id for i in self.images]
         if len(ids) != len(set(ids)):

@@ -188,12 +188,22 @@ class ChartsPreview(SectionPreview):
         self.refresh()
 
     def refresh(self) -> None:
+        from reports.charts import filter_range, resolve_chart_options
         m = self.model
-        for kind, h in (("area", self.h_area), ("diameter", self.h_diam)):
+        opts = resolve_chart_options(m.chart_options)
+        for kind, h, card in (("area", self.h_area, self.cards[0]),
+                              ("diameter", self.h_diam, self.cards[1])):
+            o = opts[kind]
+            card.setVisible(o["enabled"])
+            if not o["enabled"]:
+                continue
+            card.set_title(o["title"] or f"Grain {kind} distribution — all included images")
             vals, unit = combined_values(m, kind)
+            vals = filter_range(vals, o["min"], o["max"])
             labels, counts, edges = build_bins(vals, int(m.bins.get(kind, 0) or 0))
             h.set_binned(vals, edges, counts, [f"{lb} {unit}" for lb in labels],
                          f"Grain {kind} ({unit})", unit)
+            h.set_show_fit(opts["normal_fit"])
         imgs = m.ordered_images(included_only=True)
         items = []
         du = "px"

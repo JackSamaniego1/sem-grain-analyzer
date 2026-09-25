@@ -156,6 +156,69 @@ def test_summary_charts_sheet_has_charts(tmp_path):
     assert len(ws._charts) == 4
 
 
+def test_chart_options_disabling_area_removes_its_chart_and_rows(tmp_path):
+    """UX-14: only 3 charts (diameter hist + the 2 per-image bars) when the
+    area distribution is switched off."""
+    model = _build_model(tmp_path, n=3)
+    model.chart_options = {"area": {"enabled": False}}
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    ws = openpyxl.load_workbook(out)["Summary Charts"]
+    assert len(ws._charts) == 3
+    values = [c.value for row in ws.iter_rows() for c in row if c.value]
+    assert "Grain Area Distribution" not in values
+
+
+def test_chart_options_normal_fit_off_removes_fit_column_and_line(tmp_path):
+    model = _build_model(tmp_path, n=3)
+    model.chart_options = {"normal_fit": False}
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    ws = openpyxl.load_workbook(out)["Summary Charts"]
+    values = [c.value for row in ws.iter_rows() for c in row if c.value]
+    assert "Normal Fit" not in values
+    # still both distributions + the 2 per-image bars, just no fit line series
+    assert len(ws._charts) == 4
+
+
+def test_chart_options_custom_title_used_as_chart_title(tmp_path):
+    model = _build_model(tmp_path, n=3)
+    model.chart_options = {"diameter": {"title": "Diameter — coarse fraction"}}
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    ws = openpyxl.load_workbook(out)["Summary Charts"]
+    titles = [c.title.tx.rich.p[0].r[0].t for c in ws._charts if c.title is not None]
+    assert any("coarse fraction" in t for t in titles)
+
+
+def _diameter_hist_total(xlsx_path: str) -> float:
+    """Sum of the "Count" series cached in the diameter distribution chart
+    (charts[1]: area hist, diameter hist, per-image mean-diameter bar,
+    grain-count bar -- see test_summary_charts_sheet_has_charts)."""
+    ws = openpyxl.load_workbook(xlsx_path)["Summary Charts"]
+    assert len(ws._charts) == 4, "diameter histogram chart missing -- filter left no data"
+    chart = ws._charts[1]
+    assert "Diameter" in chart.x_axis.title.tx.rich.p[0].r[0].t
+    pts = chart.series[0].val.numRef.numCache.pt
+    return sum(pt.v for pt in pts)
+
+
+def test_chart_options_min_max_restricts_binned_grains(tmp_path):
+    """A tight [min, max] on the diameter chart bins fewer grains than the
+    unrestricted default -- proves the option actually filters the data."""
+    model = _build_model(tmp_path, n=3)
+    out_full = str(tmp_path / "full.xlsx")
+    render_excel(model, out_full)
+    full_total = _diameter_hist_total(out_full)
+    assert full_total == sum(i.grain_count for i in model.images)
+
+    model.chart_options = {"diameter": {"min": 0, "max": 7}}
+    out_narrow = str(tmp_path / "narrow.xlsx")
+    render_excel(model, out_narrow)
+    narrow_total = _diameter_hist_total(out_narrow)
+    assert narrow_total < full_total
+
+
 def test_raw_sheets_have_autofilter_and_freeze_panes(tmp_path):
     model = _build_model(tmp_path, n=2)
     out = str(tmp_path / "report.xlsx")

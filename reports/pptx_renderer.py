@@ -34,7 +34,10 @@ from pptx.oxml import parse_xml
 from pptx.oxml.ns import nsdecls, nsuri
 from pptx.util import Emu, Inches, Pt
 
-from reports.charts import SERIES, build_bins, normal_fit, resolve_units, resolve_palette, series_for
+from reports.charts import (
+    SERIES, build_bins, filter_range, normal_fit, resolve_chart_options, resolve_units,
+    resolve_palette, series_for,
+)
 from reports.model import ReportModel, ImageSummary, Section
 from reports.excel_renderer import _resized_png, _row_size_stats
 
@@ -170,10 +173,15 @@ def render_pptx(model: ReportModel, output_path: str, template_path: Optional[st
                                          heading_suffix="" if i == 0 else " (cont'd)")
                     _add_footer(prs.slides[-1], model, page[0], navy)
             elif kind == "charts":
-                _distribution_slide(new_slide(), model, images, kind="area", series=series, navy=navy)
-                _add_footer(prs.slides[-1], model, page[0], navy)
-                _distribution_slide(new_slide(), model, images, kind="diameter", series=series, navy=navy)
-                _add_footer(prs.slides[-1], model, page[0], navy)
+                opts = resolve_chart_options(model.chart_options)
+                if opts["area"]["enabled"]:
+                    _distribution_slide(new_slide(), model, images, kind="area", series=series,
+                                        navy=navy)
+                    _add_footer(prs.slides[-1], model, page[0], navy)
+                if opts["diameter"]["enabled"]:
+                    _distribution_slide(new_slide(), model, images, kind="diameter", series=series,
+                                        navy=navy)
+                    _add_footer(prs.slides[-1], model, page[0], navy)
             elif kind == "images":
                 for img in images:
                     _image_slide(new_slide(), model, img, tmpdir, navy)
@@ -640,8 +648,14 @@ def _slide_heading(slide, text: str, navy: RGBColor = NAVY) -> None:
 
 def _distribution_slide(slide, model: ReportModel, images: List[ImageSummary], kind: str,
                          series: Dict[str, str] = SERIES, navy: RGBColor = NAVY) -> None:
+    """UX-14: ``model.chart_options[kind]`` (min/max/title/colour) and the
+    global ``normal_fit`` toggle — see ``reports.charts.
+    resolve_chart_options`` — mirror the Excel renderer's ``_write_hist_block``
+    so both exports agree."""
     label = "Grain Area" if kind == "area" else "Grain Diameter"
     _slide_heading(slide, f"Combined {label} Distribution", navy)
+    opts = resolve_chart_options(model.chart_options)
+    opt, show_fit = opts[kind], opts["normal_fit"]
 
     all_grains = [g for img in images for g in img.grains]
     calibrated_all = all(i.has_calibration for i in images)
@@ -657,25 +671,27 @@ def _distribution_slide(slide, model: ReportModel, images: List[ImageSummary], k
         else:
             values, unit = [g["diameter_px"] for g in all_grains], "px"
 
+    values = filter_range(values, opt.get("min"), opt.get("max"))
     n_bins = model.bins.get(kind, 0)
     labels, counts, edges = build_bins(values, n_bins)
     if not labels:
         _textbox(slide, Inches(0.8), Inches(1.5), Inches(11), Inches(0.5), "Not enough data for a histogram.",
                   size=14)
         return
-    fit = normal_fit(values, edges)
     bin_labels = [f"{lbl} {unit}" for lbl in labels]
 
     chart_data = CategoryChartData()
     chart_data.categories = bin_labels
     chart_data.add_series("Count", counts)
-    chart_data.add_series("Normal Fit", fit)
+    if show_fit:
+        chart_data.add_series("Normal Fit", normal_fit(values, edges))
 
     x, y, cx, cy = Inches(0.8), Inches(1.2), Inches(11.7), Inches(5.8)
     gframe = slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, x, y, cx, cy, chart_data)
     chart = gframe.chart
     chart.has_title = True
-    chart.chart_title.text_frame.text = f"{label} Distribution (n={len(all_grains)})"
+    title = (opt.get("title") or "").strip() or f"{label} Distribution"
+    chart.chart_title.text_frame.text = f"{title} (n={len(values)})"
     chart.has_legend = True
     chart.legend.position = XL_LEGEND_POSITION.BOTTOM
     chart.legend.include_in_layout = False
@@ -687,15 +703,17 @@ def _distribution_slide(slide, model: ReportModel, images: List[ImageSummary], k
     try:
         chart.plots[0].series[0].format.fill.solid()
         chart.plots[0].series[0].format.fill.fore_color.rgb = _hexrgb(
-            series["area_bar" if kind == "area" else "diameter_bar"])
+            opt.get("color") or series["area_bar" if kind == "area" else "diameter_bar"])
     except Exception:
         pass
-    # FIX-13: "Normal Fit" (series index 1) is a smoothed line overlay, not
-    # a second set of bars -- matches the Excel renderer's bar.combine(line).
-    try:
-        _convert_series_to_line(chart, series_index=1, color_hex=series["normal_fit"])
-    except Exception:
-        pass
+    if show_fit:
+        # FIX-13: "Normal Fit" (series index 1) is a smoothed line overlay,
+        # not a second set of bars -- matches the Excel renderer's
+        # bar.combine(line).
+        try:
+            _convert_series_to_line(chart, series_index=1, color_hex=series["normal_fit"])
+        except Exception:
+            pass
 
 
 def _image_slide(slide, model: ReportModel, img: ImageSummary, tmpdir: str, navy: RGBColor = NAVY) -> None:

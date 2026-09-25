@@ -14,15 +14,20 @@ from datetime import datetime
 from typing import List, Optional
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QSpinBox, QVBoxLayout,
     QWidget,
 )
 
-from reports.charts import derive_custom_palette, new_custom_palette_id, palette_choices
+from reports.charts import (
+    derive_custom_palette, new_custom_palette_id, normalize_hex, palette_choices,
+    resolve_chart_options,
+)
 from ui.design import icons
 from ui.design.tokens import SPACE
 from ui.pages.report_builder import SECTION_LABELS, SECTION_TARGETS
+from ui.pages.report_widgets import Swatch
 from ui.widgets import (
     AnimatedButton, CollapsibleSection, IconButton, KeyValueList, SegmentedControl, label,
 )
@@ -35,12 +40,27 @@ PALETTES = palette_choices()
 # UX-15: trailing combo entry that opens CustomPaletteDialog instead of
 # setting a theme directly.
 NEW_CUSTOM_PALETTE = "__new_custom_palette__"
+CHART_METRICS = (("area", "Area"), ("diameter", "Diameter"))
 
 
 def _cap(text: str):
     lab = label(text, "caption")
     lab.setWordWrap(True)
     return lab
+
+
+def _parse_optional_float(text: str) -> Optional[float]:
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _fmt_optional_float(value) -> str:
+    return "" if value is None else f"{float(value):g}"
 
 
 def _clear_layout(lay) -> None:
@@ -131,6 +151,61 @@ class ReportInspector(QWidget):
         self.sec_doc.add_widget(host)
         v.addWidget(self.sec_doc)
 
+        # ---------------------------------------------------------- charts (UX-14)
+        self.sec_charts = CollapsibleSection("Charts", False)
+        chart_host = QWidget()
+        cv = QVBoxLayout(chart_host)
+        cv.setContentsMargins(0, 0, 0, 0)
+        cv.setSpacing(SPACE.sm)
+        self.normal_fit_cb = QCheckBox("Normal-fit overlay")
+        self.normal_fit_cb.setToolTip("Smoothed normal-fit line on the area and diameter "
+                                      "distribution charts (Excel + PowerPoint)")
+        cv.addWidget(self.normal_fit_cb)
+        self.metric_rows: dict = {}
+        for metric, metric_label in CHART_METRICS:
+            cv.addWidget(label(metric_label, "body_strong"))
+            g = QGridLayout()
+            g.setHorizontalSpacing(SPACE.sm)
+            g.setVerticalSpacing(SPACE.xs)
+            g.setColumnStretch(1, 1)
+            enabled_cb = QCheckBox("Show this chart")
+            g.addWidget(enabled_cb, 0, 0, 1, 2)
+            min_edit, max_edit = QLineEdit(), QLineEdit()
+            min_edit.setPlaceholderText("Auto")
+            max_edit.setPlaceholderText("Auto")
+            min_edit.setToolTip(f"Only chart {metric_label.lower()} values >= this")
+            max_edit.setToolTip(f"Only chart {metric_label.lower()} values <= this")
+            range_row = QHBoxLayout()
+            range_row.setSpacing(SPACE.xs)
+            range_row.addWidget(min_edit)
+            range_row.addWidget(label("to", tone="secondary"))
+            range_row.addWidget(max_edit)
+            g.addWidget(label("Range", tone="secondary"), 1, 0)
+            g.addLayout(range_row, 1, 1)
+            title_edit = QLineEdit()
+            title_edit.setPlaceholderText(f"Grain {metric_label} Distribution")
+            title_edit.setToolTip("Chart title (axis titles always keep their unit)")
+            g.addWidget(label("Chart title", tone="secondary"), 2, 0)
+            g.addWidget(title_edit, 2, 1)
+            swatch = Swatch("#888888", 16)
+            color_edit = QLineEdit()
+            color_edit.setPlaceholderText("Palette colour")
+            color_edit.setToolTip("Bar colour override, e.g. #2E5FA3 (blank = palette colour)")
+            color_row = QHBoxLayout()
+            color_row.setSpacing(SPACE.xs)
+            color_row.addWidget(swatch, 0, Qt.AlignVCenter)
+            color_row.addWidget(color_edit, 1)
+            g.addWidget(label("Bar colour", tone="secondary"), 3, 0)
+            g.addLayout(color_row, 3, 1)
+            cv.addLayout(g)
+            self.metric_rows[metric] = dict(enabled=enabled_cb, min=min_edit, max=max_edit,
+                                            title=title_edit, color=color_edit, swatch=swatch)
+        self.btn_chart_default = AnimatedButton("Save as my default", "save", "ghost", "sm")
+        self.btn_chart_default.setToolTip("Use these chart options for every new report on this PC")
+        cv.addWidget(self.btn_chart_default, 0, Qt.AlignLeft)
+        self.sec_charts.add_widget(chart_host)
+        v.addWidget(self.sec_charts)
+
         # ---------------------------------------------------------- selection
         self.sec_sel = CollapsibleSection("Selection", True)
         self.sel_host = QWidget()
@@ -171,6 +246,15 @@ class ReportInspector(QWidget):
         self.bins_area.valueChanged.connect(lambda n: self._set_bins("area", n))
         self.bins_diam.valueChanged.connect(lambda n: self._set_bins("diameter", n))
         self.palette.currentIndexChanged.connect(self._on_palette_changed)
+        self.normal_fit_cb.toggled.connect(lambda on: self._set_chart_option("normal_fit", on))
+        for metric, w in self.metric_rows.items():
+            w["enabled"].toggled.connect(
+                lambda on, m=metric: self._set_metric_option(m, "enabled", on))
+            w["min"].editingFinished.connect(lambda m=metric: self._commit_metric_range(m))
+            w["max"].editingFinished.connect(lambda m=metric: self._commit_metric_range(m))
+            w["title"].textEdited.connect(lambda t, m=metric: self._set_metric_option(m, "title", t))
+            w["color"].textEdited.connect(lambda t, m=metric: self._on_metric_color_edited(m, t))
+        self.btn_chart_default.clicked.connect(self._save_chart_defaults)
 
     # ------------------------------------------------------------------ document
     @property
@@ -213,9 +297,25 @@ class ReportInspector(QWidget):
         self.bins_area.setValue(int(m.bins.get("area", 0) or 0))
         self.bins_diam.setValue(int(m.bins.get("diameter", 0) or 0))
         self._reload_palette_combo(select=m.theme)
+        self._load_chart_options(m)
         self.set_logo_name(m.logo_path)
         self._filling = False
         self.load_exports()
+
+    def _load_chart_options(self, m) -> None:
+        opts = resolve_chart_options(m.chart_options)
+        self.normal_fit_cb.setChecked(opts["normal_fit"])
+        for metric, w in self.metric_rows.items():
+            o = opts[metric]
+            w["enabled"].setChecked(o["enabled"])
+            w["min"].setText(_fmt_optional_float(o["min"]))
+            w["max"].setText(_fmt_optional_float(o["max"]))
+            if w["title"].text() != (o["title"] or ""):
+                w["title"].setText(o["title"] or "")
+            if w["color"].text() != (o["color"] or ""):
+                w["color"].setText(o["color"] or "")
+            w["swatch"].color = QColor(o["color"] or "#888888")
+            w["swatch"].update()
 
     # ------------------------------------------------------------------ palette (UX-15)
     def _reload_palette_combo(self, select: Optional[str] = None) -> None:
@@ -278,6 +378,62 @@ class ReportInspector(QWidget):
         # Whether saved or cancelled: reflect the (possibly unchanged) model
         # theme, never leave the combo parked on the sentinel entry.
         self._reload_palette_combo(select=self.model.theme if self.model is not None else None)
+
+    # ------------------------------------------------------------------ charts (UX-14)
+    def _chart_opts(self) -> dict:
+        """Full-shape, mutable ``model.chart_options`` -- resolving fills in
+        every default so a partial/empty dict can be edited in place, and
+        the resolved dict is written straight back onto the model."""
+        self.model.chart_options = resolve_chart_options(self.model.chart_options)
+        return self.model.chart_options
+
+    def _set_chart_option(self, key: str, value) -> None:
+        if self._filling or self.model is None:
+            return
+        self._chart_opts()[key] = value
+        self.doc_changed.emit("chart_options")
+
+    def _set_metric_option(self, metric: str, key: str, value) -> None:
+        if self._filling or self.model is None:
+            return
+        self._chart_opts()[metric][key] = value
+        self.doc_changed.emit("chart_options")
+
+    def _commit_metric_range(self, metric: str) -> None:
+        if self._filling or self.model is None:
+            return
+        w = self.metric_rows[metric]
+        lo, hi = _parse_optional_float(w["min"].text()), _parse_optional_float(w["max"].text())
+        opts = self._chart_opts()
+        opts[metric]["min"], opts[metric]["max"] = lo, hi
+        # Reflect back-parsed/cleared text (e.g. "abc" -> "") without
+        # re-triggering editingFinished.
+        w["min"].blockSignals(True)
+        w["max"].blockSignals(True)
+        w["min"].setText(_fmt_optional_float(lo))
+        w["max"].setText(_fmt_optional_float(hi))
+        w["min"].blockSignals(False)
+        w["max"].blockSignals(False)
+        self.doc_changed.emit("chart_options")
+
+    def _on_metric_color_edited(self, metric: str, text: str) -> None:
+        if self._filling or self.model is None:
+            return
+        hexv = normalize_hex(text) if text.strip() else None
+        w = self.metric_rows[metric]
+        w["swatch"].color = QColor(hexv or "#888888")
+        w["swatch"].update()
+        opts = self._chart_opts()
+        opts[metric]["color"] = hexv or ""
+        self.doc_changed.emit("chart_options")
+
+    def _save_chart_defaults(self) -> None:
+        if self.model is None:
+            return
+        self.page.state.settings.default_chart_options = dict(self._chart_opts())
+        self.page.state.save_settings()
+        self.page._toast("Saved as your default chart options", "Applied to new reports on "
+                         "this PC.", "success")
 
     def set_logo_name(self, path: Optional[str]) -> None:
         ok = bool(path) and os.path.exists(path)

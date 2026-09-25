@@ -197,6 +197,47 @@ def derive_custom_palette(colors: Sequence[str], name: str = "Custom") -> Dict[s
             "area_bar": c1, "diameter_bar": c2, "normal_fit": c3, "count_bar": accent}
 
 
+
+# ---------------------------------------------------------------------------
+# UX-14: editable chart options (ReportModel.chart_options)
+# ---------------------------------------------------------------------------
+
+# Shape of ``ReportModel.chart_options`` / ``AppSettings.default_chart_options``
+# (a plain dict so old report.json files without the key -- or with only
+# some sub-keys set -- resolve to exactly this, i.e. today's behaviour).
+# ``area``/``diameter`` are the two combined-distribution histograms (Excel
+# "Summary Charts" sheet, PowerPoint distribution slides); ``normal_fit`` is
+# global (matches the single "Normal Fit" toggle users think in terms of).
+# ``title`` overrides the chart's title only -- axis titles always keep
+# their unit per the report's chart rules, so they are not user-overridable
+# text here.
+DEFAULT_CHART_OPTIONS: Dict[str, object] = {
+    "normal_fit": True,
+    "area": {"enabled": True, "min": None, "max": None, "title": "", "color": ""},
+    "diameter": {"enabled": True, "min": None, "max": None, "title": "", "color": ""},
+}
+
+
+def resolve_chart_options(raw: Optional[Dict[str, object]]) -> Dict[str, object]:
+    """``DEFAULT_CHART_OPTIONS`` deep-merged with ``raw`` (``ReportModel.
+    chart_options`` as loaded/edited — may be partial or ``{}``/``None``).
+    Unknown keys are dropped so a corrupt/future value never reaches a
+    renderer. Always returns every key, so callers never need ``.get``."""
+    out = {
+        "normal_fit": bool(DEFAULT_CHART_OPTIONS["normal_fit"]),
+        "area": dict(DEFAULT_CHART_OPTIONS["area"]),
+        "diameter": dict(DEFAULT_CHART_OPTIONS["diameter"]),
+    }
+    raw = raw or {}
+    if "normal_fit" in raw:
+        out["normal_fit"] = bool(raw["normal_fit"])
+    for metric in ("area", "diameter"):
+        sub = raw.get(metric)
+        if isinstance(sub, dict):
+            out[metric].update({k: v for k, v in sub.items() if k in out[metric]})
+    return out
+
+
 def new_custom_palette_id(existing: Sequence[dict]) -> str:
     """A ``"custom-N"`` id not already used by ``existing`` (AppSettings.
     custom_palettes) — stable/human-scannable, unlike a uuid."""
@@ -252,11 +293,29 @@ def fmt(val: float) -> str:
     return f"{val:.3g}"
 
 
+def filter_range(values: Sequence[float], vmin: Optional[float] = None,
+                 vmax: Optional[float] = None) -> List[float]:
+    """UX-14: ``ReportModel.chart_options[metric]["min"/"max"]`` — restrict
+    which grains are histogrammed (e.g. "only grains between 5 and 50 µm²")
+    before binning/fitting. ``None``/absent bound -> no filtering on that
+    side. Applied once by the caller so ``build_bins`` and ``normal_fit``
+    (and the in-app live preview) always agree on the same filtered set."""
+    vals = list(values)
+    if vmin is not None:
+        vals = [v for v in vals if v >= float(vmin)]
+    if vmax is not None:
+        vals = [v for v in vals if v <= float(vmax)]
+    return vals
+
+
 def build_bins(values: Sequence[float], n_bins: int = 0) -> Tuple[List[str], List[int], List[float]]:
     """Whole-number bins starting at 0 (legacy ``_build_bins`` behaviour).
 
     Returns (labels-without-unit-suffix, counts, edges). Caller appends the
-    unit string to labels so this function stays unit-agnostic.
+    unit string to labels so this function stays unit-agnostic. Pass
+    ``values`` through :func:`filter_range` first to honour a chart's
+    min/max option — the bin grid still starts at 0 so edges stay the whole
+    numbers users already expect.
     """
     vals = np.asarray(list(values), dtype=float)
     if len(vals) < 2:

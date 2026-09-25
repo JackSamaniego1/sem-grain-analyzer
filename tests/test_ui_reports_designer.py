@@ -411,6 +411,62 @@ def test_custom_palette_saved_locally_and_listed_next_to_builtins(analysed, qtbo
     shell.close()
 
 
+def test_charts_panel_edits_model_live_preview_and_saved_default(analysed, qtbot):
+    """UX-14: bin size/units already worked; this covers the new knobs --
+    per-metric enable, range, title, colour, the normal-fit toggle, live
+    preview, and "Save as my default" applied to a later report."""
+    shell, path = analysed
+    rp = _build(shell, qtbot)
+    insp = rp.inspector
+    rp.select(("section", "combined_distribution"))
+    prev = rp.current_preview()
+
+    # Disable the area chart -> its card hides in the live preview and the
+    # model records it.
+    insp.metric_rows["area"]["enabled"].setChecked(False)
+    assert rp.model.chart_options["area"]["enabled"] is False
+    assert not prev.cards[0].isVisible()
+
+    # Custom title -> the live preview card picks it up immediately.
+    insp.metric_rows["diameter"]["title"].setText("Diameter (coarse fraction)")
+    insp.metric_rows["diameter"]["title"].textEdited.emit("Diameter (coarse fraction)")
+    assert rp.model.chart_options["diameter"]["title"] == "Diameter (coarse fraction)"
+
+    # Range: typing a min/max and losing focus commits a filtered range.
+    insp.metric_rows["diameter"]["min"].setText("0")
+    insp.metric_rows["diameter"]["max"].setText("1000")
+    insp.metric_rows["diameter"]["max"].editingFinished.emit()
+    assert rp.model.chart_options["diameter"]["min"] == 0.0
+    assert rp.model.chart_options["diameter"]["max"] == 1000.0
+
+    # Colour: a valid hex updates the model; an invalid one clears it instead
+    # of crashing.
+    insp.metric_rows["diameter"]["color"].setText("#123456")
+    insp.metric_rows["diameter"]["color"].textEdited.emit("#123456")
+    assert rp.model.chart_options["diameter"]["color"] == "#123456"
+    insp.metric_rows["diameter"]["color"].setText("not-a-colour")
+    insp.metric_rows["diameter"]["color"].textEdited.emit("not-a-colour")
+    assert rp.model.chart_options["diameter"]["color"] == ""
+
+    # Normal-fit toggle reaches the live histogram widget.
+    insp.normal_fit_cb.setChecked(False)
+    assert rp.model.chart_options["normal_fit"] is False
+    assert prev.h_diam._show_fit is False   # h_area is hidden (disabled above), h_diam is not
+
+    # Save as my default -> persisted locally and applied to the next report.
+    insp.btn_chart_default.clicked.emit()
+    assert shell.state.settings.default_chart_options == rp.model.chart_options
+    from data.settings import load_settings
+    on_disk = load_settings(shell.state.settings_path)
+    assert on_disk.default_chart_options == rp.model.chart_options
+
+    rp.build_from_session()
+    qtbot.waitUntil(lambda: rp.model is not None and not rp.is_busy(), timeout=TIMEOUT)
+    assert rp.model.chart_options["area"]["enabled"] is False
+    assert rp.model.chart_options["normal_fit"] is False
+    shell.close()
+
+
 def test_legacy_ui_modules_are_gone():
     import importlib.util
     for mod in ("ui.main_window", "ui.settings_panel", "ui.results_panel",
