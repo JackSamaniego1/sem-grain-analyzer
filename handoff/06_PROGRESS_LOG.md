@@ -109,3 +109,18 @@
 - **FIX-17 done (9242703)**: Scale-bar finder robustness: rejects rectangular drawn frames, only detects actual scale bars (core/scale_bar.py endpoint logic). Added tests/test_scale_bar_frame.py.
 - **FIX-11/12/13 parked**: PPTX report layout issues (title overlap, table overflow, chart rendering). User request 2026-09-24: do later. Added D-25 decision.
 - **Second innovator pass**: 11 new ideas appended to 07_IDEAS_BACKLOG.md (INN-41..51) with specs; top 3 are INN-41 (control chart), INN-44 (filename template auto-filing), INN-46 (field-outlier check). Full suite: **638 passed / 0 failed**.
+
+## 2026-09-24 — User decisions, PPTX fixes, SAM build fetch, INN-43 core
+- **Commits since last handoff**:
+  - 560d2fe: BUILD SAM checkpoint download at build time (hash-verified ec2df627...c912); 7 tests pass.
+  - 189ee45: INN-43 core done (core/lot_compare.py: delta matrix, Welch ANOVA, TOST equivalence testing); 19 tests added.
+  - 21e6d67: FIX-11/12/13 + FIX-07 PPTX (title/subtitle overlap fix, table overflow fix, normal-fit curve renders as line, calibration field render); 10 tests.
+- **User decisions (D-26, D-25 resumed)**:
+  - Idea triage: **ONLY INN-43 approved** (lot comparison matrix + TOST). **Declined:** INN-41,42,44-51 (control chart, result fingerprint, filename template, auto-worklist, field outliers, image quality, conditions ledger, spot check, uncertainty budget). Mark archived in backlog.
+  - **PPTX work resumed** (was parked in D-25 morning) — completed in 21e6d67. v3.0.0 ships with full PPTX support incl. calibration field.
+  - **SAM checkpoint**: download at build time (not in repo); fail build if missing.
+  - **User timeline**: will fix GitHub auth tonight (FND-04); will supply real SEM images later (D-13); wants release ASAP.
+- **Full test suite: 686 passed / 0 failed**. Next: finish INN-43 UI → code review → Phase 6 release.
+- **Task board updated**: FIX-11/12/13 marked done (21e6d67); FIX-07 PPTX part marked done; INN-43 core marked done.
+- **Idea backlog updated**: INN-41..51 marked as declined by user 2026-09-24.
+- **SESSION_STATE.md updated**: in-progress = INN-43 UI; next 3 actions clarified; blocked section cleaned (FND-04 user action, D-13 user supply, INN-30 cancelled, INN-41..51 declined).

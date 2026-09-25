@@ -91,13 +91,13 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 | FIX-04 | trash_node builds a second Catalog during batched delete; could pass one through | data-architect | done | 924f47f |
 | FIX-05 | Overlay export must show full original image incl. SEM info bar | detection-engineer | done | 6bf41ff: core/overlay_compose.py compose_full_overlay; thin dashed outline around measured region |
 | FIX-06 | Build: resources/icon.ico generation via `python -m ui.design.branding resources\icon.ico` | build-engineer | done | 91a1d65 |
-| FIX-07 | ReportModel: add calibration field (from metadata["calibration"]); render in Excel/PPTX | report-engineer | done | 790afdb (Excel part); PPTX render pending |
+| FIX-07 | ReportModel: add calibration field (from metadata["calibration"]); render in Excel/PPTX | report-engineer | done | 790afdb (Excel) + 21e6d67 (PPTX) |
 | FIX-08 | Mount CalStatusChip in app_shell.status_bar; wire apply_to_session; verdict badges on tree nodes | ui-designer | done | 4488f9a |
 | FIX-09 | DPI/layout review: toolbar overlaps view buttons <1700px; Projects card titles truncated ("Ses...n A"); Analyze stat labels clipped at 1100px | ui-designer | done | 4488f9a |
 | FIX-10 | Cleanup: core/grain_edit.replay_edits unused (wire or remove); THIRD_PARTY_LICENSES.txt remove "CLAUDE.md" mention | code-reviewer | done | 91a1d65 |
-| FIX-11 | PPTX report export: title overlaps subtitle (layout fix in pptx_renderer.py) | report-engineer | todo | parked by user 2026-09-24 |
-| FIX-12 | PPTX report export: summary table and Methods text overflow past footer | report-engineer | todo | parked by user 2026-09-24 |
-| FIX-13 | PPTX report export: normal-fit curve renders as bars instead of line (charts.py) | report-engineer | todo | parked by user 2026-09-24 |
+| FIX-11 | PPTX report export: title overlaps subtitle (layout fix in pptx_renderer.py) | report-engineer | done | 21e6d67 |
+| FIX-12 | PPTX report export: summary table and Methods text overflow past footer | report-engineer | done | 21e6d67 |
+| FIX-13 | PPTX report export: normal-fit curve renders as bars instead of line (charts.py) | report-engineer | done | 21e6d67 |
 | FIX-14 | Excel export: "Lot" column truncated (excel_renderer.py column width) | report-engineer | done | 790afdb |
 | FIX-15 | Lot result field table: Note column clips the exclusion reason (UI layout, CSS padding) | ui-designer | done | 4488f9a |
 | FIX-16 | Calibration check shows "-0.00 %" (negative zero format handling) | detection-engineer | done | 9242703 |
