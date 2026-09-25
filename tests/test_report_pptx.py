@@ -5,6 +5,7 @@ import tempfile
 
 import numpy as np
 from pptx import Presentation
+from pptx.util import Emu
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -17,8 +18,12 @@ from core.grain_detector import GrainDetector, DetectionParams
 import pytest
 
 from reports.model import ReportModel, ReportImageInput, Section
-from reports.pptx_renderer import render_pptx
+from reports.pptx_renderer import render_pptx, SLIDE_H
 from reports.charts import PALETTES
+
+# Matches reports.pptx_renderer._add_footer's footer-bar geometry -- used by
+# the FIX-11/FIX-12 tests to assert content never overlaps/overflows into it.
+FOOTER_TOP_IN = SLIDE_H.inches - 0.32
 
 
 def _build_model(tmp_path, n=3, px_per_um=8.0, seeds=None):
@@ -452,3 +457,204 @@ def test_sample_output_written_to_scratch():
     joined = "\n".join(_all_text(s) for s in prs.slides)
     assert "Sample Preparation" in joined
     assert "Conclusions" in joined
+
+
+# ---------------------------------------------------------------------------
+# FIX-11: a long report title used to overlap the subtitle lines below it
+# (python-pptx text boxes never grow/shrink to fit their text on save).
+# ---------------------------------------------------------------------------
+
+def test_long_title_does_not_overlap_subtitle(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    model.title = ("Grain Size Report -- Part 718-DSK-220, Lot L-2604-01 (Job 26-031), "
+                    "Extended Title Long Enough To Force Wrapping Onto Multiple Lines")
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    shapes = list(prs.slides[0].shapes)
+    title_shape = next(sh for sh in shapes if sh.has_text_frame and model.title in sh.text_frame.text)
+    title_bottom_in = Emu(title_shape.top).inches + Emu(title_shape.height).inches
+    # The very next shape drawn after the title is the first subtitle line
+    # (hierarchy/"Sample/Lot" line) -- it must start at or below the
+    # title's *actual* (possibly multi-line) bottom edge.
+    next_box = shapes[shapes.index(title_shape) + 1]
+    assert Emu(next_box.top).inches >= title_bottom_in - 0.01
+
+
+def test_short_title_keeps_original_subtitle_position(tmp_path):
+    """Regression guard: FIX-11 must not disturb the common (short-title,
+    single-line) case beyond a small, deliberate gap increase -- the old
+    hardcoded 3.7in put the subtitle only 0.1in below the title box's own
+    declared *top* + 1.2in height (3.8in), effectively no gap at all; the
+    new geometry always leaves a real +0.1in gap below the title's actual
+    bottom edge."""
+    model = _build_model(tmp_path, n=1)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    shapes = list(prs.slides[0].shapes)
+    title_shape = next(sh for sh in shapes if sh.has_text_frame and model.title in sh.text_frame.text)
+    title_bottom_in = Emu(title_shape.top).inches + Emu(title_shape.height).inches
+    next_box = shapes[shapes.index(title_shape) + 1]
+    assert abs(Emu(next_box.top).inches - (title_bottom_in + 0.1)) < 0.01
+
+
+# ---------------------------------------------------------------------------
+# FIX-13: the "Normal Fit" curve used to render as a second set of bars
+# instead of a smoothed line overlay.
+# ---------------------------------------------------------------------------
+
+def test_distribution_chart_normal_fit_is_a_line_not_bars(tmp_path):
+    from pptx.chart.plot import BarPlot, LinePlot
+
+    model = _build_model(tmp_path, n=2)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    area_slide = prs.slides[2]  # title, exec, area-dist
+    chart = next(sh for sh in area_slide.shapes if sh.has_chart).chart
+    assert len(chart.plots) == 2
+    bar_plot, line_plot = chart.plots
+    assert isinstance(bar_plot, BarPlot)
+    assert isinstance(line_plot, LinePlot)
+    assert [s.name for s in bar_plot.series] == ["Count"]
+    assert [s.name for s in line_plot.series] == ["Normal Fit"]
+    # Round-trips through save/reopen (real combo-chart XML, not a hack that
+    # only holds in memory).
+    assert os.path.exists(out)
+
+
+# ---------------------------------------------------------------------------
+# FIX-12: the executive-summary table and the Methods text box used to
+# overflow straight through the footer bar (fixed 0.4in/row and a single
+# fixed-height text box, neither of which shrink/paginate on their own).
+# ---------------------------------------------------------------------------
+
+def _build_many_images_model(tmp_path, n, px_per_um=8.0):
+    det = GrainDetector()
+    items = []
+    for i in range(n):
+        gray, _ = make_mosaic(seed=i + 1, h=96, w=96, n_grains=12)
+        bgr = np.repeat(gray[:, :, None], 3, axis=2)
+        res = det.analyze(bgr, px_per_um=px_per_um, params=DetectionParams())
+        img_path = str(tmp_path / f"many_{i}.png")
+        cv2.imwrite(img_path, bgr)
+        items.append(ReportImageInput(image_path=img_path, result=res, image_bgr=bgr,
+                                       sample_id=f"S{i}", lot_number="L1"))
+    return ReportModel.from_results(items, title="Many Images", asset_dir=str(tmp_path / "assets_many"))
+
+
+def test_executive_summary_table_paginates_when_too_many_images(tmp_path):
+    n = 20
+    model = _build_many_images_model(tmp_path, n)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    exec_slides = [s for s in prs.slides if _all_text(s).startswith("Executive Summary")]
+    assert len(exec_slides) > 1
+
+    total_body_rows = 0
+    combined_seen = 0
+    for i, s in enumerate(exec_slides):
+        table_shape = next(sh for sh in s.shapes if sh.has_table)
+        bottom_in = Emu(table_shape.top).inches + Emu(table_shape.height).inches
+        assert bottom_in < FOOTER_TOP_IN  # FIX-12: never runs into the footer
+        table = table_shape.table
+        body = [table.cell(r, 0).text for r in range(1, len(table.rows))]
+        if i == len(exec_slides) - 1:
+            assert body[-1] == "Combined"
+            combined_seen += 1
+            body = body[:-1]
+        else:
+            assert "Combined" not in body
+        total_body_rows += len(body)
+    assert total_body_rows == n
+    assert combined_seen == 1
+    assert "(cont'd)" in _all_text(exec_slides[1])
+
+
+def test_executive_summary_small_image_count_still_single_slide(tmp_path):
+    """Regression guard: FIX-12 pagination must not split the common
+    (small-lot) case that already had its own dedicated test."""
+    model = _build_model(tmp_path, n=3)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    exec_slides = [s for s in prs.slides if _all_text(s).startswith("Executive Summary")]
+    assert len(exec_slides) == 1
+
+
+def test_methods_slide_paginates_when_params_dont_fit(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    model.metadata["detection_params"] = {f"param_{i}": f"value_{i}" for i in range(40)}
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    methods_slides = [s for s in prs.slides if _all_text(s).startswith("Methods")]
+    assert len(methods_slides) > 1
+    assert "(cont'd)" in _all_text(methods_slides[1])
+
+    all_lines = []
+    for s in methods_slides:
+        body_box = next(sh for sh in s.shapes if sh.has_text_frame
+                         and not sh.text_frame.text.startswith("Methods")
+                         and len(sh.text_frame.text) > 20)
+        bottom_in = Emu(body_box.top).inches + Emu(body_box.height).inches
+        assert bottom_in < FOOTER_TOP_IN  # FIX-12: never runs into the footer
+        all_lines.extend(body_box.text_frame.text.split("\n"))
+    assert any(l.startswith("param_0:") for l in all_lines)
+    assert any(l.startswith("param_39:") for l in all_lines)
+
+
+def test_methods_slide_short_params_still_single_slide(tmp_path):
+    """Regression guard: FIX-12 pagination must not split the common case."""
+    model = _build_model(tmp_path, n=1)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    methods_slides = [s for s in prs.slides if _all_text(s).startswith("Methods")]
+    assert len(methods_slides) == 1
+
+
+# ---------------------------------------------------------------------------
+# FIX-07 (PPTX half): ReportModel.calibration rendered in the Methods
+# slide(s), mirroring the Excel Methods sheet (commit 790afdb).
+# ---------------------------------------------------------------------------
+
+def test_methods_slide_includes_calibration_block_matching_excel(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    model.calibration = {
+        "source": "scale_bar", "px_per_um": 8.0, "check": "manual", "status": "pass",
+        "reason": "", "warnings": ["Sample count below target (n=3 of 5)"],
+        "text": "Verified 2026-09-24: 8.00 px/um (0.3% RA, target 10%)",
+    }
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    joined = "\n".join(_all_text(s) for s in prs.slides)
+    assert "Scale Verification: Verified 2026-09-24: 8.00 px/um (0.3% RA, target 10%)" in joined
+    assert "Verification Source: scale_bar" in joined
+    assert "Verification Warnings: Sample count below target (n=3 of 5)" in joined
+
+
+def test_no_calibration_means_no_scale_verification_line(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    assert model.calibration is None
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    joined = "\n".join(_all_text(s) for s in prs.slides)
+    assert "Scale Verification" not in joined
+
+
+def test_calibration_round_trips_through_report_json_into_pptx(tmp_path):
+    """FIX-07: ``ReportModel.calibration`` survives a to_json/from_json
+    round-trip (the ``report.json`` re-edit path) and still renders."""
+    model = _build_model(tmp_path, n=1)
+    model.calibration = {"source": "scale_bar", "text": "Verified: 8.00 px/um"}
+    reloaded = ReportModel.from_json(model.to_json())
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(reloaded, out)
+    prs = Presentation(out)
+    joined = "\n".join(_all_text(s) for s in prs.slides)
+    assert "Scale Verification: Verified: 8.00 px/um" in joined

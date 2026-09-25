@@ -30,6 +30,8 @@ from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import PP_ALIGN
 from pptx.dml.color import RGBColor
+from pptx.oxml import parse_xml
+from pptx.oxml.ns import nsdecls, nsuri
 from pptx.util import Emu, Inches, Pt
 
 from reports.charts import SERIES, build_bins, normal_fit, resolve_units, resolve_palette, series_for
@@ -50,6 +52,25 @@ WHITE = RGBColor(0xFF, 0xFF, 0xFF)
 GREY = RGBColor(0x75, 0x75, 0x75)
 TEXT_DARK = RGBColor(0x1A, 0x1A, 0x2E)
 LIGHT_BAND = RGBColor(0xF2, 0xF4, 0xF7)
+
+# FIX-11/FIX-12 layout geometry. python-pptx text boxes and tables never
+# auto-shrink/repaginate on save (that only happens live inside PowerPoint,
+# if at all) -- these renderers must size and paginate content themselves
+# before writing, or long titles/parameter lists/image counts silently
+# overflow past the footer bar. ``*_SAFE_BOTTOM_IN`` always leaves a clear
+# gap above the footer bar (top at ``SLIDE_H - 0.32in`` = 7.18in).
+TITLE_TOP_IN = 2.6
+TITLE_W_IN = 11.7
+TITLE_MAX_PT = 40
+TITLE_MIN_PT = 22
+
+METHODS_BOX_TOP_IN = 1.3
+METHODS_BOX_W_IN = 11.5
+METHODS_FONT_PT = 16
+METHODS_SAFE_BOTTOM_IN = 6.9
+
+EXEC_TABLE_ROW_IN = 0.4
+EXEC_TABLE_SAFE_BOTTOM_IN = 6.95
 
 
 def _hexrgb(h: str) -> RGBColor:
@@ -136,8 +157,18 @@ def render_pptx(model: ReportModel, output_path: str, template_path: Optional[st
                 _title_slide(new_slide(), model, navy, accent2)
                 _add_footer(prs.slides[-1], model, page[0], navy)
             elif kind == "overview_table":
-                _exec_summary_slide(new_slide(), model, images, navy)
-                _add_footer(prs.slides[-1], model, page[0], navy)
+                # FIX-12: paginate across continuation slides once the
+                # table would otherwise run past the footer.
+                show_tiles_first = bool(model.sample_statistics and
+                                         model.is_enabled("sample_statistics", default=True))
+                cap_first = _exec_table_capacity(2.35 if show_tiles_first else 1.3)
+                cap_rest = _exec_table_capacity(1.3)
+                pages = _paginate_images_for_table(images, cap_first, cap_rest)
+                for i, chunk in enumerate(pages):
+                    _exec_summary_slide(new_slide(), model, images, navy, page_images=chunk,
+                                         show_tiles=(i == 0), show_combined=(i == len(pages) - 1),
+                                         heading_suffix="" if i == 0 else " (cont'd)")
+                    _add_footer(prs.slides[-1], model, page[0], navy)
             elif kind == "charts":
                 _distribution_slide(new_slide(), model, images, kind="area", series=series, navy=navy)
                 _add_footer(prs.slides[-1], model, page[0], navy)
@@ -148,8 +179,13 @@ def render_pptx(model: ReportModel, output_path: str, template_path: Optional[st
                     _image_slide(new_slide(), model, img, tmpdir, navy)
                     _add_footer(prs.slides[-1], model, page[0], navy)
             elif kind == "methods":
-                _methods_slide(new_slide(), model, navy)
-                _add_footer(prs.slides[-1], model, page[0], navy)
+                # FIX-12: paginate across continuation slides once the
+                # methods text would otherwise run past the footer.
+                pages = _paginate_methods_lines(_methods_lines(model))
+                for i, chunk in enumerate(pages):
+                    _methods_slide(new_slide(), model, navy, lines=chunk,
+                                    heading_suffix="" if i == 0 else " (cont'd)")
+                    _add_footer(prs.slides[-1], model, page[0], navy)
             elif kind == "custom_text":
                 _text_slide(new_slide(), model, sec, navy)
                 _add_footer(prs.slides[-1], model, page[0], navy)
@@ -208,6 +244,102 @@ def _add_footer(slide, model: ReportModel, page_num: int, navy: RGBColor = NAVY)
               str(page_num), size=10, color=WHITE, align=PP_ALIGN.RIGHT)
 
 
+def _wrap_line_count(text: str, avail_width_in: float, font_pt: float,
+                      avg_char_width_factor: float = 0.52) -> int:
+    """Estimate how many lines ``text`` wraps to inside a box
+    ``avail_width_in`` inches wide at ``font_pt`` points, using an average
+    per-character-width heuristic (~0.52x font size for bold sans-serif --
+    the same trick spreadsheet "auto-fit" tools use). python-pptx text
+    boxes are never measured against the real font metrics on save, and
+    bundling/measuring the actual embedded font would pull in more than
+    this bug fix needs, so this stays a deliberately simple, offline-safe
+    (D-14) estimate -- used by FIX-11 (title/subtitle overlap) and FIX-12
+    (methods/table overflow past the footer) to size and paginate content
+    *before* writing it.
+    """
+    text = text or ""
+    words = text.split()
+    if not words:
+        return 1
+    char_w_in = max(0.02, font_pt * avg_char_width_factor / 72.0)
+    chars_per_line = max(1, int(avail_width_in / char_w_in))
+    lines = 1
+    cur = 0
+    for w in words:
+        wl = len(w) + 1
+        if cur and cur + wl > chars_per_line:
+            lines += 1
+            cur = wl
+        else:
+            cur += wl
+    return lines
+
+
+def _fit_title_font(text: str, avail_width_in: float, start_pt: int = TITLE_MAX_PT,
+                     min_pt: int = TITLE_MIN_PT, max_lines: int = 2) -> Tuple[int, int]:
+    """FIX-11: shrink the title font (in 2pt steps) until it wraps to at
+    most ``max_lines`` lines, so a long user-entered report title never
+    grows into an unbounded number of lines. Returns ``(font_pt, n_lines)``
+    at the chosen size."""
+    pt = start_pt
+    while pt > min_pt:
+        n = _wrap_line_count(text, avail_width_in, pt)
+        if n <= max_lines:
+            return pt, n
+        pt -= 2
+    return min_pt, _wrap_line_count(text, avail_width_in, min_pt)
+
+
+def _convert_series_to_line(chart, series_index: int, color_hex: str, width_pt: float = 2.25) -> None:
+    """FIX-13: render one series of a bar chart as a smoothed line overlay
+    (the "Normal Fit" curve) instead of a bar.
+
+    python-pptx's ``add_chart`` can only build a single-type chart --
+    every series in a ``CategoryChartData`` becomes the same chart type --
+    so a combo bar+line chart needs a direct OOXML edit: move the target
+    series's ``<c:ser>`` out of ``<c:barChart>`` into a sibling
+    ``<c:lineChart>`` plot that shares the same category/value axes. This
+    is the standard python-pptx combo-chart recipe (there is no public API
+    for it); mirrors ``excel_renderer._write_hist_block``'s
+    ``bar.combine(line)`` (xlsxwriter's native combo-chart call) so both
+    renderers draw the same bars-with-a-line-overlay chart.
+    """
+    ns = {"c": nsuri("c")}
+    plot_area = chart._chartSpace.find(".//c:plotArea", ns)
+    bar_chart = plot_area.find("c:barChart", ns) if plot_area is not None else None
+    if bar_chart is None:
+        return
+    sers = bar_chart.findall("c:ser", ns)
+    if series_index >= len(sers):
+        return
+    ser = sers[series_index]
+    ax_ids = [el.get("val") for el in bar_chart.findall("c:axId", ns)]
+    bar_chart.remove(ser)
+
+    line_chart = parse_xml(
+        '<c:lineChart %s><c:grouping val="standard"/><c:varyColors val="0"/></c:lineChart>'
+        % nsdecls("c")
+    )
+    bar_chart.addnext(line_chart)
+
+    sp_pr = parse_xml(
+        '<c:spPr %s><a:ln w="%d"><a:solidFill><a:srgbClr val="%s"/></a:solidFill></a:ln></c:spPr>'
+        % (nsdecls("c", "a"), int(width_pt * 12700), color_hex.lstrip("#"))
+    )
+    marker = parse_xml('<c:marker %s><c:symbol val="none"/></c:marker>' % nsdecls("c"))
+    smooth = parse_xml('<c:smooth %s val="1"/>' % nsdecls("c"))
+
+    cat_el = ser.find("c:cat", ns)
+    insert_at = list(ser).index(cat_el) if cat_el is not None else len(list(ser))
+    ser.insert(insert_at, marker)
+    ser.insert(insert_at, sp_pr)
+    ser.append(smooth)
+
+    line_chart.append(ser)
+    for axid_val in ax_ids:
+        line_chart.append(parse_xml('<c:axId %s val="%s"/>' % (nsdecls("c"), axid_val)))
+
+
 def _metric_callout(slide, left, top, width, height, value: str, label: str, navy: RGBColor = NAVY):
     _fill_rect(slide, left, top, width, height, LIGHT_BAND)
     _textbox(slide, left, top + Inches(0.06), width, Inches(0.5), value, size=22, bold=True,
@@ -224,10 +356,23 @@ def _title_slide(slide, model: ReportModel, navy: RGBColor = NAVY, accent2: RGBC
     _fill_rect(slide, 0, 0, SLIDE_W, SLIDE_H, WHITE)
     _fill_rect(slide, 0, 0, SLIDE_W, Inches(0.18), navy)
     _fill_rect(slide, 0, Inches(0.18), SLIDE_W, Inches(0.06), accent2)
-    _textbox(slide, Inches(0.8), Inches(2.6), Inches(11.7), Inches(1.2), model.title or "Grain Analysis Report",
-              size=40, bold=True, color=navy)
+
+    # FIX-11: a long user-entered report title wraps to 2+ lines, but the
+    # title text box's declared height never grows to match -- the
+    # subtitle lines below used to start at a fixed offset that assumed a
+    # single line, so a wrapped title ran straight into them. Shrink the
+    # font just enough to cap wrapping at 2 lines, then size the box (and
+    # everything below it) from the *actual* resulting line count instead
+    # of a guessed constant.
+    title_text = model.title or "Grain Analysis Report"
+    font_pt, n_lines = _fit_title_font(title_text, TITLE_W_IN)
+    line_h_in = font_pt * 1.3 / 72.0
+    title_h_in = max(1.2, n_lines * line_h_in + 0.15)
+    _textbox(slide, Inches(0.8), Inches(TITLE_TOP_IN), Inches(TITLE_W_IN), Inches(title_h_in),
+              title_text, size=font_pt, bold=True, color=navy)
+    top = Inches(TITLE_TOP_IN) + Inches(title_h_in) + Inches(0.1)
+
     if model.hierarchy:
-        top = Inches(3.7)
         for h in model.hierarchy:
             line = f"{h.get('label', '')}: {h.get('value', '')}"
             _textbox(slide, Inches(0.8), top, Inches(11.7), Inches(0.4), line, size=16, color=GREY)
@@ -236,8 +381,8 @@ def _title_slide(slide, model: ReportModel, navy: RGBColor = NAVY, accent2: RGBC
         top += Inches(0.4)
     else:
         meta = f"Sample/Lot: {_sample_lot_summary(model)}    |    {model.date}"
-        _textbox(slide, Inches(0.8), Inches(3.7), Inches(11.7), Inches(0.5), meta, size=16, color=GREY)
-        top = Inches(4.2)
+        _textbox(slide, Inches(0.8), top, Inches(11.7), Inches(0.5), meta, size=16, color=GREY)
+        top += Inches(0.5)
     who = f"Operator: {model.operator or '—'}    |    Organization: {model.organization or '—'}"
     _textbox(slide, Inches(0.8), top, Inches(11.7), Inches(0.5), who, size=16, color=GREY)
     if model.logo_path and os.path.exists(model.logo_path):
@@ -290,31 +435,101 @@ def _sample_lot_summary(model: ReportModel) -> str:
     return f"{s} / {l}"
 
 
-def _exec_summary_slide(slide, model: ReportModel, images: List[ImageSummary], navy: RGBColor = NAVY) -> None:
-    _slide_heading(slide, "Executive Summary", navy)
+EXEC_TABLE_W_IN = 12.1
+EXEC_TABLE_IMAGE_COL_IN = 2.6
+EXEC_TABLE_LEVEL_COL_IN = 1.3
+EXEC_TABLE_STAT_COLS = 6  # Grains, Mean Diam, Std Diam, Mean Area, Coverage %, Circularity
+EXEC_TABLE_STAT_MIN_IN = 0.9
+
+
+def _exec_table_col_widths(n_level_cols: int) -> List[float]:
+    """FIX-12: fixed, generous width for the free-text "Image"/hierarchy
+    columns so normal-length values don't wrap (see caller); the short
+    numeric/stat columns split whatever width is left."""
+    stat_total = EXEC_TABLE_W_IN - EXEC_TABLE_IMAGE_COL_IN - EXEC_TABLE_LEVEL_COL_IN * n_level_cols
+    stat_w = max(EXEC_TABLE_STAT_MIN_IN, stat_total / EXEC_TABLE_STAT_COLS)
+    return [EXEC_TABLE_IMAGE_COL_IN] + [EXEC_TABLE_LEVEL_COL_IN] * n_level_cols + [stat_w] * EXEC_TABLE_STAT_COLS
+
+
+def _style_body_cell(cell, size: int = 11) -> None:
+    """FIX-12: an explicit, compact body font (vs. the ~18-24pt table-style
+    default python-pptx falls back to when no size is set) keeps row
+    height predictable so the FIX-12 pagination math holds."""
+    for p in cell.text_frame.paragraphs:
+        for run in p.runs:
+            run.font.size = Pt(size)
+
+
+def _exec_table_capacity(table_top_in: float) -> int:
+    """FIX-12: max image rows (excluding the header and the Combined row)
+    that fit in one executive-summary table before it would run past the
+    footer, at the table's fixed ``EXEC_TABLE_ROW_IN`` row height."""
+    avail_rows = int((EXEC_TABLE_SAFE_BOTTOM_IN - table_top_in) / EXEC_TABLE_ROW_IN)
+    return max(1, avail_rows - 2)
+
+
+def _paginate_images_for_table(images: List[ImageSummary], capacity_first: int,
+                                capacity_rest: int) -> List[List[ImageSummary]]:
+    """FIX-12: split ``images`` across as many executive-summary slides as
+    needed so the table's rows never run past the footer -- a fixed
+    ``rows * 0.4in`` table used to grow straight through the footer bar
+    (and even off the bottom of the slide) once a lot had more than a
+    handful of images. ``capacity_first``/``capacity_rest`` differ because
+    the first page may also carry the INN-27 lot tiles, which push the
+    table down and leave it less room."""
+    if len(images) <= capacity_first:
+        return [list(images)]
+    pages = [images[:capacity_first]]
+    remaining = images[capacity_first:]
+    while remaining:
+        pages.append(remaining[:capacity_rest])
+        remaining = remaining[capacity_rest:]
+    return pages
+
+
+def _exec_summary_slide(slide, model: ReportModel, images: List[ImageSummary], navy: RGBColor = NAVY, *,
+                         page_images: Optional[List[ImageSummary]] = None, show_tiles: bool = True,
+                         show_combined: bool = True, heading_suffix: str = "") -> None:
+    """One executive-summary table slide. ``images`` is always the *full*
+    included-image list (used for the lot tiles and the Combined row);
+    ``page_images`` (FIX-12 pagination) is the subset of rows drawn on
+    *this* slide -- defaults to all of ``images`` when the whole table
+    fits on one slide."""
+    _slide_heading(slide, "Executive Summary" + heading_suffix, navy)
     if not images:
         _textbox(slide, Inches(0.8), Inches(1.5), Inches(11), Inches(0.5), "No images included.", size=14)
         return
+    page_images = images if page_images is None else page_images
 
-    table_top = Inches(1.3)
-    if model.sample_statistics and model.is_enabled("sample_statistics", default=True):
+    table_top_in = 1.3
+    if show_tiles and model.sample_statistics and model.is_enabled("sample_statistics", default=True):
         _lot_tiles(slide, model, navy)
-        table_top = Inches(2.35)
+        table_top_in = 2.35
 
     level_cols = model.level_columns() if model.hierarchy else []
     headers = (["Image"] + [label for _, label in level_cols] +
                ["Grains", "Mean Diam", "Std Diam", "Mean Area", "Coverage %", "Circularity"])
-    rows = len(images) + 2  # header + images + combined
+    rows = len(page_images) + 1 + (1 if show_combined else 0)  # header + page images (+ combined)
     cols = len(headers)
-    table_shape = slide.shapes.add_table(rows, cols, Inches(0.6), table_top, Inches(12.1), Inches(0.4) * rows)
+    table_shape = slide.shapes.add_table(rows, cols, Inches(0.6), Inches(table_top_in), Inches(12.1),
+                                          Inches(EXEC_TABLE_ROW_IN) * rows)
     table = table_shape.table
+    # FIX-12: an equal-width "Image" column left long filenames/display
+    # names wrapping to 2 lines, which makes PowerPoint auto-expand that
+    # row well past our budgeted EXEC_TABLE_ROW_IN -- exactly the overflow
+    # this fix is meant to prevent. Give Image (and any hierarchy level
+    # columns, which can also hold free text) generous fixed width so
+    # normal-length values fit on one line; split the rest evenly across
+    # the short numeric/stat columns.
+    for c, w_in in enumerate(_exec_table_col_widths(len(level_cols))):
+        table.columns[c].width = Inches(w_in)
+
     for c, h in enumerate(headers):
         cell = table.cell(0, c)
         cell.text = h
         _style_header_cell(cell, navy)
 
-    all_grains = []
-    for r, img in enumerate(images, start=1):
+    for r, img in enumerate(page_images, start=1):
         au, du, mean_a, med_a, std_a, mean_d, std_d = _row_size_stats(model, img)
         vals = (
             [img.display()] + model.row_levels(img) + [
@@ -335,10 +550,17 @@ def _exec_summary_slide(slide, model: ReportModel, images: List[ImageSummary], n
             f"{img.mean_circularity:.3f}",
         ]
         for c, v in enumerate(vals):
-            table.cell(r, c).text = v
-        all_grains.extend(img.grains)
+            cell = table.cell(r, c)
+            cell.text = v
+            _style_body_cell(cell)
 
-    r = len(images) + 1
+    if not show_combined:
+        return
+
+    # Combined row always summarises *all* included images, not just the
+    # rows drawn on this (last) page.
+    all_grains = [g for img in images for g in img.grains]
+    r = len(page_images) + 1
     calibrated_all = all(i.has_calibration for i in images)
     if calibrated_all and images:
         au, am, du, dm = resolve_units(images[0].px_per_um, model.units)
@@ -468,6 +690,12 @@ def _distribution_slide(slide, model: ReportModel, images: List[ImageSummary], k
             series["area_bar" if kind == "area" else "diameter_bar"])
     except Exception:
         pass
+    # FIX-13: "Normal Fit" (series index 1) is a smoothed line overlay, not
+    # a second set of bars -- matches the Excel renderer's bar.combine(line).
+    try:
+        _convert_series_to_line(chart, series_index=1, color_hex=series["normal_fit"])
+    except Exception:
+        pass
 
 
 def _image_slide(slide, model: ReportModel, img: ImageSummary, tmpdir: str, navy: RGBColor = NAVY) -> None:
@@ -505,16 +733,26 @@ def _image_slide(slide, model: ReportModel, img: ImageSummary, tmpdir: str, navy
         _textbox(slide, Inches(0.5), top + Inches(1.05), Inches(11.7), Inches(0.8), cap, size=12, color=GREY)
 
 
-def _methods_slide(slide, model: ReportModel, navy: RGBColor = NAVY) -> None:
-    _slide_heading(slide, "Methods & Parameters", navy)
+def _methods_lines(model: ReportModel) -> List[str]:
     params = model.metadata.get("detection_params") or {}
-    lines = []
+    lines: List[str] = []
     if model.hierarchy:
         lines += [f"{h.get('label', '')}: {h.get('value', '')}" for h in model.hierarchy]
     lines.append(f"Detection mode: {model.metadata.get('detection_mode', '—')}")
     for k, v in params.items():
         lines.append(f"{k}: {v}")
     lines.append(f"Calibrated: {'Yes' if any(i.has_calibration for i in model.images) else 'No'}")
+    # FIX-07: mirror the Excel Methods sheet's INN-29 scale-verification
+    # block (``ReportModel.calibration``) -- entirely optional, skipped
+    # when no check was recorded so a report with the feature unused is
+    # unchanged. Placed right after "Calibrated" like the Excel renderer.
+    cal = model.calibration
+    if cal and cal.get("text"):
+        lines.append(f"Scale Verification: {cal.get('text')}")
+        if cal.get("source"):
+            lines.append(f"Verification Source: {cal.get('source')}")
+        if cal.get("warnings"):
+            lines.append("Verification Warnings: " + "; ".join(str(w) for w in cal.get("warnings")))
     lines.append(f"Instrument: {model.metadata.get('instrument', '—')}")
     lines.append(f"Software: Grain Analyzer v{APP_VERSION}")
     lines.append(f"Generated by: {model.operator or 'unknown operator'} / {model.organization or '—'} on {model.date}")
@@ -523,7 +761,40 @@ def _methods_slide(slide, model: ReportModel, navy: RGBColor = NAVY) -> None:
         lines.append(f"Specification: {spec_bits or '—'} ({model.verdict.get('decision_rule', '—')} acceptance)")
         if model.verdict.get("statement"):
             lines.append(str(model.verdict["statement"]))
-    _textbox(slide, Inches(0.8), Inches(1.3), Inches(11.5), Inches(5.5), "\n".join(lines), size=16)
+    return lines
+
+
+def _paginate_methods_lines(lines: List[str]) -> List[List[str]]:
+    """FIX-12: split ``lines`` across as many Methods slides as needed so
+    the text box never overflows past the footer -- a long
+    ``detection_params`` dict or spec statement used to overflow a single
+    fixed-height text box straight through the footer bar (python-pptx
+    text boxes never grow/shrink to fit their text on save)."""
+    avail_in = METHODS_SAFE_BOTTOM_IN - METHODS_BOX_TOP_IN
+    line_h_in = METHODS_FONT_PT * 1.3 / 72.0
+    max_lines = max(1, int(avail_in / line_h_in))
+    pages: List[List[str]] = []
+    page: List[str] = []
+    used = 0
+    for line in lines:
+        n = max(1, _wrap_line_count(line, METHODS_BOX_W_IN, METHODS_FONT_PT))
+        if page and used + n > max_lines:
+            pages.append(page)
+            page = []
+            used = 0
+        page.append(line)
+        used += n
+    pages.append(page)
+    return pages
+
+
+def _methods_slide(slide, model: ReportModel, navy: RGBColor = NAVY, *,
+                    lines: Optional[List[str]] = None, heading_suffix: str = "") -> None:
+    _slide_heading(slide, "Methods & Parameters" + heading_suffix, navy)
+    if lines is None:
+        lines = _methods_lines(model)
+    _textbox(slide, Inches(0.8), Inches(METHODS_BOX_TOP_IN), Inches(METHODS_BOX_W_IN),
+              Inches(METHODS_SAFE_BOTTOM_IN - METHODS_BOX_TOP_IN), "\n".join(lines), size=METHODS_FONT_PT)
 
 
 def _appendix_slide(slide, model: ReportModel, navy: RGBColor = NAVY) -> None:
