@@ -171,3 +171,13 @@
 - **CI build queued** (Build & Release workflow, GitHub Actions run 36157862797). Builds GrainAnalyzer_Setup.exe and attaches to v3.0.0 Release.
 - **Full suite: 839 passed / 0 failed**. Installer 644 MB, dist 1.3 GB.
 - **Next**: (1) Confirm CI succeeds and Release has GrainAnalyzer_Setup.exe; (2) user downloads to flash drive and installs on work PC; (3) optional follow-ups (Lot Summary preview widget, PowerPoint Lot Summary slide for v3.1+).
+
+## 2026-09-25 — CI build succeeded; v3.0.0 Windows installer ready for user
+- **CI Windows build succeeded (27b336a)**: GrainAnalyzer_Setup.exe 674 MB built and attached to v3.0.0 Release on GitHub. macOS DMG build failed (not needed for v3.0.0).
+- **Security documentation added (27b336a)**: docs/SECURITY_OVERVIEW.md written for user's IT team. Covers: offline guard (no network access), Windows Firewall rules, data locations, dependency audit (xlsxwriter/python-pptx/torch/PySide6 licenses), build provenance (PyInstaller/NSIS), known limits (unsigned installer, upgrade-in-place leaves v2 files).
+- **Release status**: v3.0.0 tag on 5e99278 pushed to origin; Windows installer ready for download. macOS not built (CI job failed, v3.0.0 Windows-only).
+- **Open items for v3.0.1+ (non-blocking)**:
+  - Optional installer enhancement: check app closed; remove previous install before copying (avoids v2 remnants).
+  - Lot Summary preview widget in report designer (future v3.1+).
+  - PowerPoint Lot Summary slide export (future v3.1+).
+- **Next**: User downloads GrainAnalyzer_Setup.exe to flash drive, installs on work PC, and tests. If bugs found: fix on v3-dev, rebuild locally, re-tag v3.0.0 (safe before push). On approval: all commits already pushed to origin.
