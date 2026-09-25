@@ -407,7 +407,8 @@ class ReportsPage(QWidget):
                     metadata=rb.session_metadata(st),
                     asset_dir=str(s.path / rb.REPORT_ASSETS),
                     fingerprint=rb.results_fingerprint(st),
-                    hierarchy=hd["hierarchy"], export_basename=hd["export_basename"])
+                    hierarchy=hd["hierarchy"], export_basename=hd["export_basename"],
+                    overlay_opacity=rb.overlay_opacity_arg(st))
 
     def _relabel(self) -> None:
         from ui import hierarchy_ui as hui

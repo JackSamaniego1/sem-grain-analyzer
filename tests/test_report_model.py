@@ -314,3 +314,44 @@ def test_legacy_report_json_with_only_metadata_calibration_backfills_field(tmp_p
     d["metadata"]["calibration"] = dict(_CAL_PAYLOAD)
     restored = ReportModel.from_dict(d)
     assert restored.calibration == _CAL_PAYLOAD
+
+
+# ---------------------------------------------------------------------------
+# UX-16: overlay_opacity
+# ---------------------------------------------------------------------------
+
+def test_overlay_opacity_defaults_to_fully_opaque(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    assert model.overlay_opacity == 1.0
+
+
+def test_overlay_opacity_set_via_from_results(tmp_path):
+    items = _build_items(tmp_path, n=1)
+    model = ReportModel.from_results(items, asset_dir=str(tmp_path / "assets"),
+                                     overlay_opacity=0.35)
+    assert model.overlay_opacity == 0.35
+
+
+def test_overlay_opacity_round_trips_through_json(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    model.overlay_opacity = 0.6
+    restored = ReportModel.from_json(model.to_json())
+    assert restored.overlay_opacity == 0.6
+    assert restored.to_dict() == model.to_dict()
+
+
+def test_legacy_report_json_without_overlay_opacity_key_defaults_to_one(tmp_path):
+    """Old report.json saved before UX-16 has no "overlay_opacity" key at
+    all -- must load as 1.0, the exact look those reports already had."""
+    model = _build_model(tmp_path, n=1)
+    d = model.to_dict()
+    del d["overlay_opacity"]
+    restored = ReportModel.from_dict(d)
+    assert restored.overlay_opacity == 1.0
+
+
+def test_validate_catches_overlay_opacity_out_of_range(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    model.overlay_opacity = 1.4
+    problems = model.validate()
+    assert any("overlay_opacity" in p for p in problems)

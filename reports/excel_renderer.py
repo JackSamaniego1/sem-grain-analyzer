@@ -84,19 +84,35 @@ def _safe_sheet_name(name: str, used: Dict[str, int]) -> str:
     return clean
 
 
-def _resized_png(tmpdir: str, src_path: Optional[str], max_w: int = 800, _seq: List[int] = [0]
+def _resized_png(tmpdir: str, src_path: Optional[str], max_w: int = 800, _seq: List[int] = [0],
+                  blend_src: Optional[str] = None, opacity: float = 1.0
                   ) -> Optional[Tuple[str, int, int]]:
     """Return (path, width, height) of a size-capped PNG copy, or None.
 
     Output filenames combine a content-derived hash with a monotonically
     increasing sequence number so repeated/near-identical paths never
     collide within one render (plain ``hash(path) % N`` can).
+
+    UX-16: when ``blend_src`` (the plain original image) is given and
+    ``opacity < 1``, the returned PNG is ``src_path`` (the overlay) alpha-
+    blended down towards ``blend_src`` — ``ReportModel.overlay_opacity``.
+    Pixels the detector did not touch are identical in both images, so this
+    only fades the grain colouring/outlines, not the underlying micrograph.
+    ``opacity == 1`` (the default — current behaviour) skips the blend
+    entirely.
     """
     if not src_path or not os.path.exists(src_path) or cv2 is None:
         return None
     img = cv2.imread(src_path, cv2.IMREAD_COLOR)
     if img is None:
         return None
+    if blend_src and opacity < 0.999 and os.path.exists(blend_src):
+        base = cv2.imread(blend_src, cv2.IMREAD_COLOR)
+        if base is not None:
+            if base.shape[:2] != img.shape[:2]:
+                base = cv2.resize(base, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_AREA)
+            a = max(0.0, min(1.0, opacity))
+            img = cv2.addWeighted(img, a, base, 1.0 - a, 0)
     h, w = img.shape[:2]
     if w > max_w:
         scale = max_w / w
@@ -695,7 +711,8 @@ def _write_image_sheet(wb, model: ReportModel, img: ImageSummary, sheet_name, fm
         path, w, h = orig
         ws.insert_image(2, 0, path, {"x_scale": 1, "y_scale": 1})
         row_after_images = max(row_after_images, 2 + int(h / 15) + 2)
-    ovl = _resized_png(tmpdir, img.overlay_path)
+    ovl = _resized_png(tmpdir, img.overlay_path, blend_src=img.image_path,
+                       opacity=model.overlay_opacity)
     if ovl:
         path, w, h = ovl
         ws.insert_image(2, 6, path, {"x_scale": 1, "y_scale": 1})

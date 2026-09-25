@@ -368,11 +368,13 @@ def build_model(inputs: Sequence[ReportImageInput], *, title: str, operator: str
                 metadata: Optional[dict] = None, asset_dir: Optional[str] = None,
                 fingerprint: str = "", hierarchy: Optional[list] = None,
                 export_basename: str = "", sample_statistics=None,
-                verdict=None, calibration=None, extras: Optional[dict] = None) -> ReportModel:
+                verdict=None, calibration=None, extras: Optional[dict] = None,
+                overlay_opacity: float = 1.0) -> ReportModel:
     """Pool-thread: ReportModel from snapshots (writes overlay PNGs).
     ``sample_statistics``: see :func:`sample_statistics_arg` (INN-27).
     ``extras`` (:func:`report_extras_arg`): compute the optional INN-02
-    verdict and INN-29 calibration payload here, off the GUI thread."""
+    verdict and INN-29 calibration payload here, off the GUI thread.
+    ``overlay_opacity`` (UX-16): see :func:`overlay_opacity_arg`."""
     if extras:
         v, c = compute_report_extras(extras)
         verdict = verdict if verdict is not None else v
@@ -390,10 +392,22 @@ def build_model(inputs: Sequence[ReportImageInput], *, title: str, operator: str
                                      metadata=meta, asset_dir=asset_dir,
                                      hierarchy=hierarchy, export_basename=export_basename,
                                      sample_statistics=sample_statistics,
-                                     verdict=verdict)
+                                     verdict=verdict, overlay_opacity=overlay_opacity)
     apply_calibration(model, calibration)
     normalize(model)
     return model
+
+
+def overlay_opacity_arg(state) -> float:
+    """UX-16: the overlay opacity a *new* report should start with — the
+    Analyze page's overlay opacity slider (UX-05), persisted at
+    ``AppState.ui_state["overlay_opacity"]``. ``1.0`` (fully opaque, the
+    look every report had before UX-16) when unset or the app build does
+    not have ``AppState.overlay_opacity`` yet."""
+    try:
+        return float(getattr(state, "overlay_opacity", 1.0))
+    except (TypeError, ValueError):
+        return 1.0
 
 
 # ======================================================================
@@ -507,7 +521,7 @@ def merge_refresh(old: ReportModel, new: ReportModel) -> ReportModel:
     defaults = {"hierarchy": list(new.hierarchy), "export_basename": new.export_basename,
                 "title": new.metadata.get("auto_title", "")}
     for f in ("title", "operator", "organization", "logo_path", "date", "units", "theme",
-              "export_basename"):
+              "export_basename", "overlay_opacity"):
         setattr(out, f, getattr(old, f))
     out.hierarchy = [dict(h) for h in old.hierarchy]
     out.bins = dict(old.bins)

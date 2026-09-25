@@ -292,6 +292,16 @@ class ReportModel:
     # copy. Entirely optional: absent -> nothing renders, no errors.
     calibration: Optional[Dict[str, Any]] = None
 
+    # UX-16: opacity (0..1) applied to the overlay image in exports —
+    # ``1.0`` (the default) is the pre-UX-16 look (the overlay embedded
+    # as-is). The Analyze page's overlay opacity slider (UX-05, AppState
+    # key ``overlay_opacity``) sets this when a report is (re)built; both
+    # renderers alpha-blend the overlay PNG down towards the plain original
+    # image by this fraction (``reports.excel_renderer._resized_png``) so a
+    # value < 1 fades the grain colouring/outlines without needing the raw
+    # label mask.
+    overlay_opacity: float = 1.0
+
     # ------------------------------------------------------------------
     # Construction from analysis results
     # ------------------------------------------------------------------
@@ -315,6 +325,7 @@ class ReportModel:
         sample_statistics: Any = None,
         verdict: Any = None,
         calibration: Any = None,
+        overlay_opacity: float = 1.0,
     ) -> "ReportModel":
         """Build a model from freshly-analysed images.
 
@@ -332,6 +343,7 @@ class ReportModel:
             theme=theme, metadata=dict(metadata) if metadata else {},
             hierarchy=[dict(h) for h in hierarchy] if hierarchy else [],
             export_basename=export_basename or "",
+            overlay_opacity=float(overlay_opacity) if overlay_opacity is not None else 1.0,
         )
         model.calibration = _resolve_calibration(calibration, model.metadata)
 
@@ -496,6 +508,7 @@ class ReportModel:
             "sample_statistics": [dict(s) for s in self.sample_statistics],
             "verdict": normalize_verdict(self.verdict),
             "calibration": dict(self.calibration) if self.calibration else None,
+            "overlay_opacity": self.overlay_opacity,
         }
 
     def to_json(self, *, indent: int = 2) -> str:
@@ -521,6 +534,9 @@ class ReportModel:
             sample_statistics=[dict(s) for s in (d.get("sample_statistics") or [])],
             verdict=normalize_verdict(d.get("verdict")),
             calibration=_resolve_calibration(d.get("calibration"), d.get("metadata") or {}),
+            # UX-16: absent in reports saved before this field existed ->
+            # 1.0, the exact look those reports already had.
+            overlay_opacity=float(d.get("overlay_opacity", 1.0) or 1.0),
         )
 
     @classmethod
@@ -549,6 +565,8 @@ class ReportModel:
             problems.append("title is empty.")
         if self.units not in ("auto", "um", "nm"):
             problems.append(f"units must be auto|um|nm, got {self.units!r}.")
+        if not (0.0 <= float(self.overlay_opacity) <= 1.0):
+            problems.append(f"overlay_opacity must be between 0 and 1, got {self.overlay_opacity!r}.")
 
         ids = [i.id for i in self.images]
         if len(ids) != len(set(ids)):

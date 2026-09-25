@@ -702,7 +702,8 @@ def _image_slide(slide, model: ReportModel, img: ImageSummary, tmpdir: str, navy
     _slide_heading(slide, f"Image {img.order}: {img.display()}", navy)
 
     orig = _resized_png(tmpdir, img.image_path, max_w=900)
-    ovl = _resized_png(tmpdir, img.overlay_path, max_w=900)
+    ovl = _resized_png(tmpdir, img.overlay_path, max_w=900, blend_src=img.image_path,
+                       opacity=model.overlay_opacity)
     pic_top = Inches(1.05)
     pic_h = Inches(3.6)
     if orig:

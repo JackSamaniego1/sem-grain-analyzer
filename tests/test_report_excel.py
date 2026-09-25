@@ -684,6 +684,44 @@ def test_no_calibration_block_when_calibration_unset(tmp_path):
     assert "Scale Verification" not in values
 
 
+def _embedded_image_at_col(ws, col: int):
+    for im in ws._images:
+        if im.anchor._from.col == col:
+            return cv2.imdecode(np.frombuffer(im._data(), np.uint8), cv2.IMREAD_COLOR)
+    return None
+
+
+def test_overlay_opacity_zero_fades_overlay_to_plain_image(tmp_path):
+    """UX-16: opacity 0 blends the overlay all the way down to the plain
+    original image (still shown side-by-side at its own column)."""
+    model = _build_model(tmp_path, n=1)
+    model.overlay_opacity = 0.0
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    orig_arr = cv2.imread(model.images[0].image_path, cv2.IMREAD_COLOR)
+    ws = openpyxl.load_workbook(out)[[n for n in openpyxl.load_workbook(out).sheetnames
+                                      if n.startswith("Img ")][0]]
+    overlay_embedded = _embedded_image_at_col(ws, 6)
+    assert overlay_embedded is not None
+    assert overlay_embedded.shape == orig_arr.shape
+    assert np.array_equal(overlay_embedded, orig_arr)
+
+
+def test_overlay_opacity_default_keeps_overlay_colouring(tmp_path):
+    """The pre-UX-16 default (1.0) embeds the overlay exactly as detected —
+    it must NOT be blended down to the plain image."""
+    model = _build_model(tmp_path, n=1)
+    assert model.overlay_opacity == 1.0
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    orig_arr = cv2.imread(model.images[0].image_path, cv2.IMREAD_COLOR)
+    ws = openpyxl.load_workbook(out)[[n for n in openpyxl.load_workbook(out).sheetnames
+                                      if n.startswith("Img ")][0]]
+    overlay_embedded = _embedded_image_at_col(ws, 6)
+    assert overlay_embedded is not None
+    assert not np.array_equal(overlay_embedded, orig_arr)
+
+
 def test_sample_output_written_to_scratch():
     """Definition-of-done artifact for the coordinator to open."""
     scratch = os.path.join(ROOT, "scratch", "reports")

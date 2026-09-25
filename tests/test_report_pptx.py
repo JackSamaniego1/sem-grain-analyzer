@@ -194,6 +194,36 @@ def test_image_slides_have_metric_callouts_and_caption(tmp_path):
     assert "Notably coarse grains" in text
 
 
+def test_overlay_opacity_zero_fades_overlay_to_plain_image(tmp_path):
+    """UX-16: opacity 0 blends the overlay picture down to the plain image."""
+    model = _build_model(tmp_path, n=1)
+    model.overlay_opacity = 0.0
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    orig_arr = cv2.imread(model.images[0].image_path, cv2.IMREAD_COLOR)
+    image_slide = prs.slides[4]  # title, exec, area, diam, img1
+    pics = [sh for sh in image_slide.shapes if sh.shape_type == 13]
+    overlay_pic = max(pics, key=lambda sh: sh.left)   # overlay sits on the right
+    arr = cv2.imdecode(np.frombuffer(overlay_pic.image.blob, np.uint8), cv2.IMREAD_COLOR)
+    assert arr.shape == orig_arr.shape
+    assert np.array_equal(arr, orig_arr)
+
+
+def test_overlay_opacity_default_keeps_overlay_colouring(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    assert model.overlay_opacity == 1.0
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    orig_arr = cv2.imread(model.images[0].image_path, cv2.IMREAD_COLOR)
+    image_slide = prs.slides[4]
+    pics = [sh for sh in image_slide.shapes if sh.shape_type == 13]
+    overlay_pic = max(pics, key=lambda sh: sh.left)
+    arr = cv2.imdecode(np.frombuffer(overlay_pic.image.blob, np.uint8), cv2.IMREAD_COLOR)
+    assert not np.array_equal(arr, orig_arr)
+
+
 def test_methods_and_appendix_slides_present(tmp_path):
     model = _build_model(tmp_path, n=1)
     out = str(tmp_path / "deck.pptx")
