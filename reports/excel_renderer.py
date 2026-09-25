@@ -53,6 +53,25 @@ except Exception:  # pragma: no cover
 INVALID_SHEET_CHARS = re.compile(r"[\[\]:*?/\\]")
 
 
+def _autosize_width(header: str, values: List[object], min_w: int = 8, max_w: int = 40,
+                     pad: int = 2) -> float:
+    """Column width sized to the longest of header/content (character count
+    plus padding), clamped to ``[min_w, max_w]``.
+
+    Used for identifier-ish text columns (Image/Sample/Lot, hierarchy level
+    columns) whose content length varies a lot between labs — a fixed width
+    either truncates long lot numbers (FIX-14) or wastes space on short
+    ones. The clamp keeps one pathological outlier from blowing out the
+    whole sheet.
+    """
+    longest = len(str(header or ""))
+    for v in values:
+        if v is None:
+            continue
+        longest = max(longest, len(str(v)))
+    return max(min_w, min(max_w, longest + pad))
+
+
 def _safe_sheet_name(name: str, used: Dict[str, int]) -> str:
     clean = INVALID_SHEET_CHARS.sub("", name).strip() or "Sheet"
     clean = clean[:31]
@@ -441,10 +460,22 @@ def _write_overview(wb, model: ReportModel, images: List[ImageSummary], fmts, na
         r += 1
 
     ws.freeze_panes(header_row + 1, 1)
+    # FIX-14: size identifier columns (Image / Sample / Lot, or the
+    # hierarchy's level columns) from their actual content instead of a
+    # fixed width, so a long lot number/sample id/display name is no
+    # longer truncated. Numeric/stat columns keep their fixed widths —
+    # those are never free text.
+    image_w = _autosize_width("Image", [img.display() for img in images], min_w=18, max_w=45)
     if hier:
-        widths = [5, 30, 16] + [14] * len(level_cols) + [9, 13, 13, 13, 15, 14, 13, 11, 10, 15, 15, 9]
+        level_widths = [
+            _autosize_width(label, [model.row_levels(img)[idx] for img in images], min_w=10, max_w=30)
+            for idx, (_, label) in enumerate(level_cols)
+        ]
+        widths = [5, image_w, 16] + level_widths + [9, 13, 13, 13, 15, 14, 13, 11, 10, 15, 15, 9]
     else:
-        widths = [5, 30, 12, 12, 9, 13, 13, 13, 15, 14, 13, 11, 10, 15, 15, 9]
+        sample_w = _autosize_width("Sample", [img.sample_id for img in images], min_w=10, max_w=30)
+        lot_w = _autosize_width("Lot", [img.lot_number for img in images], min_w=10, max_w=30)
+        widths = [5, image_w, sample_w, lot_w, 9, 13, 13, 13, 15, 14, 13, 11, 10, 15, 15, 9]
     for c, w in enumerate(widths):
         ws.set_column(c, c, w)
 
@@ -761,6 +792,20 @@ def _write_methods(wb, model: ReportModel, fmts, name: str) -> None:
     ws.write(r, 0, "Instrument", fmts["label"]); ws.write(r, 1, str(model.metadata.get("instrument", "—")), fmts["value"]); r += 1
     ws.write(r, 0, "Calibrated", fmts["label"])
     ws.write(r, 1, "Yes" if any(i.has_calibration for i in model.images) else "No", fmts["value"]); r += 1
+
+    # FIX-07: INN-29 scale-verification check (``ReportModel.calibration``),
+    # optional -- rows are skipped entirely when no check was recorded, so
+    # a report with the feature unused is unchanged from before FIX-07.
+    cal = model.calibration
+    if cal and cal.get("text"):
+        ws.write(r, 0, "Scale Verification", fmts["label"])
+        ws.write(r, 1, str(cal.get("text")), fmts["value"]); r += 1
+        if cal.get("source"):
+            ws.write(r, 0, "Verification Source", fmts["label"])
+            ws.write(r, 1, str(cal.get("source")), fmts["value"]); r += 1
+        if cal.get("warnings"):
+            ws.write(r, 0, "Verification Warnings", fmts["label"])
+            ws.write(r, 1, "; ".join(str(w) for w in cal.get("warnings")), fmts["value"]); r += 1
 
     if model.verdict and model.verdict.get("overall") not in (None, "no_spec"):
         r += 1

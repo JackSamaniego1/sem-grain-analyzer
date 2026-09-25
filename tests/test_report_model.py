@@ -240,3 +240,77 @@ def test_suggest_filename_sanitizes_for_windows(tmp_path):
     model.export_basename = 'Bad:Name/With*Chars?'
     name = reports.suggest_filename(model, "xlsx")
     assert not any(ch in name for ch in ':/\\*?"<>|')
+
+
+# ---------------------------------------------------------------------------
+# FIX-07: ReportModel.calibration (INN-29 scale-verification payload)
+# ---------------------------------------------------------------------------
+
+_CAL_PAYLOAD = {
+    "source": "metadata", "px_per_um": 5.0, "check": None, "status": "not verified",
+    "reason": "no check on file", "warnings": [], "text": "Scale not verified (no check on file)",
+}
+
+
+def test_calibration_defaults_to_none(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    assert model.calibration is None
+
+
+def test_from_results_populates_calibration_field(tmp_path):
+    items = _build_items(tmp_path, n=1)
+    model = ReportModel.from_results(
+        items, asset_dir=str(tmp_path / "assets"), calibration=_CAL_PAYLOAD,
+    )
+    assert model.calibration == _CAL_PAYLOAD
+
+
+def test_from_results_derives_calibration_from_metadata(tmp_path):
+    """Callers that only set metadata["calibration"] (the pre-FIX-07 path,
+    e.g. ui.pages.report_builder.apply_calibration before this field
+    existed) still get it populated onto the new field."""
+    items = _build_items(tmp_path, n=1)
+    model = ReportModel.from_results(
+        items, asset_dir=str(tmp_path / "assets"), metadata={"calibration": _CAL_PAYLOAD},
+    )
+    assert model.calibration == _CAL_PAYLOAD
+
+
+def test_calibration_round_trips_through_json(tmp_path):
+    items = _build_items(tmp_path, n=1)
+    model = ReportModel.from_results(
+        items, asset_dir=str(tmp_path / "assets"), calibration=_CAL_PAYLOAD,
+    )
+    restored = ReportModel.from_json(model.to_json())
+    assert restored.calibration == _CAL_PAYLOAD
+    assert restored.to_dict() == model.to_dict()
+
+
+def test_calibration_absent_round_trips_to_none(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    assert model.calibration is None
+    restored = ReportModel.from_json(model.to_json())
+    assert restored.calibration is None
+    assert "calibration" in model.to_dict()  # key always present, just null
+
+
+def test_legacy_report_json_without_calibration_key_loads_cleanly(tmp_path):
+    """Old report.json saved before FIX-07 has no top-level "calibration"
+    key at all -- must load with calibration=None, no errors."""
+    model = _build_model(tmp_path, n=1)
+    d = model.to_dict()
+    del d["calibration"]
+    restored = ReportModel.from_dict(d)
+    assert restored.calibration is None
+
+
+def test_legacy_report_json_with_only_metadata_calibration_backfills_field(tmp_path):
+    """Old report.json saved with the INN-29 payload only inside
+    metadata["calibration"] (no top-level key) still surfaces it on the new
+    field after loading."""
+    model = _build_model(tmp_path, n=1)
+    d = model.to_dict()
+    del d["calibration"]
+    d["metadata"]["calibration"] = dict(_CAL_PAYLOAD)
+    restored = ReportModel.from_dict(d)
+    assert restored.calibration == _CAL_PAYLOAD

@@ -213,6 +213,21 @@ def normalize_verdict(v: Any) -> Optional[Dict[str, Any]]:
     return d
 
 
+def _resolve_calibration(explicit: Any, metadata: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """FIX-07 backward compatibility: an explicit ``calibration`` payload
+    wins; otherwise fall back to ``metadata["calibration"]`` (the only place
+    it lived before this field existed, and where
+    ``ui.pages.report_builder.apply_calibration`` still mirrors it) so old
+    ``report.json`` files keep showing their calibration block after being
+    loaded with the new code. ``None``/empty in both -> ``None``."""
+    if isinstance(explicit, dict) and explicit:
+        return dict(explicit)
+    meta_cal = (metadata or {}).get("calibration")
+    if isinstance(meta_cal, dict) and meta_cal:
+        return dict(meta_cal)
+    return None
+
+
 def _save_bgr(bgr: np.ndarray, asset_dir: str, name: str) -> str:
     os.makedirs(asset_dir, exist_ok=True)
     path = os.path.join(asset_dir, name)
@@ -267,6 +282,16 @@ class ReportModel:
     # ``None`` on load/construction so it can never accidentally render.
     verdict: Optional[Dict[str, Any]] = None
 
+    # FIX-07: ``data.cal_records.report_calibration()`` payload (INN-29
+    # scale-verification check) -- ``{"source", "px_per_um", "check",
+    # "status", "reason", "warnings", "text"}`` -- or ``None`` (the
+    # default) when calibration verification is unused. Historically this
+    # only ever lived in ``metadata["calibration"]`` (set by
+    # ``ui.pages.report_builder.apply_calibration``); it is still mirrored
+    # there for that caller, but this field is the canonical, renderer-facing
+    # copy. Entirely optional: absent -> nothing renders, no errors.
+    calibration: Optional[Dict[str, Any]] = None
+
     # ------------------------------------------------------------------
     # Construction from analysis results
     # ------------------------------------------------------------------
@@ -289,6 +314,7 @@ class ReportModel:
         export_basename: str = "",
         sample_statistics: Any = None,
         verdict: Any = None,
+        calibration: Any = None,
     ) -> "ReportModel":
         """Build a model from freshly-analysed images.
 
@@ -307,6 +333,7 @@ class ReportModel:
             hierarchy=[dict(h) for h in hierarchy] if hierarchy else [],
             export_basename=export_basename or "",
         )
+        model.calibration = _resolve_calibration(calibration, model.metadata)
 
         _asset_dir = asset_dir
         images: List[ImageSummary] = []
@@ -468,6 +495,7 @@ class ReportModel:
             "export_basename": self.export_basename,
             "sample_statistics": [dict(s) for s in self.sample_statistics],
             "verdict": normalize_verdict(self.verdict),
+            "calibration": dict(self.calibration) if self.calibration else None,
         }
 
     def to_json(self, *, indent: int = 2) -> str:
@@ -492,6 +520,7 @@ class ReportModel:
             export_basename=d.get("export_basename", ""),
             sample_statistics=[dict(s) for s in (d.get("sample_statistics") or [])],
             verdict=normalize_verdict(d.get("verdict")),
+            calibration=_resolve_calibration(d.get("calibration"), d.get("metadata") or {}),
         )
 
     @classmethod

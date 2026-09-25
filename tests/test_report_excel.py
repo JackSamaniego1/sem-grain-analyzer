@@ -545,6 +545,145 @@ def test_legacy_model_without_hierarchy_renders_identically(tmp_path):
     assert all("synth_" in n for n in img_sheets)
 
 
+
+# ---------------------------------------------------------------------------
+# FIX-14: Overview column widths auto-size from content
+# ---------------------------------------------------------------------------
+
+def _build_model_with_ids(tmp_path, sample_ids, lot_numbers):
+    det = GrainDetector()
+    items = []
+    for i, (sample, lot) in enumerate(zip(sample_ids, lot_numbers)):
+        gray, _ = make_mosaic(seed=i + 1, h=256, w=256, n_grains=30)
+        bgr = np.repeat(gray[:, :, None], 3, axis=2)
+        res = det.analyze(bgr, px_per_um=8.0, params=DetectionParams())
+        img_path = str(tmp_path / f"synth_{i}.png")
+        cv2.imwrite(img_path, bgr)
+        items.append(ReportImageInput(image_path=img_path, result=res, image_bgr=bgr,
+                                       sample_id=sample, lot_number=lot))
+    return ReportModel.from_results(items, title="Widths", asset_dir=str(tmp_path / "assets"))
+
+
+def test_long_lot_number_is_not_truncated(tmp_path):
+    # Realistic-but-long lot number -- well past the old fixed width of 12,
+    # comfortably under the auto-size clamp, so the fix must widen it fully.
+    long_lot = "AEROSPACE-INCONEL718-B02"  # 24 chars
+    model = _build_model_with_ids(tmp_path, ["S0"], [long_lot])
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    wb = openpyxl.load_workbook(out)
+    ws = wb["Overview"]
+    assert ws["D5"].value == long_lot
+    lot_width = ws.column_dimensions["D"].width
+    assert lot_width >= len(long_lot)  # wide enough to show the full value
+    assert lot_width <= 40  # still clamped, doesn't blow out the sheet
+
+
+def test_long_sample_id_is_not_truncated(tmp_path):
+    long_sample = "SAMPLE-ID-WITH-LONG-NAME-001"  # 29 chars
+    model = _build_model_with_ids(tmp_path, [long_sample], ["L1"])
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    wb = openpyxl.load_workbook(out)
+    ws = wb["Overview"]
+    sample_width = ws.column_dimensions["C"].width
+    assert sample_width >= len(long_sample)
+    assert sample_width <= 40
+
+
+def test_pathologically_long_lot_number_is_clamped_not_unbounded(tmp_path):
+    """A single extreme outlier must not blow the column out to its full
+    length -- it's clamped to a sensible max (still far wider than the old
+    fixed 12, so real lot numbers up to ~28 chars still fit in full)."""
+    huge_lot = "L" * 200
+    model = _build_model_with_ids(tmp_path, ["S0"], [huge_lot])
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    wb = openpyxl.load_workbook(out)
+    ws = wb["Overview"]
+    lot_width = ws.column_dimensions["D"].width
+    # xlsxwriter's stored width goes through a pixel round-trip so it isn't
+    # byte-identical to the "30" we asked for (openpyxl reads it back as
+    # ~30.7) -- assert the clamp held (nowhere near the 200-char content)
+    # rather than an exact character count.
+    assert 12 < lot_width < 35
+
+
+def test_short_lot_and_sample_get_sensible_minimum_width(tmp_path):
+    model = _build_model_with_ids(tmp_path, ["S0"], ["L1"])
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    wb = openpyxl.load_workbook(out)
+    ws = wb["Overview"]
+    assert ws.column_dimensions["C"].width >= 10
+    assert ws.column_dimensions["D"].width >= 10
+
+
+def test_hierarchy_level_column_widths_size_to_long_values(tmp_path):
+    hierarchy = [
+        {"key": "project", "label": "Job #", "value": "24-117"},
+        {"key": "sample", "label": "Part Number", "value": "7718-A"},
+        {"key": "lot", "label": "Lot", "value": "LOT-VERY-LONG-IDENTIFIER-STRING-2026-0917"},
+    ]
+    det = GrainDetector()
+    gray, _ = make_mosaic(seed=1, h=256, w=256, n_grains=30)
+    bgr = np.repeat(gray[:, :, None], 3, axis=2)
+    res = det.analyze(bgr, px_per_um=8.0, params=DetectionParams())
+    img_path = str(tmp_path / "synth_0.png")
+    cv2.imwrite(img_path, bgr)
+    items = [ReportImageInput(image_path=img_path, result=res, image_bgr=bgr)]
+    model = ReportModel.from_results(items, title="Hier Widths", hierarchy=hierarchy,
+                                      asset_dir=str(tmp_path / "assets"))
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    wb = openpyxl.load_workbook(out)
+    ws = wb["Overview"]
+    # lead columns for hierarchy models: #, Image, File, Job #, Part Number, Lot
+    lot_col_width = ws.column_dimensions["F"].width
+    assert lot_col_width >= 30  # long value, clamped at max_w=30 for level columns
+
+
+# ---------------------------------------------------------------------------
+# FIX-07: calibration (INN-29 scale-verification payload) rendered in Excel
+# ---------------------------------------------------------------------------
+
+_CAL_PAYLOAD = {
+    "source": "metadata", "px_per_um": 5.0, "check": None, "status": "not verified",
+    "reason": "no check on file", "warnings": ["stale check"],
+    "text": "Scale not verified (no check on file)",
+}
+
+
+def test_calibration_block_appears_on_methods_sheet(tmp_path):
+    det = GrainDetector()
+    gray, _ = make_mosaic(seed=1, h=256, w=256, n_grains=30)
+    bgr = np.repeat(gray[:, :, None], 3, axis=2)
+    res = det.analyze(bgr, px_per_um=8.0, params=DetectionParams())
+    img_path = str(tmp_path / "synth_0.png")
+    cv2.imwrite(img_path, bgr)
+    items = [ReportImageInput(image_path=img_path, result=res, image_bgr=bgr)]
+    model = ReportModel.from_results(items, title="Cal", asset_dir=str(tmp_path / "assets"),
+                                      calibration=_CAL_PAYLOAD)
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    ws = openpyxl.load_workbook(out)["Methods"]
+    values = [c.value for row in ws.iter_rows() for c in row if c.value]
+    assert "Scale Verification" in values
+    assert "Scale not verified (no check on file)" in values
+    assert "Verification Warnings" in values
+    assert "stale check" in values
+
+
+def test_no_calibration_block_when_calibration_unset(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    assert model.calibration is None
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    ws = openpyxl.load_workbook(out)["Methods"]
+    values = [c.value for row in ws.iter_rows() for c in row if c.value]
+    assert "Scale Verification" not in values
+
+
 def test_sample_output_written_to_scratch():
     """Definition-of-done artifact for the coordinator to open."""
     scratch = os.path.join(ROOT, "scratch", "reports")
