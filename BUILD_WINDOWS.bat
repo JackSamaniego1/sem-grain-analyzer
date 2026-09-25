@@ -58,24 +58,53 @@ if errorlevel 1 (
 )
 echo [OK] Packages installed.
 
-:: Download SAM model checkpoint
+:: Download SAM model checkpoint (hash-verified: the app must never
+:: download anything at runtime -- HARD CONSTRAINT D-14 -- so the
+:: checkpoint is fetched here, at build time, and its SHA-256 is checked
+:: against a pinned value from the official Meta (FAIR) release so a
+:: corrupted or tampered download can never end up in the installer.)
 echo.
-echo [3/7] Downloading SAM model checkpoint (~375MB)...
+echo [3/7] Downloading SAM model checkpoint (~375MB, SHA-256 verified)...
 if not exist models mkdir models
-if not exist models\sam_vit_b_01ec64.pth (
-    echo Downloading sam_vit_b_01ec64.pth...
-    powershell -Command "Invoke-WebRequest -Uri 'https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth' -OutFile 'models\sam_vit_b_01ec64.pth'"
-    if errorlevel 1 (
-        echo ERROR: Failed to download SAM model. Check your internet connection.
-        pause
-        exit /b 1
-    )
-    echo [OK] SAM model downloaded.
-) else (
-    echo [OK] SAM model already exists, skipping download.
+set "SAM_URL=https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
+set "SAM_FILE=models\sam_vit_b_01ec64.pth"
+set "SAM_SHA256=ec2df62732614e57411cdcf32a23ffdf28910380d03139ee0f4fcbe91eb8c912"
+
+if not exist "%SAM_FILE%" goto :sam_download
+call :sam_hash "%SAM_FILE%"
+if /I "%SAM_HASH%"=="%SAM_SHA256%" goto :sam_verified
+echo [WARN] Existing SAM checkpoint failed SHA-256 check - re-downloading.
+del /f /q "%SAM_FILE%"
+
+:sam_download
+echo Downloading sam_vit_b_01ec64.pth...
+powershell -Command "Invoke-WebRequest -Uri '%SAM_URL%' -OutFile '%SAM_FILE%'"
+if errorlevel 1 (
+    echo ERROR: Failed to download SAM model. Check your internet connection.
+    pause
+    exit /b 1
 )
-if not exist models\sam_vit_b_01ec64.pth (
-    echo ERROR: models\sam_vit_b_01ec64.pth is missing after the download step.
+call :sam_hash "%SAM_FILE%"
+if /I "%SAM_HASH%"=="%SAM_SHA256%" goto :sam_verified
+echo ERROR: SAM checkpoint SHA-256 mismatch after download.
+echo Expected: %SAM_SHA256%
+echo Actual:   %SAM_HASH%
+echo The download may be corrupted or tampered with. Aborting build.
+del /f /q "%SAM_FILE%"
+pause
+exit /b 1
+
+:sam_verified
+echo [OK] SAM checkpoint present and SHA-256 verified.
+goto :sam_done
+
+:sam_hash
+for /f "delims=" %%H in ('powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 '%~1').Hash.ToLower()"') do set "SAM_HASH=%%H"
+exit /b 0
+
+:sam_done
+if not exist "%SAM_FILE%" (
+    echo ERROR: %SAM_FILE% is missing after the download step.
     echo The installer must not ship without the bundled SAM checkpoint.
     pause
     exit /b 1

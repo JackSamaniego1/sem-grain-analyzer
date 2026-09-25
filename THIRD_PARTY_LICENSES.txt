@@ -70,8 +70,14 @@ Upstream: https://pytorch.org/
 segment-anything
 Licence: Apache License 2.0
 Upstream: https://github.com/facebookresearch/segment-anything
-Model checkpoint: sam_vit_b_01ec64.pth, bundled at build time under the
-same licence; not downloaded at runtime.
+Model checkpoint: sam_vit_b_01ec64.pth (~375 MB), fetched once by the
+build scripts/CI (BUILD_WINDOWS.bat, .github/workflows/build.yml) from
+Meta's official host, dl.fbaipublicfiles.com/segment_anything/
+sam_vit_b_01ec64.pth, verified against a pinned SHA-256 checksum
+(ec2df62732614e57411cdcf32a23ffdf28910380d03139ee0f4fcbe91eb8c912) and
+bundled into the installer under the same licence. The build fails if
+the hash does not match. Never downloaded at runtime by the installed
+application.
 --------------------------------------------------------------------------
 
 This file is installed alongside the application (see the NSIS installer

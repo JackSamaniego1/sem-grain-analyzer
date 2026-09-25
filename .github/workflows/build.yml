@@ -26,14 +26,32 @@ jobs:
           pip install pyinstaller PySide6 opencv-python scikit-image scipy numpy openpyxl xlsxwriter python-pptx qtawesome Pillow segment-anything
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Download SAM model
+      - name: Download SAM model (SHA-256 verified)
+        env:
+          SAM_URL: https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth
+          SAM_SHA256: ec2df62732614e57411cdcf32a23ffdf28910380d03139ee0f4fcbe91eb8c912
         run: |
-          New-Item -ItemType Directory -Force -Path models
-          Invoke-WebRequest -Uri "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth" -OutFile "models/sam_vit_b_01ec64.pth"
-          if (-not (Test-Path "models/sam_vit_b_01ec64.pth")) {
-            Write-Error "SAM checkpoint missing after download step"
+          New-Item -ItemType Directory -Force -Path models | Out-Null
+          $dest = "models/sam_vit_b_01ec64.pth"
+          if (Test-Path $dest) {
+            $existing = (Get-FileHash -Algorithm SHA256 $dest).Hash.ToLower()
+            if ($existing -eq $env:SAM_SHA256) {
+              Write-Host "SAM checkpoint already present and hash-verified, skipping download."
+            } else {
+              Write-Host "Existing SAM checkpoint hash mismatch - re-downloading."
+              Remove-Item $dest -Force
+            }
+          }
+          if (-not (Test-Path $dest)) {
+            Invoke-WebRequest -Uri $env:SAM_URL -OutFile $dest
+          }
+          $hash = (Get-FileHash -Algorithm SHA256 $dest).Hash.ToLower()
+          if ($hash -ne $env:SAM_SHA256) {
+            Remove-Item $dest -Force -ErrorAction SilentlyContinue
+            Write-Error "SAM checkpoint SHA-256 mismatch. Expected $($env:SAM_SHA256), got $hash. Aborting build."
             exit 1
           }
+          Write-Host "SAM checkpoint SHA-256 verified: $hash"
 
       - name: Generate icon
         run: python -m ui.design.branding resources\icon.ico
@@ -84,14 +102,32 @@ jobs:
           pip install pyinstaller PySide6 opencv-python scikit-image scipy numpy openpyxl xlsxwriter python-pptx qtawesome Pillow segment-anything
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Download SAM model
+      - name: Download SAM model (SHA-256 verified)
+        env:
+          SAM_URL: https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth
+          SAM_SHA256: ec2df62732614e57411cdcf32a23ffdf28910380d03139ee0f4fcbe91eb8c912
         run: |
           mkdir -p models
-          curl -L -o models/sam_vit_b_01ec64.pth https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth
-          if [ ! -f models/sam_vit_b_01ec64.pth ]; then
-            echo "SAM checkpoint missing after download step" >&2
+          dest=models/sam_vit_b_01ec64.pth
+          if [ -f "$dest" ]; then
+            existing=$(shasum -a 256 "$dest" | awk '{print $1}')
+            if [ "$existing" = "$SAM_SHA256" ]; then
+              echo "SAM checkpoint already present and hash-verified, skipping download."
+            else
+              echo "Existing SAM checkpoint hash mismatch - re-downloading."
+              rm -f "$dest"
+            fi
+          fi
+          if [ ! -f "$dest" ]; then
+            curl -L -o "$dest" "$SAM_URL"
+          fi
+          actual=$(shasum -a 256 "$dest" | awk '{print $1}')
+          if [ "$actual" != "$SAM_SHA256" ]; then
+            echo "ERROR: SAM checkpoint SHA-256 mismatch. Expected $SAM_SHA256, got $actual. Aborting build." >&2
+            rm -f "$dest"
             exit 1
           fi
+          echo "SAM checkpoint SHA-256 verified: $actual"
 
       - name: Generate icon
         run: |
