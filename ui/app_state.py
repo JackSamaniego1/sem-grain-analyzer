@@ -10,6 +10,7 @@ signals, never directly.
 from __future__ import annotations
 
 import itertools
+from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +38,12 @@ from ui.workers import read_image, run_task, serial_pool, snapshot_result, thumb
 
 _uid_counter = itertools.count(1)
 _seq_counter = itertools.count(1)
+
+# Full-resolution pixels are kept only for the current image plus a small
+# LRU (whichever limit is hit first); everything else is re-read from disk
+# on demand, off the GUI thread.  Thumbnails and results stay in memory.
+PIXEL_CACHE_MAX_IMAGES = 6
+PIXEL_CACHE_MAX_BYTES = 500 * 1024 * 1024
 
 KIND_ORDER = ("workspace", "project", "sample", "lot", "session")
 META_FILES = {"project": "project.json", "sample": "sample.json",
@@ -187,6 +194,10 @@ class ImageDoc:
     scale_source: str = ""
     bar_px: float = 0.0
     bar_um: float = 0.0
+    # pixel cache: ``image_bgr`` is None while evicted; ``readable`` /
+    # ``shape`` (h, w) stay known without holding the pixels
+    shape: Optional[tuple] = None
+    readable: bool = False
     uid: int = field(default_factory=lambda: next(_uid_counter))
     seq: int = field(default_factory=lambda: next(_seq_counter))
 
@@ -334,7 +345,7 @@ def _derive_excluded(res, bgr, manual, opts, params) -> Dict[int, List[str]]:
 
 
 def _image_dict(si, bgr, legacy: Optional[dict] = None, opts: Optional[PostFilterOptions] = None,
-                params: Optional[DetectionParams] = None) -> dict:
+                params: Optional[DetectionParams] = None, keep: bool = True) -> dict:
     """Worker-thread: rebuild raw + filtered results for one saved image.
 
     Filter state comes from the manifest's first-class fields (DATA-09):
@@ -362,14 +373,17 @@ def _image_dict(si, bgr, legacy: Optional[dict] = None, opts: Optional[PostFilte
     edits = [dict(op) for op in (getattr(entry, "grain_edits", None) or [])
              if isinstance(op, dict)]
     base = getattr(si.result, "detector_label_image", None) if edits else None
-    return dict(filename=si.filename, path=si.path, bgr=bgr, result=res, raw=raw,
+    return dict(filename=si.filename, path=si.path, bgr=bgr if keep else None,
+                readable=bgr is not None,
+                shape=tuple(bgr.shape[:2]) if bgr is not None else None,
+                result=res, raw=raw,
                 excluded=excluded, manual=manual, override=override,
                 edits=edits, detector_labels=base,
                 thumb=thumb_qimage(bgr), scan_rect=entry.scan_rect,
                 px=float(entry.px_per_um or 0.0), notes=entry.notes)
 
 
-def _load_session_bundle(path: Path) -> dict:
+def _load_session_bundle(path: Path, keep_n: int = PIXEL_CACHE_MAX_IMAGES) -> dict:
     """Worker-thread: read manifest, every image, every saved result.
 
     A lot used as the record (images stored in the lot) that has no
@@ -384,13 +398,21 @@ def _load_session_bundle(path: Path) -> dict:
                                if k != "post_filters"})
     opts = options_from_dict(m.filters) if m.filters else default_options(m.scan_rect)
     out = []
-    for si in ls.images:
+    for i, si in enumerate(ls.images):
         bgr = read_image(si.path) if si.path.exists() else None
-        out.append(_image_dict(si, bgr, legacy.get(si.filename), opts, params))
+        out.append(_image_dict(si, bgr, legacy.get(si.filename), opts, params,
+                               keep=i < keep_n))
+        bgr = None                   # only the first ``keep_n`` travel back
     return dict(loaded=ls, images=out, filters=dict(m.filters or {}))
 
 
-def _load_new_images(session_path: Path, known: set) -> List[dict]:
+def _load_record_bundle(path: Path) -> dict:
+    """UX-09 streaming load: no pixels are kept (loaded on demand)."""
+    return _load_session_bundle(path, keep_n=0)
+
+
+def _load_new_images(session_path: Path, known: set,
+                     keep_n: int = PIXEL_CACHE_MAX_IMAGES) -> List[dict]:
     """Worker-thread: images present in the manifest but not yet in memory."""
     ls = load_session(session_path)
     out = []
@@ -398,8 +420,22 @@ def _load_new_images(session_path: Path, known: set) -> List[dict]:
         if si.filename in known:
             continue
         bgr = read_image(si.path) if si.path.exists() else None
-        out.append(_image_dict(si, bgr))
+        out.append(_image_dict(si, bgr, keep=len(out) < keep_n))
+        bgr = None
     return out
+
+
+def _read_pixels(path) -> Optional[np.ndarray]:
+    """Worker-thread: full-resolution pixels of one image file."""
+    return read_image(path) if path and Path(path).exists() else None
+
+
+def _filter_task(raw, image_bgr, path, opts, manual, params) -> dict:
+    """Worker-thread: grain filters; reads the pixels itself when they are
+    not in the pixel cache (released again when the task ends)."""
+    if image_bgr is None:
+        image_bgr = _read_pixels(path)
+    return filter_image(raw, image_bgr, opts, manual, params)
 
 
 def _persist(session_path: Path, root: Path, entries: List[ImageEntry],
@@ -503,9 +539,13 @@ def setup_probe(image_bgr, path=None, want_meta: bool = True) -> dict:
     needs for one image -- the SEM info bar (-> scan area), the scale-bar
     line inside it (length in px) and the pixel size stored in the file by
     the microscope (-> scale).  Local only; nothing leaves the PC."""
-    out: Dict[str, Any] = {"info": {}, "bar_px": 0.0, "cal": None, "meta": None}
+    out: Dict[str, Any] = {"info": {}, "bar_px": 0.0, "cal": None, "meta": None,
+                           "shape": None}
+    if image_bgr is None:
+        image_bgr = _read_pixels(path)
     if image_bgr is None:
         return out
+    out["shape"] = tuple(image_bgr.shape[:2])
     try:
         from core.infobar import detect_info_bar
         from core.scale_bar import find_scale_bar_line
@@ -545,9 +585,11 @@ def _add_images_worker(session_path: Path, root: Path, paths: List[str], known: 
     return _load_new_images(session_path, known)
 
 
-def detect_info_bar_dict(image_bgr) -> dict:
+def detect_info_bar_dict(image_bgr, path=None) -> dict:
     """Worker-thread (DET-05): the SEM data bar of a full frame, or {}."""
     from core.infobar import detect_info_bar
+    if image_bgr is None:
+        image_bgr = _read_pixels(path)
     if image_bgr is None:
         return {}
     try:
@@ -769,6 +811,12 @@ class AppState(QObject):
         self._records_pending = 0
         self._setup_pending: set = set()
         self._setup_stats: dict = {}
+        self._px_lru: "OrderedDict[object, int]" = OrderedDict()   # uid -> bytes
+        self._px_pins: Dict[object, int] = {}
+        self._px_waiting: Dict[object, list] = {}
+        self.pixel_cache_max_images = PIXEL_CACHE_MAX_IMAGES
+        self.pixel_cache_max_bytes = PIXEL_CACHE_MAX_BYTES
+        self.pixel_peak = 0              # most images ever held at once (tests)
 
     # ------------------------------------------------------------------ settings
     def save_settings(self) -> None:
@@ -944,7 +992,14 @@ class AppState(QObject):
             ov = rec.filters
         im = into if into is not None else ImageDoc(filename=d["filename"])
         im.filename = d["filename"]
-        im.path, im.image_bgr, im.thumb = d.get("path"), d.get("bgr"), d.get("thumb")
+        im.path, im.thumb = d.get("path"), d.get("thumb")
+        im.readable = bool(d.get("readable", d.get("bgr") is not None))
+        im.shape = d.get("shape") or (tuple(d["bgr"].shape[:2])
+                                      if d.get("bgr") is not None else None)
+        im.image_bgr = None
+        self._px_lru.pop(im.uid, None)
+        if d.get("bgr") is not None:
+            self.hold_pixels(im, d["bgr"])
         im.result, im.raw = res, d.get("raw") or res
         im.excluded, im.counts = excluded, _counts_from(excluded)
         im.manual = set(d.get("manual") or [])
@@ -958,7 +1013,7 @@ class AppState(QObject):
         im.progress, im.message = 0, ""
         im.record = rec
         im.loading = False
-        if im.image_bgr is None:
+        if not im.readable:
             im.status, im.message = "error", "Image file is missing or unreadable"
         if im.scan_rect is not None and im.scan_rect == doc.scan_rect:
             im.scan_rect = None
@@ -1044,7 +1099,7 @@ class AppState(QObject):
         self.filters_changed.emit()
         self.records_loading.emit(0, len(doc.records))
         for rec in doc.records:
-            run_task(_load_session_bundle, rec.path,
+            run_task(_load_record_bundle, rec.path,
                      on_done=lambda b, r=rec: self._fill_record(doc, r, b),
                      on_error=lambda msg, r=rec: self._record_failed(doc, r, msg))
 
@@ -1259,7 +1314,7 @@ class AppState(QObject):
         """Detect the data bar of a not-yet-analysed image off-thread."""
         doc = self.session
         im = doc.image(uid) if doc is not None else None
-        if im is None or im.info_bar is not None or im.image_bgr is None:
+        if im is None or im.info_bar is not None or not im.readable:
             return
         im.info_bar = {}          # probing; never probe twice
 
@@ -1269,7 +1324,7 @@ class AppState(QObject):
             im.info_bar = d or {}
             self.info_bar_ready.emit(im.uid)
 
-        run_task(detect_info_bar_dict, im.image_bgr, on_done=done)
+        run_task(detect_info_bar_dict, im.image_bgr, im.path, on_done=done)
 
     def use_info_bar_as_scan_area(self, uid, this_image: bool = False) -> Optional[tuple]:
         """Scan area = the micrograph without its data bar.  Returns the
@@ -1291,7 +1346,7 @@ class AppState(QObject):
             return ["missing"]
         if im.loading:
             return ["loading"]
-        if im.image_bgr is None:
+        if not im.readable:
             return ["missing"]
         out = []
         if self.scan_for(im) is None:
@@ -1318,7 +1373,7 @@ class AppState(QObject):
             return 0
         wanted = None if uids is None else set(uids)
         targets = [im for im in doc.images if (wanted is None or im.uid in wanted)
-                   and not im.loading and im.image_bgr is not None
+                   and not im.loading and im.readable
                    and im.uid not in self._setup_pending]
         if not targets:
             return 0
@@ -1356,7 +1411,9 @@ class AppState(QObject):
         self._setup_pending.discard(im.uid)
         st = self._setup_stats
         st["done"] += 1
-        if im.image_bgr is not None:
+        if out.get("shape") and not im.shape:
+            im.shape = tuple(out["shape"])
+        if im.readable and im.shape:
             info = out.get("info") or {}
             if info or im.info_bar is None:
                 im.info_bar = info
@@ -1370,7 +1427,7 @@ class AppState(QObject):
                     im.scan_rect = tuple(int(v) for v in ar)
                     st["info_bar"] += 1
                 else:
-                    h, w = im.image_bgr.shape[:2]
+                    h, w = im.shape[:2]
                     im.scan_rect = (0, 0, int(w), int(h))
                     st["full_frame"] += 1
                 im.scan_source = "auto"
@@ -1484,8 +1541,8 @@ class AppState(QObject):
                                                for o in doc.images]
         rect = tuple(int(v) for v in rect) if rect else None
         for o in doc.images:
-            if rect is None and o.image_bgr is not None:
-                h, w = o.image_bgr.shape[:2]
+            if rect is None and o.shape:
+                h, w = o.shape[:2]
                 o.scan_rect = (0, 0, int(w), int(h))
             else:
                 o.scan_rect = None
@@ -1541,6 +1598,8 @@ class AppState(QObject):
         if uid == self.current_uid:
             return
         self.current_uid = uid
+        self.touch_pixels(self.current_image())
+        self._evict_pixels()
         self.current_image_changed.emit(uid)
 
     # ------------------------------------------------------------------ INN-29 / FIX-08
@@ -1771,8 +1830,8 @@ class AppState(QObject):
                     self.image_updated.emit(uid)
             self.message.emit("Grain filters failed", msg.splitlines()[0], "danger")
 
-        run_task(filter_image, im.raw, im.image_bgr, opts, frozenset(im.manual), params,
-                 on_done=done, on_error=failed)
+        run_task(_filter_task, im.raw, im.image_bgr, im.path, opts, frozenset(im.manual),
+                 params, on_done=done, on_error=failed)
 
     def _run_final_filters(self) -> None:
         for uid in list(self._final_pending):
@@ -1806,7 +1865,7 @@ class AppState(QObject):
         if im is None or im.raw is None or im.raw.label_image is None:
             raise GrainEditError("Analyse this image before editing its grains.")
         lab = im.raw.label_image
-        shape = im.image_bgr.shape[:2] if im.image_bgr is not None else lab.shape[:2]
+        shape = tuple(im.shape[:2]) if im.shape else lab.shape[:2]
         off = label_offset(lab.shape, shape, getattr(im.raw, "auto_crop_rect", None))
         return im, off
 
@@ -1847,7 +1906,94 @@ class AppState(QObject):
 
     @staticmethod
     def _frame_shape(im: ImageDoc):
-        return im.image_bgr.shape[:2] if im.image_bgr is not None else None
+        return tuple(im.shape[:2]) if im.shape else None
+
+    # ------------------------------------------------------------------ pixel cache
+    def _image_any(self, uid) -> Optional[ImageDoc]:
+        doc = self.session
+        if doc is None:
+            return None
+        return doc.image(uid) or next((im for im in doc.removed if im.uid == uid), None)
+
+    def hold_pixels(self, im: ImageDoc, arr) -> None:
+        """Keep ``arr`` as ``im``'s full-resolution pixels (most recently
+        used), evicting the least recently used images over the limits."""
+        if arr is None:
+            return
+        im.image_bgr = arr
+        im.readable = True
+        im.shape = tuple(arr.shape[:2])
+        self._px_lru[im.uid] = int(getattr(arr, "nbytes", 0))
+        self._px_lru.move_to_end(im.uid)
+        self._evict_pixels()
+
+    def touch_pixels(self, im: Optional[ImageDoc]) -> None:
+        if im is not None and im.uid in self._px_lru:
+            self._px_lru.move_to_end(im.uid)
+
+    def pin_pixels(self, uid, on: bool = True) -> None:
+        """Keep an image's pixels while something uses them."""
+        n = self._px_pins.get(uid, 0) + (1 if on else -1)
+        if n > 0:
+            self._px_pins[uid] = n
+        else:
+            self._px_pins.pop(uid, None)
+            self._evict_pixels()
+
+    def held_pixel_count(self) -> int:
+        return len(self._px_lru)
+
+    def _evict_pixels(self) -> None:
+        lru = self._px_lru
+        while len(lru) > self.pixel_cache_max_images or \
+                sum(lru.values()) > self.pixel_cache_max_bytes:
+            victim = next((u for u in lru if u != self.current_uid
+                           and u not in self._px_pins), None)
+            if victim is None:
+                break
+            del lru[victim]
+            im = self._image_any(victim)
+            if im is not None:
+                im.image_bgr = None
+        self.pixel_peak = max(self.pixel_peak, len(lru))
+
+    def request_pixels(self, uid, callback=None) -> bool:
+        """Full-resolution pixels of image ``uid``: ``callback(array)`` at
+        once when cached (returns True), else after an off-thread read
+        (returns False).  ``callback`` gets None when unreadable."""
+        im = self._image_any(uid)
+        if im is None:
+            if callback:
+                callback(None)
+            return True
+        if im.image_bgr is not None:
+            self.touch_pixels(im)
+            if callback:
+                callback(im.image_bgr)
+            return True
+        waiting = self._px_waiting.get(uid)
+        if waiting is not None:
+            if callback:
+                waiting.append(callback)
+            return False
+        self._px_waiting[uid] = [callback] if callback else []
+        doc = self.session
+
+        def done(arr, im=im):
+            cbs = self._px_waiting.pop(uid, [])
+            if self.session is not doc:
+                return
+            if arr is not None:
+                self.hold_pixels(im, arr)
+            for cb in cbs:
+                try:
+                    cb(arr)
+                except RuntimeError:
+                    pass
+
+        run_task(_read_pixels, im.path, on_done=done,
+                 on_error=lambda _m: done(None))
+        return False
 
     def _geometry_changed(self, doc: ImageDoc) -> None:
         # Not marked dirty here: the refilter pass below saves labels, grains

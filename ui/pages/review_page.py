@@ -464,7 +464,15 @@ class ReviewPage(QWidget):
             self.canvas.set_image(None)
             self._show_stats(None)
             return
-        self.canvas.set_image(im.image_bgr, im.result, raw=im.raw, excluded=im.excluded)
+        if im.image_bgr is None and im.readable:
+            # evicted from the pixel cache: read it off the GUI thread
+            self.canvas.set_image(None)
+            self.state.request_pixels(
+                im.uid, lambda arr, u=uid: arr is not None
+                and self.state.current_uid == u and self._on_current(u))
+        else:
+            self.state.touch_pixels(im)
+            self.canvas.set_image(im.image_bgr, im.result, raw=im.raw, excluded=im.excluded)
         self.canvas.set_scan_rect(self.state.scan_for(im))
         self.canvas.set_view(VIEW_KEYS[self.view_seg.current_index()]
                              if im.result is not None else "original")

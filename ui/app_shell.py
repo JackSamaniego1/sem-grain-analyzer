@@ -622,19 +622,31 @@ class AppShell(QMainWindow):
 
     def _need_image(self):
         im = self.state.current_image()
-        if im is None or im.image_bgr is None:
+        if im is None or not im.readable:
             self.toasts.show_toast("No image selected", "Open a session and select an image first.",
                                    "info")
             return None
         return im
 
-    def open_calibration(self) -> None:
+    def _with_pixels(self, fn) -> None:
+        """Run ``fn(im, pixels)`` for the current image once its full-size
+        pixels are in memory (read off the GUI thread when evicted)."""
         im = self._need_image()
         if im is None:
             return
+
+        def go(arr, im=im):
+            if arr is not None and self.state.current_image() is im:
+                fn(im, arr)
+        self.state.request_pixels(im.uid, go)
+
+    def open_calibration(self) -> None:
+        self._with_pixels(self._open_calibration)
+
+    def _open_calibration(self, im, pixels) -> None:
         from ui.calibration_dialog import CalibrationDialog, suggest_bar_length_um
-        dlg = CalibrationDialog(image_bgr=im.image_bgr, parent=self)
-        bar = self._find_scale_bar(im)
+        dlg = CalibrationDialog(image_bgr=pixels, parent=self)
+        bar = self._find_scale_bar(pixels)
         if bar:
             sug = im.cal_suggestion
             length = suggest_bar_length_um(bar.get("length_px", 0), float(sug[0])) \
@@ -664,13 +676,13 @@ class AppShell(QMainWindow):
         dlg.exec()
 
     @staticmethod
-    def _find_scale_bar(im) -> Optional[dict]:
+    def _find_scale_bar(pixels) -> Optional[dict]:
         """Scale-bar line inside the detected SEM info bar (DET-05)."""
-        if im is None or im.image_bgr is None:
+        if pixels is None:
             return None
         try:
             from core.scale_bar import find_scale_bar_line
-            return find_scale_bar_line(im.image_bgr)
+            return find_scale_bar_line(pixels)
         except Exception:
             return None
 
@@ -724,15 +736,15 @@ class AppShell(QMainWindow):
                 "info", "Use it", use, timeout_ms=9000)
 
     def open_scan_area(self) -> None:
-        im = self._need_image()
-        if im is None:
-            return
+        self._with_pixels(self._open_scan_area)
+
+    def _open_scan_area(self, im, pixels) -> None:
         from ui.scan_area_dialog import ScanAreaDialog
-        dlg = ScanAreaDialog(image_bgr=im.image_bgr, current_rect=self.state.scan_for(im), parent=self)
+        dlg = ScanAreaDialog(image_bgr=pixels, current_rect=self.state.scan_for(im), parent=self)
         this_only = self.analyze.scan_this.isChecked()
 
         def apply(x, y, w, h):
-            H, W = im.image_bgr.shape[:2]
+            H, W = pixels.shape[:2]
             full = w >= W and h >= H
             # session: full frame = no scan area; this image only: an explicit
             # full-frame override (a reset to the session's area is a button)

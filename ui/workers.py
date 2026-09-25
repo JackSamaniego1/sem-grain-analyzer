@@ -260,10 +260,11 @@ class AnalysisWorker(QObject):
 
     def __init__(self, image_bgr, px_per_um, params, scan_rect=None,
                  discard_border: bool = False, draw_overlay: bool = True,
-                 cancel=None):
+                 cancel=None, path=None):
         super().__init__()
         self.cancel = cancel
         self.image_bgr = image_bgr
+        self.path = path            # read here (worker thread) when no pixels given
         self.px_per_um = px_per_um
         self.params = params
         self.scan_rect = scan_rect
@@ -273,6 +274,10 @@ class AnalysisWorker(QObject):
     @Slot()
     def run(self):
         try:
+            if self.image_bgr is None and self.path is not None:
+                self.image_bgr = read_image(self.path)
+                if self.image_bgr is None:
+                    raise IOError(f"Cannot read image: {self.path}")
             result = analyze_image(self.image_bgr, self.px_per_um, self.params,
                                    self.scan_rect, self.progress.emit,
                                    discard_border=self.discard_border,
@@ -283,15 +288,20 @@ class AnalysisWorker(QObject):
             self.cancelled.emit()
         except Exception as e:  # pragma: no cover - surfaced to the UI
             self.error.emit(f"{type(e).__name__}: {e}\n{traceback.format_exc()}")
+        finally:
+            self.image_bgr = None   # release the full-resolution pixels at once
 
 
 @dataclass
 class AnalysisJob:
+    """``image_bgr`` may be None: the worker then reads ``path`` itself (the
+    pixels are held only while that image is being analysed)."""
     uid: Any
-    image_bgr: np.ndarray
+    image_bgr: Optional[np.ndarray]
     px_per_um: float
     params: DetectionParams
     scan_rect: Optional[tuple] = None
+    path: Optional[Any] = None
 
 
 class AnalysisQueue(QObject):
@@ -371,7 +381,8 @@ class AnalysisQueue(QObject):
         self.job_started.emit(job.uid)
         th = QThread()
         wk = AnalysisWorker(job.image_bgr, job.px_per_um, job.params, job.scan_rect,
-                            draw_overlay=False, cancel=self._cancel_event)
+                            draw_overlay=False, cancel=self._cancel_event, path=job.path)
+        job.image_bgr = None
         wk.moveToThread(th)
         th.started.connect(wk.run)
         wk.progress.connect(self._on_progress)

@@ -23,11 +23,20 @@ from ui import hierarchy_ui as hui
 from ui.design.tokens import SPACE
 from ui.format import astm_g, fmt_int
 from ui.pages.image_tree import image_status
-from ui.widgets import label
+from ui.widgets import AnimatedButton, label
 
 GROUP_LEVELS = ("", "project", "sample", "lot")      # "" = everything together
 COL_IMAGE, COL_PROJECT, COL_SAMPLE, COL_LOT, COL_STATUS, COL_SCAN, COL_SCALE, \
     COL_GRAINS, COL_DIAM, COL_G = range(10)
+# default look: results first, then status and set-up details
+VISUAL_ORDER = (COL_IMAGE, COL_PROJECT, COL_SAMPLE, COL_LOT, COL_GRAINS, COL_DIAM, COL_G,
+                COL_STATUS, COL_SCALE, COL_SCAN)
+DEFAULT_WIDTHS = {COL_IMAGE: 140, COL_PROJECT: 80, COL_SAMPLE: 90, COL_LOT: 65,
+                  COL_GRAINS: 55, COL_DIAM: 95, COL_G: 55, COL_STATUS: 90, COL_SCALE: 55,
+                  COL_SCAN: 90}
+# Job / Part columns hide themselves while every row has the same value
+# (it is in the title and the image tree) unless the user shows them
+AUTO_COLS = (COL_PROJECT, COL_SAMPLE)
 SORT_ROLE = Qt.UserRole + 20
 UID_ROLE = Qt.UserRole + 21
 
@@ -100,6 +109,12 @@ class ResultsTable(QWidget):
         self.actions = QHBoxLayout()
         self.actions.setSpacing(SPACE.sm)
         bar.addLayout(self.actions)
+        self.columns_btn = AnimatedButton("Columns", "mdi6.table-column", "ghost", "sm")
+        self.columns_btn.setToolTip("Show or hide columns (also: right-click a column header)")
+        self.columns_btn.clicked.connect(
+            lambda: self._columns_menu(self.columns_btn.mapToGlobal(
+                self.columns_btn.rect().bottomLeft())))
+        bar.addWidget(self.columns_btn)
         v.addLayout(bar)
         self.tree = QTreeWidget()
         self.tree.setAlternatingRowColors(True)
@@ -110,8 +125,19 @@ class ResultsTable(QWidget):
         self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.tree.itemDoubleClicked.connect(self._on_double)
         self.tree.setToolTip("Click a column header to sort; double-click an image to open it")
+        hdr = self.tree.header()
+        hdr.setContextMenuPolicy(Qt.CustomContextMenu)
+        hdr.customContextMenuRequested.connect(lambda pos: self._columns_menu(
+            hdr.mapToGlobal(pos)))
+        hdr.setSectionsMovable(True)
         v.addWidget(self.tree, 1)
         self.relabel()
+        # results first, setup details last; the last column fills the rest
+        for vis, col in enumerate(VISUAL_ORDER):
+            hdr.moveSection(hdr.visualIndex(col), vis)
+        for col, w in DEFAULT_WIDTHS.items():
+            hdr.resizeSection(col, w)
+        self._apply_hidden()
 
     # ------------------------------------------------------------------ labels
     def relabel(self) -> None:
@@ -121,8 +147,9 @@ class ResultsTable(QWidget):
                  "µm/px", "Grains", "Mean diam. (µm)", "ASTM G"]
         self.tree.setHeaderLabels(heads)
         hdr = self.tree.header()
-        hdr.setStretchLastSection(False)
-        hdr.setSectionResizeMode(QHeaderView.ResizeToContents)
+        hdr.setStretchLastSection(True)
+        hdr.setSectionResizeMode(QHeaderView.Interactive)
+        hdr.setMinimumSectionSize(48)
         cur = self.group.currentIndex()
         self.group.blockSignals(True)
         self.group.clear()
@@ -131,6 +158,47 @@ class ResultsTable(QWidget):
             self.group.addItem(L(k), k)
         self.group.setCurrentIndex(cur if cur >= 0 else 3)
         self.group.blockSignals(False)
+
+    # ------------------------------------------------------------------ columns
+    def _ui_list(self, key: str) -> List[int]:
+        v = self.state.ui_state.get(key)
+        return [int(c) for c in v] if isinstance(v, list) else []
+
+    def _apply_hidden(self, rows: Optional[List[dict]] = None) -> None:
+        hidden = set(self._ui_list("results_table_hidden"))
+        shown = set(self._ui_list("results_table_shown"))
+        if rows is not None:
+            self._redundant = {c for c, k in ((COL_PROJECT, "project"), (COL_SAMPLE, "sample"))
+                               if len({r[k] for r in rows}) <= 1}
+        for c in range(self.tree.columnCount()):
+            auto = c in getattr(self, "_redundant", set(AUTO_COLS)) and c not in shown
+            self.tree.setColumnHidden(c, c != COL_IMAGE and (c in hidden or auto))
+
+    def set_column_visible(self, col: int, on: bool) -> None:
+        """Show / hide a column (remembered in the local ui_state)."""
+        if col == COL_IMAGE:
+            return                          # the image name always shows
+        hidden = set(self._ui_list("results_table_hidden"))
+        shown = set(self._ui_list("results_table_shown"))
+        (shown.add if on else shown.discard)(col)
+        (hidden.discard if on else hidden.add)(col)
+        self.state.ui_state["results_table_hidden"] = sorted(hidden)
+        self.state.ui_state["results_table_shown"] = sorted(shown)
+        self.state.persist_ui_state()
+        self._apply_hidden()
+
+    def _columns_menu(self, gpos) -> None:
+        from PySide6.QtWidgets import QMenu
+        m = QMenu(self)
+        hdr = self.tree.header()
+        for vis in range(hdr.count()):
+            col = hdr.logicalIndex(vis)
+            a = m.addAction(self.tree.headerItem().text(col))
+            a.setCheckable(True)
+            a.setChecked(not self.tree.isColumnHidden(col))
+            a.setEnabled(col != COL_IMAGE)
+            a.toggled.connect(lambda on, c=col: self.set_column_visible(c, on))
+        m.exec(gpos)
 
     def set_group_level(self, level: str) -> None:
         i = self.group.findData(level)
@@ -208,6 +276,7 @@ class ResultsTable(QWidget):
         for key, g in groups.items():
             self._fill_group(g, f"{L} {key}", members[key], level)
         self.tree.expandAll()
+        self._apply_hidden(rows)
         self.tree.setSortingEnabled(True)
         self.tree.sortItems(sort_col if sort_col >= 0 else COL_IMAGE, order)
         done = sum(1 for r in rows if r["grains"] is not None)

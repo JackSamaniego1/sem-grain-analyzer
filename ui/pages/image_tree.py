@@ -450,7 +450,7 @@ class ImageTree(ThemeAware, QWidget):
             err=sum(1 for im in ims if im.status == "error"),
             running=any(im.status in ("running", "queued") and not im.loading for im in ims),
             loading=sum(1 for im in ims if im.loading),
-            no_scale=sum(1 for im in ims if not im.loading and im.image_bgr is not None
+            no_scale=sum(1 for im in ims if not im.loading and im.readable
                          and self.state.px_for(im) <= 0))
 
     def _refresh_group(self, g: QTreeWidgetItem) -> None:

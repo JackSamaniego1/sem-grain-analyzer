@@ -395,7 +395,7 @@ class SetupTile(Card):
 
     def refresh(self, state, im) -> None:
         """Show the readiness of every image and the current image's values."""
-        imgs = [x for x in state.images() if not x.loading and x.image_bgr is not None]
+        imgs = [x for x in state.images() if not x.loading and x.readable]
         n = len(imgs)
         ready = sum(1 for x in imgs if state.setup_ready(x))
         loading = sum(1 for x in state.images() if x.loading)
@@ -420,7 +420,7 @@ class SetupTile(Card):
             self._set_src(self.scale_src, "")
             self.bar_row.hide()
             return
-        if im.loading or im.image_bgr is None:
+        if im.loading or not im.readable or not im.shape:
             self.scan_val.setText("Loading…" if im.loading else "Image not readable")
             self.scale_val.setText("—")
             self._set_src(self.scan_src, "")
@@ -429,7 +429,7 @@ class SetupTile(Card):
             return
         # scan area
         rect = state.scan_for(im)
-        H, W = im.image_bgr.shape[:2]
+        H, W = im.shape[:2]
         if rect is None:
             self.scan_val.setText("Not set — run Auto-find or Edit")
             self.scan_val.setProperty("tone", "warning")
@@ -878,7 +878,17 @@ class AnalyzePage(QWidget):
             self.img_sub.setText("")
             self.filters_host.reveal(False)
             return
-        self.canvas.set_image(im.image_bgr, im.result, raw=im.raw, excluded=im.excluded)
+        if im.image_bgr is None and im.readable:
+            # evicted from the pixel cache: read it off the GUI thread
+            self.canvas.set_placeholder("Loading image…")
+            self.canvas.set_image(None)
+            self.state.request_pixels(
+                im.uid, lambda arr, uid=uid: arr is not None
+                and self.state.current_uid == uid and self._on_current(uid))
+        else:
+            self.canvas.set_placeholder("Select an image in the list")
+            self.state.touch_pixels(im)
+            self.canvas.set_image(im.image_bgr, im.result, raw=im.raw, excluded=im.excluded)
         self.canvas.set_view("overlay" if im.result is not None else "original")
         self.canvas.set_scan_rect(self.state.scan_for(im))
         self._update_title(im)
@@ -1051,8 +1061,8 @@ class AnalyzePage(QWidget):
                                                      ids.get("lot")) if x))
         if im.loading:
             parts.append("Loading…")
-        elif im.image_bgr is not None:
-            h, w = im.image_bgr.shape[:2]
+        elif im.shape:
+            h, w = im.shape[:2]
             parts.append(f"{w} × {h} px")
         if im.result is not None:
             parts.append(f"{fmt_int(im.result.grain_count)} grains")
@@ -1170,8 +1180,8 @@ class AnalyzePage(QWidget):
 
     def _clear_scan(self) -> None:
         im = self.state.current_image()
-        if im is not None and self.scan_this.isChecked() and im.image_bgr is not None:
-            h, w = im.image_bgr.shape[:2]
+        if im is not None and self.scan_this.isChecked() and im.shape:
+            h, w = im.shape[:2]
             self.state.set_scan_rect((0, 0, w, h), im.uid)   # this image: whole frame
         else:
             snap = self.state.set_scan_rect_all(None)        # every image: its whole frame
@@ -1216,7 +1226,7 @@ class AnalyzePage(QWidget):
         self._refresh_info_bar()
         n = int(st.get("total", 0))
         need = [im for im in self.state.images() if not self.state.setup_ready(im)
-                and not im.loading and im.image_bgr is not None]
+                and not im.loading and im.readable]
         parts = []
         if st.get("info_bar"):
             parts.append(f"info bar left out on {st['info_bar']}")
@@ -1323,12 +1333,12 @@ class AnalyzePage(QWidget):
         return self.queue.is_running()
 
     def analyze_all(self) -> None:
-        imgs = [im for im in self.state.images() if im.image_bgr is not None or im.loading]
+        imgs = [im for im in self.state.images() if im.readable or im.loading]
         self._start(imgs, self.btn_all)
 
     def analyze_current(self) -> None:
         im = self.state.current_image()
-        if im is not None and (im.image_bgr is not None or im.loading):
+        if im is not None and (im.readable or im.loading):
             self._start([im], self.btn_cur)
 
     def _start(self, images, button: Optional[AnimatedButton] = None) -> None:
@@ -1345,8 +1355,10 @@ class AnalyzePage(QWidget):
         self.state.set_params(params)
         jobs = []
         for im in images:
-            jobs.append(AnalysisJob(im.uid, im.image_bgr, self.state.px_for(im), params,
-                                    self.state.scan_for(im)))
+            # the queue reads each image's pixels itself and drops them after
+            jobs.append(AnalysisJob(im.uid, None if im.path else im.image_bgr,
+                                    self.state.px_for(im), params, self.state.scan_for(im),
+                                    path=im.path))
             self.state.set_image_status(im.uid, "queued")
         self._batch_total = len(jobs)
         self._batch_uids = [j.uid for j in jobs]

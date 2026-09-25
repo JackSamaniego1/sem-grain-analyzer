@@ -360,7 +360,9 @@ def test_ux09_two_hundred_images_load_without_freezing(env, qtbot):
     assert len(st.images()) == 200                          # every image listed at once
     qtbot.waitUntil(lambda: not st.is_loading(), timeout=TIMEOUT)
     timer.stop()
-    assert all(not im.loading and im.image_bgr is not None for im in st.images())
+    assert all(not im.loading and im.readable and im.thumb is not None for im in st.images())
+    from ui.app_state import PIXEL_CACHE_MAX_IMAGES
+    assert st.held_pixel_count() <= PIXEL_CACHE_MAX_IMAGES   # pixels only on demand
     tree = shell.analyze.film
     assert len([u for u in (im.uid for im in st.images()) if tree.item(u) is not None]) == 200
     gaps = [b - a for a, b in zip(ticks, ticks[1:])]
@@ -397,3 +399,91 @@ def test_ux11_shell_chip_text(env, qtbot):
     assert shell.chip_device.text() == "AI runs on: CPU"
     assert "processor" in shell.chip_device.toolTip()
     shell.close()
+
+
+# ====================================================================== memory bound
+def test_pixel_memory_bounded_200_images_analysed(env, qtbot, monkeypatch):
+    """200 images loaded and analysed: full-resolution pixels are held for
+    at most PIXEL_CACHE_MAX_IMAGES images at once (current + small LRU);
+    the analysis queue reads each image itself and releases it after."""
+    import weakref
+    from PySide6.QtCore import QThreadPool, QTimer
+    import ui.app_state as app_state
+    import ui.workers as workers
+    refs = []
+    real = workers.read_image
+
+    def tracked(path):
+        arr = real(path)
+        if arr is not None:
+            refs.append(weakref.ref(arr))
+        return arr
+    monkeypatch.setattr(workers, "read_image", tracked)
+    monkeypatch.setattr(app_state, "read_image", tracked)
+    peak = [0]
+
+    def sample():
+        refs[:] = [r for r in refs if r() is not None]
+        peak[0] = max(peak[0], len(refs))
+    timer = QTimer()
+    timer.setInterval(15)
+    timer.timeout.connect(sample)
+    timer.start()
+
+    sample_dir = _lots(env, 4, 50, sample="Mem")
+    shell = _shell(qtbot)
+    st, a = shell.state, shell.analyze
+    shell.load_into_analyzer([sample_dir])
+    qtbot.waitUntil(lambda: st.session is not None and not st.is_loading(), timeout=TIMEOUT)
+    assert len(st.images()) == 200
+    a.params.set_mode("threshold")
+    confirm_setup(shell, qtbot)
+    for im in st.images()[::37]:                            # browse around a little
+        st.set_current_image(im.uid)
+        qtbot.wait(20)
+    with qtbot.waitSignal(a.queue.queue_finished, timeout=600000):
+        a.btn_all.click()
+    qtbot.waitUntil(lambda: all(im.result is not None for im in st.images())
+                    and not st.is_filtering(), timeout=TIMEOUT)
+    st.flush()
+    timer.stop()
+    sample()
+    cap = app_state.PIXEL_CACHE_MAX_IMAGES
+    held = sum(1 for im in st.images() if im.image_bgr is not None)
+    assert held <= cap and st.held_pixel_count() <= cap
+    assert st.pixel_peak <= cap                              # cache never held more
+    # arrays alive anywhere (cache + images being read/analysed right now)
+    in_flight = QThreadPool.globalInstance().maxThreadCount() + 1
+    assert peak[0] <= cap + in_flight, (peak[0], cap, in_flight)
+    # an evicted image comes back from disk when it is shown again
+    far = next(im for im in st.images() if im.image_bgr is None)
+    st.set_current_image(far.uid)
+    qtbot.waitUntil(lambda: far.image_bgr is not None and a.canvas.has_image(), timeout=10000)
+    shell.close()
+
+
+def test_results_table_columns_widths_and_hiding(env, qtbot):
+    from ui.pages.results_table import COL_G, COL_IMAGE, COL_SCAN
+    shell = _open(qtbot, make_session(env, 2))
+    t = shell.analyze.table
+    hdr = t.tree.header()
+    assert hdr.stretchLastSection()
+    assert hdr.logicalIndex(hdr.count() - 1) == COL_SCAN        # details last
+    assert hdr.visualIndex(COL_G) < hdr.visualIndex(COL_SCAN)   # results first
+    shell.analyze.show_table_view()
+    shell.resize(1400, 900)
+    qtbot.wait(100)
+    from ui.pages.results_table import COL_PROJECT
+    assert t.tree.isColumnHidden(COL_PROJECT)                  # one job only: redundant
+    total = sum(hdr.sectionSize(c) for c in range(hdr.count()) if not t.tree.isColumnHidden(c))
+    assert total <= t.tree.viewport().width() + 2               # no horizontal scrolling
+    t.set_column_visible(COL_SCAN, False)
+    t.set_column_visible(COL_IMAGE, False)                      # never hidden
+    assert t.tree.isColumnHidden(COL_SCAN) and not t.tree.isColumnHidden(COL_IMAGE)
+    assert shell.state.ui_state["results_table_hidden"] == [COL_SCAN]
+    t.set_column_visible(COL_PROJECT, True)                     # the user wants it anyway
+    assert not t.tree.isColumnHidden(COL_PROJECT)
+    shell.close()
+    shell2 = _open(qtbot, make_session(env, 1, label="Again"))
+    assert shell2.analyze.table.tree.isColumnHidden(COL_SCAN)   # remembered
+    shell2.close()
