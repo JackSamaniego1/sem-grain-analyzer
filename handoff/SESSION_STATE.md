@@ -1,25 +1,24 @@
 # SESSION STATE - read this first when resuming
 
-**Last updated:** 2026-09-24 (Phase 6 Release: v3.0.0 built & tagged locally; awaiting GitHub auth)
-**Branch:** `v3-dev` | **Last commit:** `8f8753c` (build: ignore generated installer) | **Phase:** Release (main fast-forwarded to 8f8753c; v3.0.0 tag local only).
+**Last updated:** 2026-09-25 (Phase 6 Release: UX batch in progress overnight; GitHub auth fixed)
+**Branch:** `v3-dev` | **Last commit:** `b06e51a` (UX-12: fix report editor Images tab freeze) | **Phase:** Release — UX items (UX-01..16) in progress, expected finish by morning.
 **Resume with:** read this file only, then the files the next task needs (see CLAUDE.md "Context & usage discipline").
 
 ## Done and committed
-Phase 0–5 + **Phase 6 starting** (Release build complete): PySide6 + 3-layer offline guard; black-region fix; ASTM E112 G; non-destructive grain filters; data layer (trash/restore, CLEAR sentinel); report engine + designer (exports honour edits, 4 palettes, custom text); app shell (Projects/Wizard/Analyze/Review/Reports/Settings); SEM info-bar auto-exclusion + metadata calibration; HIER-01 data + UI; UI-09 file management (right-click/checkboxes/multi-select, trash+undo); UI-10 guided tour (11 steps, never auto-start under pytest); UI-11 scale-bar modes (Rectangle/Level/Free, snap, persistent); **INN-02 complete** (spec editor, verdict badge); **INN-29 complete** (calibration check, status chip); **UI-05 complete** (grain editing: lasso/merge/split, undo, persisted); **UI-08 complete** (About, branding, licence viewer); **FIX-02–17 done** (icon gen, calibration field Excel + PPTX, layout, negative-zero format, scale-bar robustness, PPTX layout); **INN-43 complete** (lot comparison matrix, Welch ANOVA, TOST, 9 UI tests); **SAM checkpoint** build-time download; **REL-01 done** (3 journey tests); **REL-03 done** (PyInstaller dist 1.3 GB, exe launches, offline guard clean; NSIS 644 MB built, gitignored; install test awaits user UAC). Full suite: **686 passed**. v3.0.0 tag created locally.
+Phase 0–5 + Phase 6 partial: PySide6 + 3-layer offline guard; black-region fix; ASTM E112 G; non-destructive grain filters; data layer (trash/restore, CLEAR sentinel); report engine + designer (exports honour edits, 4 palettes, custom text); app shell (Projects/Wizard/Analyze/Review/Reports/Settings); SEM info-bar auto-exclusion + metadata calibration; HIER-01 data + UI; UI-09 file management; UI-10 guided tour; UI-11 scale-bar modes; **INN-02, INN-29, UI-05, UI-08 complete**; **FIX-02–17 done**; **INN-43 complete** (lot comparison matrix + TOST); **SAM checkpoint** download at build; **REL-01 done** (3 journeys); **REL-03 done** (PyInstaller 1.3 GB, NSIS 644 MB, exe launches). **UX-07 done (b0437c1)**: cooperative cancel ≤~1 s, threading.Event → GrainDetector.analyze(cancel=), SAM batch 64→16, 23 tests. Full suite: **686 passed**. v3.0.0 tag local only.
 
-## In progress
-- None (release prep only; code complete).
+## In progress (overnight sprint)
+- **ui-designer (UX-01..06, UX-08..11)** — settings panel order, pre-analysis gate, scale-bar scope, overlay opacity, image removal, nav tooltips, CPU chip clarity, spinner fix
+- **report-engineer (UX-12..16)** — Images tab lazy load, multi-lot report format, editable charts, custom palettes, overlay opacity in export
+- (UX-07 already complete)
 
 ## Next 3 actions
-1. User signs into GitHub (replace Harvey-FS cached credential) → `git push origin main v3-dev --tags`.
-2. Watch CI build GrainAnalyzer_Setup.exe + .dmg; user test-installs exe locally.
-3. If install test finds bug: fix on v3-dev, re-ff main, re-tag `v3.0.0` (safe only before push), then push again.
+1. **Complete all UX items** (ui-designer & report-engineer; morning target).
+2. **Full suite pass** → rebuild GrainAnalyzer_Setup.exe locally.
+3. **main fast-forward** (8f8753c→b06e51a and beyond), **re-tag `v3.0.0` locally** (git tag -f), user tests install, pushes when ready.
 
 ## Blocked / needs user
-- **FND-04 GitHub auth** (user will fix tonight 2026-09-24; credentials cached for Harvey-FS).
-- **D-13 real SEM images** (user will supply later; needed for threshold 12 + image quality gate tuning).
-- **INN-30 CANCELLED** (user request 2026-09-24; report approval workflow not needed for v3.0.0).
-- **INN-41,42,44-51 DECLINED** (user request 2026-09-24; archived, not pursuing in v3.0.0).
+- **D-13 real SEM images** (user will supply later; image quality tuning deferred to v3.1+).
 
 ## How to run
 ```powershell

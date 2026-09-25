@@ -135,3 +135,10 @@
 - **Full test suite: 686 passed / 0 failed** (unchanged since INN-43 core).
 - **RELEASE_CHECKLIST.md**: ticked items 1–7, 10. Pending: install test (user UAC), screenshots review (user), push + CI (awaiting FND-04 GitHub auth fix).
 - **Next steps** (when user returns): (1) sign into GitHub as JackSamaniego1 (replace Harvey-FS cached cred); (2) `git push origin main v3-dev --tags`; (3) watch CI build GrainAnalyzer_Setup.exe and .dmg; (4) user test-installs exe locally. If install test finds bug: fix on v3-dev, re-ff main, re-tag v3.0.0 (safe only before push), push again.
+
+## 2026-09-25 — User feedback post-install + overnight sprint plan
+- **User installed v3.0.0 and reported 16 change requests** (UX-01..16 in handoff/08_USER_FEEDBACK_2026-09-25.md). Priority areas: (1) Analyze page settings order + pre-analysis gate + image removal, (2) Report editor lazy load (UX-12) + multi-lot format (UX-13) + editable charts (UX-14) + custom palettes (UX-15), (3) UI polish (tooltips, spinners, CPU chip). Analysis: all changes are backwards-compatible, no spec/model breakage, can ship as part of v3.0.0.
+- **UX-07 (Cancel is slow) DONE (b0437c1)**: Implemented cooperative cancellation via threading.Event → GrainDetector.analyze(cancel=), AnalysisCancelled exception, core/cancel.py, ui/workers.py; reduced SAM CPU batch size 64→16; cancel completes ≤~1 s in all detection modes; 23 new tests added.
+- **FND-04 RESOLVED**: GitHub credential updated from Harvey-FS to JackSamaniego1 (verified with dry-run push; no commits pushed yet).
+- **Release hold decision (D-27)**: Release will be held for completion of all UX items. Plan: ui-designer handles UX-01..06, UX-08..11 overnight; report-engineer handles UX-12..16 overnight. By morning: all changes complete + full test suite green + GrainAnalyzer_Setup.exe rebuilt locally. Then: main fast-forward (past b06e51a and subsequent UX commits), re-tag v3.0.0 locally (git tag -f), user tests install locally, and pushes when ready.
+- **Overnight sprint**: ui-designer and report-engineer teams in parallel; all UX items targeted for "done" status by morning review.

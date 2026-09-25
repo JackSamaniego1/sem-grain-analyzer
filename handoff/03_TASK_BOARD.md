@@ -8,7 +8,7 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 | FND-01 | Create branch `v3-dev`; add `version.py` (`3.0.0-dev`) and `CHANGELOG.md`; wire version into main.py, main_window, settings_panel, spec, NSIS, README | build-engineer | done | a0b4d3b |
 | FND-02 | Add `xlsxwriter`, `python-pptx`, `qtawesome` to requirements/build scripts/CI/spec hiddenimports (+ `collect_data_files('qtawesome')`); delete `.github/workflows/build.ymlresources/`; CPU-only torch index in build scripts | build-engineer | done | a0b4d3b |
 | FND-03 | Get user decision on D-03 (PyQt6 licensing) and D-10/D-11 | coordinator | done | D-03 → PySide6; D-14 offline added; D-10..13 defaulted |
-| FND-04 | User fixes GitHub auth; push `v3-dev` | user | blocked | creds cached for `Harvey-FS` |
+| FND-04 | User fixes GitHub auth; push `v3-dev` | user | done | credentials updated to JackSamaniego1; dry-run push OK |
 | FND-05 | Baseline: `/run-tests` + `/smoke-app`; record results in progress log | qa-engineer | done | 47 passed / 0 failed |
 | FND-06 | Migrate PyQt6 → PySide6 across main.py + ui/; requirements, spec, build scripts, CI; LICENSE.txt + THIRD_PARTY_LICENSES.txt | build-engineer | done | D-03; a0b4d3b |
 | FND-07 | `core/offline_guard.py` network kill-switch installed first in main.py; env hardening; `tests/test_offline.py` (AST scan + runtime socket spy); remove download URL from SAM error; installer must bundle SAM checkpoint (fail build if missing) | build-engineer | done | D-14; a0b4d3b |
@@ -116,3 +116,23 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 | REL-02 | Update `docs/`, README, GUIDE for v3 | coordinator (haiku agent) | todo | User may defer post-release |
 | REL-03 | Local PyInstaller build + NSIS installer test; size report | build-engineer | done | 8f8753c: dist 1.3 GB (exe launches, offline guard clean), GrainAnalyzer_Setup.exe 644 MB (portable NSIS 3.12, gitignored). Silent install test requires UAC/admin; user to test manually. |
 | REL-04 | Tag `v3.0.0` locally, user push + CI build | build-engineer | review | v3.0.0 tag created; awaiting user GitHub auth (FND-04) to push origin main v3-dev --tags |
+
+## Phase 6 — User feedback (2026-09-25 post-install fixes)
+| ID | Task | Owner | Status | Notes |
+|----|------|-------|--------|-------|
+| UX-01 | Settings panel order (Detection mode → Calibration → Scale → Grain filters → Excluded black regions → Advanced); remove Automatic mode, hide Advanced while AI-assisted selected | ui-designer | doing | handoff/08_USER_FEEDBACK_2026-09-25.md |
+| UX-02 | Pre-analysis gate: require scan area + magnification/scale confirmed before analysis starts; auto-find button; result tile with edit; highlight controls if clicked before ready | ui-designer | doing | |
+| UX-03 | Scale bar "this image only" toggle — apply to current image vs all images | ui-designer | doing | |
+| UX-04 | Grain filters button text changes to "Apply" (vs "Apply to all images") when "This image" scope selected | ui-designer | doing | |
+| UX-05 | Overlay opacity slider in analysis settings; feeds ReportModel.overlay_opacity (0–1) for report exports | ui-designer | doing | |
+| UX-06 | Remove image from analyzer (file/lot untouched) + "Add all from lot" button to restore removed images | ui-designer | doing | |
+| UX-07 | Cancel is slow — must stop within ~1 s | detection-engineer | done | b0437c1: cooperative cancel via threading.Event → GrainDetector.analyze(cancel=); SAM batch 64→16; 23 tests |
+| UX-08 | Spinner bug — only clicked button should spin, not all "Analyze" buttons | ui-designer | doing | |
+| UX-09 | Load job / part / lot into analyzer with nested tree; multi-lot analyze-all; results table with Job/Part/Lot columns, groupable/sortable | ui-designer | doing | REVISED 2026-09-25 — supersedes original multi-lot analysis |
+| UX-10 | Nav tooltip delay ≤150 ms on hover or permanent labels | ui-designer | doing | |
+| UX-11 | CPU chip clarity — reads "AI runs on: CPU" or GPU name with tooltip | ui-designer | doing | |
+| UX-12 | Report editor Images tab freezes — lazy load thumbnails off-thread, cache, never block UI | report-engineer | doing | b06e51a: partial fix (Images tab now lazy-loads; further optimization if needed) |
+| UX-13 | Multi-lot report format: per-lot summary table (lot, fields, grains, G ± CI, mean ECD, verdict), lot comparison (Δ matrix + TOST vs baseline), per-lot sections, combined distribution, raw data with Lot column; Excel + PPTX | report-engineer | doing | |
+| UX-14 | Editable charts: bin size, units (µm/nm, ECD/area/G), axis ranges, titles, labels, normal fit toggle, colours; "Save as my default" persisted locally | report-engineer | doing | |
+| UX-15 | Custom palettes: create from 3 hex/colour-wheel colours, save locally, selectable next to 4 built-in, drives report colours | report-engineer | doing | |
+| UX-16 | Overlay opacity in report export — use ReportModel.overlay_opacity (UX-05) | report-engineer | doing | |
