@@ -174,6 +174,12 @@ def _save_one_image(images_dir: Path, entry: ImageEntry, index: int, *,
 def _save_result_files(results_dir: Path, thumbs_dir: Path, stem: str,
                         result: AnalysisResult, fallback_image: Optional[np.ndarray],
                         detector_labels: Optional[np.ndarray] = None) -> None:
+    # Memory for large loads: a result kept compressed in memory is
+    # unpacked just for this write (core.result_pack), and a dropped overlay
+    # is drawn again by the loader the app attached (else the plain image).
+    from core.result_pack import is_packed, unpacked_copy
+    if is_packed(result):
+        result = unpacked_copy(result)
     npz_path = results_dir / f"{stem}.labels.npz"
     tmp = npz_path.with_name(f".{npz_path.name}.tmp{os.getpid()}")
     # np.savez_compressed appends ".npz" to a bare filename string that
@@ -195,7 +201,15 @@ def _save_result_files(results_dir: Path, thumbs_dir: Path, stem: str,
         )
     os.replace(tmp, npz_path)
 
-    overlay = result.overlay_image if result.overlay_image is not None else fallback_image
+    overlay = result.overlay_image
+    loader = getattr(result, "overlay_loader", None)
+    if overlay is None and callable(loader):
+        try:
+            overlay = loader()
+        except Exception:  # noqa: BLE001 -- never lose the save over a drawing
+            overlay = None
+    if overlay is None:
+        overlay = fallback_image
     if overlay is not None:
         _write_bytes_atomic(results_dir / f"{stem}.overlay.png", _encode_png(overlay))
         _write_bytes_atomic(thumbs_dir / f"{stem}.jpg", _make_thumbnail_bytes(overlay))

@@ -177,3 +177,43 @@ def test_edit_undo_redo_across_compaction(tmp_path, qapp, qtbot, monkeypatch):
     qtbot.waitUntil(lambda: not st.is_filtering(), timeout=20000)
     assert np.array_equal(im.raw.label_image, merged)
     assert np.array_equal(im.detector_labels, base.label_image)
+
+
+def test_save_writes_packed_result_and_redrawn_overlay(tmp_path):
+    """Autosave of an image compacted before it was written: the save thread
+    unpacks the labels and asks the overlay loader (never the plain image)."""
+    import cv2
+    from data.session_io import _save_result_files
+    bgr, raw = _raw()
+    lab = raw.label_image.copy()
+    snap = copy.copy(raw)
+    pack_result(snap)
+    marker = np.full_like(bgr, 77)
+    snap.overlay_loader = lambda: marker
+    (tmp_path / "r").mkdir()
+    (tmp_path / "t").mkdir()
+    _save_result_files(tmp_path / "r", tmp_path / "t", "img", snap, bgr)
+    with np.load(tmp_path / "r" / "img.labels.npz") as z:
+        assert np.array_equal(z["label_image"], lab)
+        assert z["valid_mask"].shape == lab.shape
+    ov = cv2.imread(str(tmp_path / "r" / "img.overlay.png"))
+    assert ov is not None and int(ov.mean()) == 77
+    assert is_packed(snap)                                   # the in-memory copy untouched
+
+
+def test_unsaved_images_compacted_only_under_pressure(tmp_path, qapp, monkeypatch):
+    from ui.app_state import RESULT_CACHE_MAX_IMAGES as N
+    st, _bgr, _base = _state_with_images(tmp_path, monkeypatch, n=0)
+    from ui.app_state import ImageDoc
+    _b, base = _raw()
+    for i in range(5 * N):
+        raw = copy.copy(base)
+        raw.label_image = base.label_image.copy()
+        raw.overlay_image = base.overlay_image.copy()
+        im = ImageDoc(filename=f"u{i}.png", raw=raw, result=raw, status="done")
+        st.session.images.append(im)
+        st._dirty.add(im.uid)                       # waiting for autosave
+        st.hold_arrays(im)
+        if i < 2 * N:
+            assert st.held_array_count() == i + 1  # fresh overlays kept for the save
+    assert st.held_array_count() <= 3 * N

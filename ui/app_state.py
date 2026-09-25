@@ -2005,9 +2005,14 @@ class AppState(QObject):
     def _evict_arrays(self) -> None:
         lru = self._arr_lru
         while len(lru) > self.result_cache_max_images:
-            victim = next((u for u in lru if u != self.current_uid
-                           and u not in self._filtering and u not in self._dirty
-                           and u not in self._px_pins), None)
+            free = [u for u in lru if u != self.current_uid and u not in self._filtering
+                    and u not in self._px_pins]
+            # images waiting for autosave keep their fresh overlay unless many
+            # pile up (a filter change over hundreds of images): then the save
+            # thread unpacks their labels and draws the overlay again
+            victim = next((u for u in free if u not in self._dirty), None)
+            if victim is None and len(lru) > 3 * self.result_cache_max_images:
+                victim = next(iter(free), None)
             if victim is None:
                 break
             im = self._image_any(victim)
@@ -2233,15 +2238,28 @@ class AppState(QObject):
             if im.loading:
                 continue
             if im.uid in with_result and im.result is not None:
-                self.ensure_arrays(im, touch=False)
                 snap = snapshot_result(im.result)
                 # The saved label image keeps EVERY raw grain so filters can be
                 # switched off again after reload; grains.json / summary.json /
                 # overlay.png hold the filtered (reported) result.
                 if im.raw is not None and im.raw.label_image is not None:
                     snap.label_image = im.raw.label_image.copy()
+                    if is_packed(snap):          # result compacted, raw in use
+                        packed = dict(snap._packed_arrays)
+                        packed.pop("label_image", None)
+                        snap._packed_arrays = packed
+                elif is_packed(im.raw):
+                    # compacted meanwhile: the save thread unpacks it
+                    packed = dict(getattr(snap, "_packed_arrays", None) or {})
+                    packed["label_image"] = im.raw._packed_arrays.get("label_image")
+                    snap.label_image = None
+                    snap._packed_arrays = packed
+                if snap.overlay_image is None:
+                    snap.overlay_loader = self.overlay_job(im)
                 base = (im.detector_labels.copy()
-                        if im.edits and im.detector_labels is not None else None)
+                        if im.edits and im.detector_labels is not None else
+                        im.det_packed.unpack() if im.edits and im.det_packed is not None
+                        else None)
                 entries.append(ImageEntry(filename=im.filename, image_bgr=im.image_bgr,
                                           result=snap, detector_label_image=base,
                                           **self._image_fields(im)))
