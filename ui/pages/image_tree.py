@@ -21,7 +21,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFontMetricsF, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QHBoxLayout, QMenu, QStyle, QStyledItemDelegate, QTreeWidget,
@@ -96,6 +96,9 @@ def record_levels(rec, profile, with_session: bool = True) -> List[tuple]:
         out.append((kind, p, cap or p.name))
     return out
 
+
+#: UX-09: throttle for recounting group rows while images stream in.
+GROUP_REFRESH_MS = 100
 
 class _Delegate(QStyledItemDelegate):
     def __init__(self, tree: "ImageTree") -> None:
@@ -266,6 +269,13 @@ class ImageTree(ThemeAware, QWidget):
         self._pm: Dict[object, tuple] = {}
         self._current = None
         self._building = False
+        # UX-09: group counts are O(images in group); per-image updates only
+        # mark their groups dirty and one throttled pass recounts them.
+        self._dirty_groups: List[QTreeWidgetItem] = []
+        self._group_timer = QTimer(self)
+        self._group_timer.setSingleShot(True)
+        self._group_timer.setInterval(GROUP_REFRESH_MS)
+        self._group_timer.timeout.connect(self.flush_group_counts)
         v = QVBoxLayout(self)
         v.setContentsMargins(SPACE.md, SPACE.md, SPACE.sm, SPACE.md)
         v.setSpacing(SPACE.sm)
@@ -340,6 +350,8 @@ class ImageTree(ThemeAware, QWidget):
         """Rebuild the tree for ``images`` (keeps collapsed groups + current)."""
         collapsed = {p for p, it in self._groups.items() if not it.isExpanded()}
         self._building = True
+        self._group_timer.stop()
+        self._dirty_groups = []
         self.tree.clear()
         self._items, self._groups, self._restore_rows = {}, {}, {}
         doc = self.state.session
@@ -478,6 +490,7 @@ class ImageTree(ThemeAware, QWidget):
         doc = self.state.session
         if doc is None:
             return out
+        by_uid = {im.uid: im for im in doc.images}       # one pass, not one per child
         stack = [g]
         while stack:
             it = stack.pop()
@@ -485,7 +498,7 @@ class ImageTree(ThemeAware, QWidget):
                 c = it.child(i)
                 k = c.data(0, ROLE_KIND)
                 if k == "image":
-                    im = doc.image(c.data(0, ROLE_UID))
+                    im = by_uid.get(c.data(0, ROLE_UID))
                     if im is not None:
                         out.append(im)
                 elif k != "restore":
@@ -502,8 +515,18 @@ class ImageTree(ThemeAware, QWidget):
         self._fill(it, im)
         p = it.parent()
         while p is not None:
-            self._refresh_group(p)
+            if not any(p is d for d in self._dirty_groups):
+                self._dirty_groups.append(p)
             p = p.parent()
+        if self._dirty_groups and not self._group_timer.isActive():
+            self._group_timer.start()        # throttled: fires even mid-stream
+
+    def flush_group_counts(self) -> None:
+        """Recount the groups touched since the last pass (also for tests)."""
+        self._group_timer.stop()
+        dirty, self._dirty_groups = self._dirty_groups, []
+        for g in dirty:
+            self._refresh_group(g)
 
     def refresh_all(self) -> None:
         doc = self.state.session
@@ -511,6 +534,8 @@ class ImageTree(ThemeAware, QWidget):
             im = doc.image(uid) if doc is not None else None
             if im is not None:
                 self._fill(it, im)
+        self._group_timer.stop()
+        self._dirty_groups = []
         for g in self._groups.values():
             self._refresh_group(g)
         self.tree.viewport().update()

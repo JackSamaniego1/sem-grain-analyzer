@@ -35,7 +35,8 @@ from ui.filtering import (
     preview_params, remeasure_excluded,
 )
 from ui.canvas.layers import kept_labels
-from ui.workers import read_image, run_task, serial_pool, snapshot_result, thumb_qimage
+from ui.workers import (load_pool, read_image, run_task, serial_pool, snapshot_result,
+                        thumb_qimage)
 from core.result_pack import (
     is_packed, live_bytes, pack_array, pack_result, unpack_result, unpacked_copy,
 )
@@ -1139,7 +1140,8 @@ class AppState(QObject):
         for rec in doc.records:
             run_task(_load_record_bundle, rec.path,
                      on_done=lambda b, r=rec: self._fill_record(doc, r, b),
-                     on_error=lambda msg, r=rec: self._record_failed(doc, r, msg))
+                     on_error=lambda msg, r=rec: self._record_failed(doc, r, msg),
+                     pool=load_pool())          # bounded: never every lot at once
 
     def is_loading(self) -> bool:
         """True while a multi-record load is still streaming pixels in."""
@@ -2291,6 +2293,7 @@ class AppState(QObject):
         self.about_to_flush.emit()
         if self._records_pending:
             from PySide6.QtCore import QThreadPool, QCoreApplication
+            load_pool().waitForDone(timeout_ms)
             QThreadPool.globalInstance().waitForDone(timeout_ms)
             QCoreApplication.processEvents()
         if self._final_pending:

@@ -342,31 +342,58 @@ def test_ux09_projects_load_button_and_tree_and_table(env, qtbot):
     shell.close()
 
 
+class _StallWatchdog:
+    """GUI-thread watchdog: a 10 ms repeating timer records the longest time
+    the event loop went without servicing it (i.e. the worst stall)."""
+
+    def __init__(self, interval_ms: int = 10):
+        from PySide6.QtCore import QTimer
+        self._timer = QTimer()
+        self._timer.setInterval(interval_ms)
+        self._timer.timeout.connect(self._tick)
+        self._last = None
+        self.max_stall = 0.0
+        self.ticks = 0
+
+    def _tick(self):
+        import time
+        now = time.perf_counter()
+        if self._last is not None:
+            self.max_stall = max(self.max_stall, now - self._last)
+        self._last = now
+        self.ticks += 1
+
+    def start(self):
+        import time
+        self._last = time.perf_counter()
+        self._timer.start()
+
+    def stop(self):
+        self._tick()                     # a stall right before stop counts too
+        self._timer.stop()
+
+
 def test_ux09_two_hundred_images_load_without_freezing(env, qtbot):
     """~200 images from 4 lots: listed at once, pixels stream in off the GUI
     thread (the event loop keeps ticking), everything ends up loaded."""
-    import time
-    from PySide6.QtCore import QTimer
     sample = _lots(env, 4, 50, sample="Big")
     shell = _shell(qtbot)
     st = shell.state
-    ticks = []
-    timer = QTimer()
-    timer.setInterval(20)
-    timer.timeout.connect(lambda: ticks.append(time.perf_counter()))
-    timer.start()
+    dog = _StallWatchdog()
+    dog.start()
     shell.load_into_analyzer([sample])
     qtbot.waitUntil(lambda: st.session is not None, timeout=TIMEOUT)
     assert len(st.images()) == 200                          # every image listed at once
     qtbot.waitUntil(lambda: not st.is_loading(), timeout=TIMEOUT)
-    timer.stop()
+    qtbot.wait(300)                       # let the debounced refreshes run too
+    dog.stop()
     assert all(not im.loading and im.readable and im.thumb is not None for im in st.images())
     from ui.app_state import PIXEL_CACHE_MAX_IMAGES
     assert st.held_pixel_count() <= PIXEL_CACHE_MAX_IMAGES   # pixels only on demand
     tree = shell.analyze.film
     assert len([u for u in (im.uid for im in st.images()) if tree.item(u) is not None]) == 200
-    gaps = [b - a for a, b in zip(ticks, ticks[1:])]
-    assert gaps and max(gaps) < 1.5, max(gaps)              # the GUI never froze
+    assert dog.ticks > 5
+    assert dog.max_stall < 1.5, dog.max_stall                # the GUI never froze
     shell.close()
 
 

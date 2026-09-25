@@ -511,6 +511,21 @@ def serial_pool() -> QThreadPool:
     return _SERIAL_POOL
 
 
+_LOAD_POOL: Optional[QThreadPool] = None
+#: UX-09: record bundles of a multi-lot load are read at most this many at a
+#: time, so their GUI-thread callbacks arrive spread out instead of in a burst.
+LOAD_POOL_THREADS = 2
+
+
+def load_pool() -> QThreadPool:
+    """Small dedicated pool for loading record bundles (bounded concurrency)."""
+    global _LOAD_POOL
+    if _LOAD_POOL is None:
+        _LOAD_POOL = QThreadPool()
+        _LOAD_POOL.setMaxThreadCount(LOAD_POOL_THREADS)
+    return _LOAD_POOL
+
+
 def run_task(fn: Callable, *args, on_done=None, on_error=None,
              pool: Optional[QThreadPool] = None, **kwargs) -> Task:
     """Start ``fn`` off the GUI thread; ``on_done(value)`` / ``on_error(msg)``
@@ -526,6 +541,7 @@ def shutdown_tasks(timeout_ms: int = 10000) -> None:
     global _SHUTTING_DOWN
     _SHUTTING_DOWN = True
     try:
+        load_pool().waitForDone(timeout_ms)
         QThreadPool.globalInstance().waitForDone(timeout_ms)
         serial_pool().waitForDone(timeout_ms)
     finally:

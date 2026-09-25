@@ -65,6 +65,9 @@ __all__ = ["AnalyzePage", "ParamPanel", "SetupTile", "ModeCard", "GATE_TEXT", "M
            "sam_model_available"]
 
 
+#: UX-09: coalescing delay for per-image summary refreshes.
+SUMMARY_DEBOUNCE_MS = 100
+
 class ModeCard(SelectableCard):
     def __init__(self, key: str, title: str, icon: str, desc: str, available: bool = True,
                  parent=None) -> None:
@@ -505,6 +508,12 @@ class AnalyzePage(QWidget):
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.setInterval(120)
         self._refresh_timer.timeout.connect(self._refresh_setup_all)
+        # UX-09: per-image updates (a 200-image load streams in) coalesce into
+        # one O(n) summary pass instead of one per image (O(n^2) overall).
+        self._summary_timer = QTimer(self)
+        self._summary_timer.setSingleShot(True)
+        self._summary_timer.setInterval(SUMMARY_DEBOUNCE_MS)
+        self._summary_timer.timeout.connect(self._refresh_summary)
         self._build()
         self._wire()
         self._relabel()
@@ -861,7 +870,8 @@ class AnalyzePage(QWidget):
             elif im is not None:
                 self._update_title(im)
             self.setup_tile.refresh(self.state, im)
-        self._refresh_summary()
+        if not self._summary_timer.isActive():       # throttle, never starve
+            self._summary_timer.start()
 
     def _on_result_edited(self, uid) -> None:
         im = self.state.current_image()
@@ -1075,6 +1085,7 @@ class AnalyzePage(QWidget):
         self.img_sub.setText("  ·  ".join(parts))
 
     def _refresh_summary(self) -> None:
+        self._summary_timer.stop()
         imgs = self.state.images()
         done = [im for im in imgs if im.result is not None]
         self.st_images.set_metric(len(done), f"of {len(imgs)}", 0)

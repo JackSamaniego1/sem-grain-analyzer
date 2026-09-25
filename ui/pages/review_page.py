@@ -20,7 +20,7 @@ from typing import List, Optional
 import numpy as np
 from PySide6.QtCore import (
     QAbstractTableModel, QItemSelection, QItemSelectionModel, QModelIndex, QSortFilterProxyModel,
-    Qt, Signal,
+    Qt, QTimer, Signal,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QGridLayout, QHBoxLayout, QHeaderView, QSizePolicy,
@@ -50,6 +50,9 @@ VIEW_KEYS = ("original", "overlay", "mask", "excluded")
 SORT_ROLE = Qt.UserRole + 10
 ID_ROLE = Qt.UserRole + 11
 
+
+#: UX-09: throttle for refilling the comparison table during a load.
+COMPARISON_REFRESH_MS = 100
 
 class GrainTableModel(QAbstractTableModel):
     def __init__(self, parent=None) -> None:
@@ -135,6 +138,12 @@ class ReviewPage(QWidget):
         self.state = state
         self.toasts = toasts
         self._syncing = False
+        # UX-09: a streaming load updates images one by one; the comparison
+        # table (O(n) rebuild) is refilled once per throttle window instead.
+        self._cmp_timer = QTimer(self)
+        self._cmp_timer.setSingleShot(True)
+        self._cmp_timer.setInterval(COMPARISON_REFRESH_MS)
+        self._cmp_timer.timeout.connect(self._fill_comparison)
         self._build()
         self._wire()
         self._relabel()
@@ -436,7 +445,8 @@ class ReviewPage(QWidget):
 
     def _on_image_updated(self, uid) -> None:
         self.film.update_item(uid)
-        self._fill_comparison()
+        if not self._cmp_timer.isActive():
+            self._cmp_timer.start()
         im = self.state.current_image()
         if uid == self.state.current_uid and im is not None and (
                 self.canvas.result() is not im.result or self.canvas.raw() is not im.raw
@@ -575,6 +585,7 @@ class ReviewPage(QWidget):
         self._on_canvas_selection(self.canvas.selected())
 
     def _fill_comparison(self) -> None:
+        self._cmp_timer.stop()
         imgs = self.state.images()
         self.cmp.blockSignals(True)
         self.cmp.setRowCount(len(imgs))
@@ -610,6 +621,8 @@ class ReviewPage(QWidget):
         self._select_cmp_row(self.state.current_uid)
 
     def comparison_rows(self) -> int:
+        if self._cmp_timer.isActive():
+            self._fill_comparison()
         return self.cmp.rowCount()
 
     def _select_cmp_row(self, uid) -> None:
