@@ -36,8 +36,8 @@ def _gray(image):
     return image
 
 
-def _longest_line(ink: np.ndarray, max_h: int, max_w: int):
-    """Longest solid horizontal run (x, y, w, h) in a binary ink mask.
+def _horizontal_segments(ink: np.ndarray, max_h: int, max_w: int):
+    """Solid horizontal strokes (x, y, w, h) in a binary ink mask.
     Opening with a 21x1 kernel keeps horizontal strokes >= 21 px and removes
     text glyphs and the 1-px vertical end ticks of the bar."""
     # 21 (odd): an even-width kernel shifts the opened stroke 1 px right
@@ -45,15 +45,73 @@ def _longest_line(ink: np.ndarray, max_h: int, max_w: int):
     horiz = cv2.morphologyEx(ink, cv2.MORPH_OPEN, kernel)
     contours, _ = cv2.findContours(horiz, cv2.RETR_EXTERNAL,
                                    cv2.CHAIN_APPROX_SIMPLE)
-    best, best_len = None, 0
+    segs = []
     for cnt in contours:
         x, y, cw, ch = cv2.boundingRect(cnt)
         if cw <= 20 or ch > max_h or cw > max_w:
             continue
         roi = horiz[y:y + ch, x:x + cw]
-        fill = np.count_nonzero(roi) / max(roi.size, 1)
-        if fill > 0.5 and cw > best_len:
-            best, best_len = (x, y, cw, ch), cw
+        if np.count_nonzero(roi) / max(roi.size, 1) > 0.5:
+            segs.append((x, y, cw, ch))
+    return segs
+
+
+# Frame test tolerances: the two horizontal edges of a drawn box share their
+# x-extent within this many px, and the box sides are inked over at least
+# this fraction of the gap between the edges.
+_FRAME_END_TOL = 4
+_FRAME_SIDE_FILL = 0.8
+
+
+def _side_filled(ink: np.ndarray, x: int, y_a: int, y_b: int) -> bool:
+    """True when a column near ``x`` is inked over most of rows y_a..y_b."""
+    h, w = ink.shape[:2]
+    if y_b - y_a < 2:
+        return False
+    x_lo, x_hi = max(0, x - 2), min(w, x + 3)
+    cols = ink[y_a:y_b, x_lo:x_hi] > 0
+    if cols.size == 0:
+        return False
+    return float(cols.mean(axis=0).max()) >= _FRAME_SIDE_FILL
+
+
+def _frame_edges(ink: np.ndarray, segs) -> set:
+    """Indices of segments that are the top/bottom border of a drawn
+    rectangle (FIX-17).  SEM info bars often box the scale bar; the box
+    edges are longer than the bar itself and used to win "longest line".
+    A pair of segments with matching x-extent whose ends are joined by
+    inked vertical sides (a closed outline) is a frame, not a bar.  The
+    bar's own end ticks are short and never reach a second, equally long
+    parallel line, so a real bar is not rejected."""
+    out = set()
+    for i, (xa, ya, wa, ha) in enumerate(segs):
+        for j in range(i + 1, len(segs)):
+            xb, yb, wb, hb = segs[j]
+            if (abs(xa - xb) > _FRAME_END_TOL
+                    or abs((xa + wa) - (xb + wb)) > _FRAME_END_TOL):
+                continue
+            (t, b) = ((ya, ha), (yb, hb)) if ya < yb else ((yb, hb), (ya, ha))
+            y_a, y_b = t[0] + t[1], b[0]          # rows strictly between
+            if y_b - y_a < 3:
+                continue
+            left = min(xa, xb)
+            right = max(xa + wa, xb + wb) - 1
+            if _side_filled(ink, left, y_a, y_b) and _side_filled(ink, right, y_a, y_b):
+                out.update((i, j))
+    return out
+
+
+def _longest_line(ink: np.ndarray, max_h: int, max_w: int):
+    """Longest solid horizontal run (x, y, w, h) that is not the border of a
+    drawn rectangle around the scale bar."""
+    segs = _horizontal_segments(ink, max_h, max_w)
+    frames = _frame_edges(ink, segs)
+    best, best_len = None, 0
+    for k, seg in enumerate(segs):
+        if k in frames:
+            continue
+        if seg[2] > best_len:
+            best, best_len = seg, seg[2]
     return best
 
 

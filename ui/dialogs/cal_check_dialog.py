@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
     QProgressBar, QSizePolicy, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from core.cal_verify import manual_pitch_px, measure_pitch, period_lines
+from core.cal_verify import format_percent, manual_pitch_px, measure_pitch, period_lines
 from data.cal_records import (
     DEFAULT_TOLERANCE_PCT, STANDARD_TYPES, CalibrationStandard, CalibrationStore, build_check,
     instrument_config,
@@ -108,7 +108,7 @@ class CalStatusChip(Badge):
                "due": "The last calibration check is older than the check interval",
                "failed": "The latest calibration check failed"}.get(self.state, "")
         if c is not None:
-            tip += (f"\nLast check {c.datetime[:10]}: error {c.error_pct:+.2f} % "
+            tip += (f"\nLast check {c.datetime[:10]}: error {format_percent(c.error_pct)} "
                     f"(limit ±{c.tolerance_pct:g} %), {c.standard_name or c.standard_id}")
         self.setToolTip(tip)
         self.show()
@@ -633,7 +633,7 @@ class CalCheckDialog(QDialog):
         std = self.current_standard()
         rows = [("Measured pitch", f"{m[0]:.4f} µm" if m else "—"),
                 ("Certified pitch", f"{std.certified_pitch_um:g} µm" if std else "—"),
-                ("Error", f"{c.error_pct:+.2f} %" if c else "—"),
+                ("Error", format_percent(c.error_pct) if c else "—"),
                 ("Tolerance", f"± {self.tol.value():g} %")]
         if c is not None and c.expanded_uncertainty_um:
             rows.append(("Uncertainty U (k = 2)", f"{c.expanded_uncertainty_um:.4f} µm"))
@@ -685,7 +685,7 @@ class CalCheckDialog(QDialog):
             if self.toasts is not None:
                 self.toasts.show_toast(
                     "Calibration check saved",
-                    f"{saved.instrument}: error {saved.error_pct:+.2f} % — "
+                    f"{saved.instrument}: error {format_percent(saved.error_pct)} — "
                     f"{'PASS' if saved.passed else 'FAIL'}.",
                     "success" if saved.passed else "warning")
             self.saved.emit(saved)

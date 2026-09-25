@@ -141,6 +141,22 @@ def passes_tolerance(error_pct: float, tolerance_pct: float = DEFAULT_TOLERANCE_
     return round(abs(float(error_pct)), 9) <= round(float(tolerance_pct), 9)
 
 
+def format_percent(value: float, decimals: int = 2, signed: bool = True) -> str:
+    """Format a percentage for display, e.g. ``+1.23 %``.
+
+    Values that round to zero at the requested precision are shown as
+    ``0.00 %`` (no sign): Python's format keeps the IEEE-754 sign of
+    negative zero and of tiny negatives (``-0.001`` -> ``-0.00``), which
+    reads as a real (negative) scale error on the calibration report.
+    """
+    v = float(value)
+    if not math.isfinite(v):
+        return f"{v} %"
+    if round(v, decimals) == 0.0:
+        return f"{0.0:.{decimals}f} %"
+    return f"{v:{'+' if signed else ''}.{decimals}f} %"
+
+
 def uncertainty_budget(measured_pitch_um: float, *, cert_expanded_um: float = 0.0,
                        repeatability_um: float = 0.0, span_px: float = 0.0,
                        coverage_k: float = 2.0) -> dict:
