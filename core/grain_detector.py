@@ -38,6 +38,7 @@ from core.metrics import compute_statistics
 from core.astm import update_astm
 from core.infobar import detect_info_bar
 from core.overlay_compose import compose_full_overlay, rc_to_xywh
+from core.cancel import AnalysisCancelled, make_cancel_check  # noqa: F401 (re-export)
 
 logger = logging.getLogger(__name__)
 
@@ -304,7 +305,7 @@ def gate_labels_by_validity(labels, gray, valid_mask, min_mean_intensity,
 def filter_sam_masks(masks, gray, valid_mask, *, min_area, max_area,
                      min_mean_intensity=12.0, min_intensity_std=1.5,
                      min_valid_fraction=0.5, min_predicted_iou=0.75,
-                     max_frame_fraction=0.4):
+                     max_frame_fraction=0.4, cancel=None):
     """Turn SAM automatic-mask output into a label image.
 
     Pure function (no model needed) so it can be unit-tested with fake mask
@@ -321,14 +322,19 @@ def filter_sam_masks(masks, gray, valid_mask, *, min_area, max_area,
     * fraction on valid pixels < ``min_valid_fraction``,
     * > 50 % of it overlaps already accepted grains.
 
+    ``cancel`` is an optional cancel token (see :mod:`core.cancel`),
+    checked once per mask.
+
     Returns ``(labels int32, binary uint8 0/255, n_accepted)``.
     """
+    check = make_cancel_check(cancel)
     h, w = gray.shape[:2]
     labels = np.zeros((h, w), dtype=np.int32)
     binary = np.zeros((h, w), dtype=np.uint8)
     gid = 0
     gray_f = gray.astype(np.float32)
     for m in sorted(masks, key=lambda d: d['area'], reverse=True):
+        check()
         area = m['area']
         if area < min_area or area > max_area:
             continue
@@ -405,11 +411,89 @@ def _offset_info_bar(info, dx, dy):
     return info
 
 
+# Points per SAM decoder batch on CPU (UX-07).  segment_anything's default
+# is 64; one 64-point batch plus its full-resolution mask post-processing can
+# take several seconds on a laptop CPU, which is how long a cancel waited.
+SAM_POINTS_PER_BATCH_CPU = 16
+
+
+def run_sam_generator(mask_generator, image_rgb, total_points, progress,
+                      check_cancel, device_label="CPU"):
+    """Run ``mask_generator.generate(image_rgb)`` with progress reporting and
+    cooperative cancellation (UX-07).
+
+    ``check_cancel()`` raises :class:`AnalysisCancelled`; it is called
+
+    * before every ViT image-encoder block (the encoder is the longest
+      single step on CPU: 12 blocks for vit_b),
+    * before every point batch (``_process_batch``), which is also where
+      progress is reported (10 %..50 %),
+    * before every mask in SAM's small-region post-processing.
+
+    All hooks are instance attributes (or a module attribute for the
+    post-processing helper) and are removed in ``finally``, so a cancelled
+    or failed run leaves the model untouched.  Works with any object that
+    exposes ``generate``/``_process_batch``/``points_per_batch`` (tests use
+    a fake generator; no model needed).
+    """
+    batch_size = max(1, int(getattr(mask_generator, "points_per_batch", 64) or 64))
+    total_batches = max(1, (int(total_points) + batch_size - 1) // batch_size)
+    counter = [0]
+    restore = []
+
+    def _wrap_attr(obj, name, before):
+        original = getattr(obj, name)
+        had_instance_attr = name in getattr(obj, "__dict__", {})
+
+        def wrapped(*args, **kwargs):
+            before()
+            return original(*args, **kwargs)
+
+        setattr(obj, name, wrapped)
+        restore.append((obj, name, original, had_instance_attr))
+
+    def _before_batch():
+        check_cancel()
+        counter[0] += 1
+        pct = min(50, 10 + int(40 * counter[0] / total_batches))
+        progress(pct, f"SAM on {device_label}: batch {counter[0]}/{total_batches} ({pct}%)")
+
+    try:
+        if hasattr(mask_generator, "_process_batch"):
+            _wrap_attr(mask_generator, "_process_batch", _before_batch)
+        model = getattr(getattr(mask_generator, "predictor", None), "model", None)
+        blocks = getattr(getattr(model, "image_encoder", None), "blocks", None)
+        for blk in (blocks or []):
+            _wrap_attr(blk, "forward", check_cancel)
+        try:
+            import segment_anything.automatic_mask_generator as _amg
+        except Exception:  # pragma: no cover - SAM not installed (fake generator)
+            _amg = None
+        if _amg is not None and hasattr(_amg, "remove_small_regions"):
+            _wrap_attr(_amg, "remove_small_regions", check_cancel)
+
+        progress(10, f"Running SAM on {device_label}: 0/{total_batches} batches...")
+        check_cancel()
+        masks = mask_generator.generate(image_rgb)
+        check_cancel()
+        return masks
+    finally:
+        for obj, name, original, had_instance_attr in reversed(restore):
+            if had_instance_attr or not hasattr(type(obj), name):
+                setattr(obj, name, original)
+            else:
+                try:
+                    delattr(obj, name)   # fall back to the class attribute
+                except AttributeError:
+                    setattr(obj, name, original)
+
+
 class GrainDetector:
 
     def __init__(self):
         self._last_result = None
         self._valid_mask = None
+        self._check_cancel = make_cancel_check(None)
 
     def _ws_mask(self, shape):
         """Valid mask for watershed ``mask=`` (None when everything is valid,
@@ -432,13 +516,27 @@ class GrainDetector:
             1, len(coords) + 1, dtype=np.int32)
         return watershed(landscape_u8, markers, mask=vm), len(coords)
 
-    def analyze(self, image_bgr, px_per_um=0.0, params=None, progress_callback=None):
+    def analyze(self, image_bgr, px_per_um=0.0, params=None, progress_callback=None,
+                cancel=None):
+        """Detect and measure grains.
+
+        ``cancel`` (UX-07) is an optional cancel token -- a
+        ``threading.Event`` or a zero-argument callable returning True.
+        It is checked at every progress step and inside every long loop
+        (SAM encoder blocks / point batches, per-region splits, per-grain
+        measurement, overlay drawing); once it fires,
+        :class:`core.cancel.AnalysisCancelled` is raised and no result is
+        returned, so nothing partial can be saved.  Measurements are
+        unaffected when ``cancel`` is None or never fires.
+        """
         if params is None:
             params = DetectionParams()
+        check = self._check_cancel = make_cancel_check(cancel)
 
         result = AnalysisResult(px_per_um=px_per_um, has_calibration=(px_per_um > 0))
 
         def progress(pct, msg):
+            check()
             if progress_callback:
                 progress_callback(pct, msg)
 
@@ -503,6 +601,7 @@ class GrainDetector:
         result.valid_mask = valid
         result.valid_area_px = float(np.count_nonzero(valid))
 
+        check()
         progress(78, "Measuring grain properties...")
         grains = self._measure_grains(labels, params, px_per_um)
 
@@ -526,6 +625,7 @@ class GrainDetector:
             full_bgr, self._draw_overlay(image_bgr, labels, grains),
             rc_to_xywh(crop_rect))
 
+        check()
         progress(100, f"Complete — {result.grain_count} grains detected.")
         self._last_result = result
         return result
@@ -699,6 +799,7 @@ class GrainDetector:
         progress(20, "Multi-scale groove detection...")
         bth = np.zeros_like(bf)
         for ks in [9, 15, 21]:
+            self._check_cancel()
             k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ks, ks))
             b = cv2.morphologyEx(enhanced, cv2.MORPH_BLACKHAT, k)
             b = b.astype(np.float32)
@@ -782,6 +883,7 @@ class GrainDetector:
         df = bl.astype(np.float32)
         dark = np.zeros_like(df)
         for ks in [11, 21, 41]:
+            self._check_cancel()
             dark += np.clip(
                 cv2.GaussianBlur(df, (ks, ks), ks / 4.0) - df, 0, None)
         dark /= max(dark.max(), 1e-6)
@@ -790,6 +892,7 @@ class GrainDetector:
         # Medium catches moderate contrast; heavy catches broad transitions
         step_scores = np.zeros_like(bf)
         for bf_scale in [bf_m, bf_h]:
+            self._check_cancel()
             gx_s = cv2.Sobel(bf_scale, cv2.CV_32F, 1, 0, ksize=5)
             gy_s = cv2.Sobel(bf_scale, cv2.CV_32F, 0, 1, ksize=5)
             s = np.sqrt(gx_s ** 2 + gy_s ** 2)
@@ -842,6 +945,7 @@ class GrainDetector:
         progress(48, f"Contrast watershed ({len(coords)} seeds)...")
         labels, _ = self._seeded_watershed(
             (boosted * 255).astype(np.uint8), coords, h, w)
+        self._check_cancel()
 
         # Filter small/large
         min_sz = max(params.min_grain_size_px, 20)
@@ -920,6 +1024,7 @@ class GrainDetector:
         max_lbl = labels.max()
 
         for region in regionprops(labels):
+            self._check_cancel()
             if region.area < merge_thresh:
                 continue
 
@@ -1043,6 +1148,7 @@ class GrainDetector:
                 labels, _ = ndi.label(binary_bool)
         else:
             labels, _ = ndi.label(binary_bool)
+        self._check_cancel()
 
         return labels, binary_bool.astype(np.uint8) * 255
 
@@ -1094,6 +1200,7 @@ class GrainDetector:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         progress(5, f"Loading SAM weights to {device.upper()}...")
         sam = sam_model_registry[model_type](checkpoint=checkpoint_path)
+        self._check_cancel()
         sam.to(device=device)
 
         # --- Step 2: Generate masks with SAM ---
@@ -1115,6 +1222,10 @@ class GrainDetector:
         mask_generator = SamAutomaticMaskGenerator(
             model=sam,
             points_per_side=pts,
+            # UX-07: smaller point batches on CPU so a cancel is noticed
+            # within ~1 s.  Batching only splits the work; SAM concatenates
+            # all batches before NMS, so the masks are identical.
+            points_per_batch=SAM_POINTS_PER_BATCH_CPU if device == "cpu" else 64,
             pred_iou_thresh=0.80,
             stability_score_thresh=0.88,
             crop_n_layers=0,
@@ -1124,30 +1235,15 @@ class GrainDetector:
         # SAM expects RGB
         image_rgb = cv2.cvtColor(image_resized, cv2.COLOR_BGR2RGB)
 
-        # Monkey-patch SAM's predict method to track progress
-        total_points = pts * pts  # total point prompts
-        batch_size = mask_generator.points_per_batch  # default 64
-        total_batches = max(1, (total_points + batch_size - 1) // batch_size)
-        batch_counter = [0]
-        original_predict = sam.mask_decoder.forward
-
-        def _tracked_forward(*args, **kwargs):
-            batch_counter[0] += 1
-            pct = 10 + int(40 * batch_counter[0] / total_batches)
-            pct = min(pct, 50)
-            progress(pct, f"SAM on {device.upper()}: batch {batch_counter[0]}/{total_batches} "
-                          f"({pct}%)")
-            return original_predict(*args, **kwargs)
-
-        sam.mask_decoder.forward = _tracked_forward
-        progress(10, f"Running SAM on {device.upper()}: 0/{total_batches} batches...")
-        masks = mask_generator.generate(image_rgb)
-        sam.mask_decoder.forward = original_predict  # restore
+        masks = run_sam_generator(
+            mask_generator, image_rgb, pts * pts, progress, self._check_cancel,
+            device_label=device.upper())
 
         # Scale masks back up if we downscaled
         if scale < 1.0:
             progress(55, "Upscaling masks to original resolution...")
             for m in masks:
+                self._check_cancel()
                 m['segmentation'] = cv2.resize(
                     m['segmentation'].astype(np.uint8), (w, h),
                     interpolation=cv2.INTER_NEAREST).astype(bool)
@@ -1166,6 +1262,7 @@ class GrainDetector:
             min_intensity_std=(float(getattr(params, "sam_min_intensity_std", 0.0))
                                if thr > 0 else 0.0),
             min_valid_fraction=float(getattr(params, "min_valid_fraction", 0.5)),
+            cancel=self._check_cancel,
         )
 
         progress(72, f"Accepted {grain_id} grains after filtering...")
@@ -1222,6 +1319,7 @@ class GrainDetector:
         max_lbl = labels.max()
 
         for region in regionprops(labels):
+            self._check_cancel()
             if region.area < merge_threshold:
                 continue
 
@@ -1262,7 +1360,10 @@ class GrainDetector:
     def _measure_grains(self, labels, params, px_per_um):
         regions = regionprops(labels)
         grains = []
-        for region in regions:
+        check = self._check_cancel
+        for i, region in enumerate(regions):
+            if not i & 31:
+                check()
             if region.area < max(params.min_grain_size_px, 5):
                 continue
             if (params.max_grain_size_px > 0 and
@@ -1337,7 +1438,10 @@ class GrainDetector:
         overlay[mask] = blended[mask]
         grain_map = {g.grain_id: g for g in grains}
         slices = ndi.find_objects(labels)
-        for lbl in unique_labels:
+        check = self._check_cancel
+        for i, lbl in enumerate(unique_labels):
+            if not i & 63:
+                check()
             if lbl not in grain_map:
                 continue
             grain = grain_map[lbl]

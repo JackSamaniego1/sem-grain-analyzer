@@ -15,6 +15,7 @@ Background work for the v3 shell — nothing here ever touches a widget.
 from __future__ import annotations
 
 import copy
+import threading
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,7 @@ import numpy as np
 from PySide6.QtCore import QObject, QRunnable, QThread, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtGui import QImage
 
+from core.cancel import AnalysisCancelled, make_cancel_check
 from core.grain_detector import (
     AnalysisResult, DetectionParams, GrainDetector, discard_border_grains,
 )
@@ -116,7 +118,8 @@ def analyze_image(image_bgr: np.ndarray, px_per_um: float = 0.0,
                   scan_rect=None,
                   progress: Optional[Callable[[int, str], None]] = None,
                   discard_border: bool = False,
-                  draw_overlay: bool = True) -> AnalysisResult:
+                  draw_overlay: bool = True,
+                  cancel=None) -> AnalysisResult:
     """Run detection on one image and return the RAW result in FULL-frame
     coordinates.
 
@@ -131,8 +134,13 @@ def analyze_image(image_bgr: np.ndarray, px_per_um: float = 0.0,
          centroids and bounding boxes, recompute statistics via
          :func:`core.metrics.compute_statistics` and (optionally) redraw the
          overlay.
+
+    ``cancel`` (UX-07): optional ``threading.Event`` / callable; when it
+    fires, :class:`core.cancel.AnalysisCancelled` is raised and nothing is
+    returned.
     """
     params = params or DetectionParams()
+    check = make_cancel_check(cancel)
     H, W = image_bgr.shape[:2]
     rect = _clamp_rect(scan_rect, W, H)
     img = image_bgr
@@ -144,7 +152,8 @@ def analyze_image(image_bgr: np.ndarray, px_per_um: float = 0.0,
 
     det = GrainDetector()
     result = det.analyze(img, px_per_um=px_per_um, params=params,
-                         progress_callback=progress)
+                         progress_callback=progress, cancel=cancel)
+    check()
     # The detector reports the crop it actually applied (white borders and/or
     # the SEM info bar), as (r0, c0, r1, c1) in scan-area coordinates.
     auto = getattr(result, "auto_crop_rect", None)
@@ -180,6 +189,7 @@ def analyze_image(image_bgr: np.ndarray, px_per_um: float = 0.0,
                     r0, c0, r1, c1 = g.bbox
                     g.bbox = (r0 + dy, c0 + dx, r1 + dy, c1 + dx)
     compute_statistics(result, (H, W))
+    check()
     if not draw_overlay:
         result.overlay_image = None
     elif result.label_image is not None:
@@ -246,10 +256,13 @@ class AnalysisWorker(QObject):
     progress = Signal(int, str)
     finished = Signal(object)
     error = Signal(str)
+    cancelled = Signal()
 
     def __init__(self, image_bgr, px_per_um, params, scan_rect=None,
-                 discard_border: bool = False, draw_overlay: bool = True):
+                 discard_border: bool = False, draw_overlay: bool = True,
+                 cancel=None):
         super().__init__()
+        self.cancel = cancel
         self.image_bgr = image_bgr
         self.px_per_um = px_per_um
         self.params = params
@@ -263,8 +276,11 @@ class AnalysisWorker(QObject):
             result = analyze_image(self.image_bgr, self.px_per_um, self.params,
                                    self.scan_rect, self.progress.emit,
                                    discard_border=self.discard_border,
-                                   draw_overlay=self.draw_overlay)
+                                   draw_overlay=self.draw_overlay,
+                                   cancel=self.cancel)
             self.finished.emit(result)
+        except AnalysisCancelled:
+            self.cancelled.emit()
         except Exception as e:  # pragma: no cover - surfaced to the UI
             self.error.emit(f"{type(e).__name__}: {e}\n{traceback.format_exc()}")
 
@@ -298,6 +314,8 @@ class AnalysisQueue(QObject):
         self._worker: Optional[AnalysisWorker] = None
         self._cancelled = False
         self._running = False
+        # UX-07: cooperative cancel token shared with the running worker.
+        self._cancel_event = threading.Event()
 
     # -- API ---------------------------------------------------------------
     def is_running(self) -> bool:
@@ -316,16 +334,20 @@ class AnalysisQueue(QObject):
         self._total = len(self._jobs)
         self._done = 0
         self._cancelled = False
+        self._cancel_event = threading.Event()
         self._running = True
         self.overall_progress.emit(0.0)
         self._next()
         return True
 
     def cancel(self) -> None:
-        """Drop pending jobs; the running image's result is discarded."""
+        """Drop pending jobs and stop the running image (UX-07): the
+        detector checks the cancel event inside its long loops and aborts
+        within about a second; no partial result is delivered."""
         if not self._running:
             return
         self._cancelled = True
+        self._cancel_event.set()
         self._jobs.clear()
         if self._thread is None:
             self._finish()
@@ -349,7 +371,7 @@ class AnalysisQueue(QObject):
         self.job_started.emit(job.uid)
         th = QThread()
         wk = AnalysisWorker(job.image_bgr, job.px_per_um, job.params, job.scan_rect,
-                            draw_overlay=False)
+                            draw_overlay=False, cancel=self._cancel_event)
         wk.moveToThread(th)
         th.started.connect(wk.run)
         wk.progress.connect(self._on_progress)
@@ -357,6 +379,7 @@ class AnalysisQueue(QObject):
         wk.error.connect(self._on_error)
         wk.finished.connect(th.quit)
         wk.error.connect(th.quit)
+        wk.cancelled.connect(th.quit)
         th.finished.connect(self._on_thread_done)
         self._thread, self._worker = th, wk
         th.start()
