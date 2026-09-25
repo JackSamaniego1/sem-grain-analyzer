@@ -9,6 +9,7 @@ signals, never directly.
 """
 from __future__ import annotations
 
+import copy
 import itertools
 from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
@@ -35,6 +36,10 @@ from ui.filtering import (
 )
 from ui.canvas.layers import kept_labels
 from ui.workers import read_image, run_task, serial_pool, snapshot_result, thumb_qimage
+from core.result_pack import (
+    is_packed, live_bytes, pack_array, pack_result, unpack_result, unpacked_copy,
+)
+from ui.overlay_cache import OverlayCache, OverlayJob
 
 _uid_counter = itertools.count(1)
 _seq_counter = itertools.count(1)
@@ -44,6 +49,10 @@ _seq_counter = itertools.count(1)
 # on demand, off the GUI thread.  Thumbnails and results stay in memory.
 PIXEL_CACHE_MAX_IMAGES = 6
 PIXEL_CACHE_MAX_BYTES = 500 * 1024 * 1024
+# Analysed images whose label maps / masks / overlay stay uncompressed in
+# memory (current image + most recently used); the rest keep compressed
+# labels only and regenerate overlays on demand (core.result_pack).
+RESULT_CACHE_MAX_IMAGES = 8
 
 KIND_ORDER = ("workspace", "project", "sample", "lot", "session")
 META_FILES = {"project": "project.json", "sample": "sample.json",
@@ -198,6 +207,9 @@ class ImageDoc:
     # ``shape`` (h, w) stay known without holding the pixels
     shape: Optional[tuple] = None
     readable: bool = False
+    # memory for large loads: ``detector_labels`` compressed while the image
+    # is not in use (core.result_pack.PackedArray; raw/result carry their own)
+    det_packed: Optional[Any] = None
     uid: int = field(default_factory=lambda: next(_uid_counter))
     seq: int = field(default_factory=lambda: next(_seq_counter))
 
@@ -373,7 +385,17 @@ def _image_dict(si, bgr, legacy: Optional[dict] = None, opts: Optional[PostFilte
     edits = [dict(op) for op in (getattr(entry, "grain_edits", None) or [])
              if isinstance(op, dict)]
     base = getattr(si.result, "detector_label_image", None) if edits else None
+    det_packed = None
+    if not keep:
+        # large loads: only compact numbers + compressed labels travel back;
+        # the overlay is drawn again when something needs it
+        memo: dict = {}
+        pack_result(raw, memo)
+        pack_result(res, memo)
+        if base is not None:
+            det_packed, base = pack_array(base, memo), None
     return dict(filename=si.filename, path=si.path, bgr=bgr if keep else None,
+                det_packed=det_packed,
                 readable=bgr is not None,
                 shape=tuple(bgr.shape[:2]) if bgr is not None else None,
                 result=res, raw=raw,
@@ -432,7 +454,10 @@ def _read_pixels(path) -> Optional[np.ndarray]:
 
 def _filter_task(raw, image_bgr, path, opts, manual, params) -> dict:
     """Worker-thread: grain filters; reads the pixels itself when they are
-    not in the pixel cache (released again when the task ends)."""
+    not in the pixel cache (released again when the task ends).  A raw
+    result kept compressed (large loads) is unpacked into a private copy."""
+    if is_packed(raw):
+        raw = unpacked_copy(raw)
     if image_bgr is None:
         image_bgr = _read_pixels(path)
     return filter_image(raw, image_bgr, opts, manual, params)
@@ -721,6 +746,7 @@ class GrainGeometryCommand(QUndoCommand):
         self.state = state
         self.uid = uid
         doc = self._doc()
+        state.ensure_arrays(doc)
         self.before = (doc.raw, list(doc.edits), doc.detector_labels)
         base = doc.detector_labels
         if base is None and doc.raw is not None:
@@ -735,8 +761,11 @@ class GrainGeometryCommand(QUndoCommand):
         doc = self._doc()
         if doc is None:
             return
+        self.state.ensure_arrays(doc)
         doc.raw, doc.edits = raw, list(edits)
         doc.detector_labels = base if edits else None
+        doc.det_packed = None
+        self.state.hold_arrays(doc)
         ids = {int(g.grain_id) for g in (raw.grains if raw else [])}
         doc.manual &= ids
         doc.excluded = {k: v for k, v in doc.excluded.items() if k in ids}
@@ -817,6 +846,9 @@ class AppState(QObject):
         self.pixel_cache_max_images = PIXEL_CACHE_MAX_IMAGES
         self.pixel_cache_max_bytes = PIXEL_CACHE_MAX_BYTES
         self.pixel_peak = 0              # most images ever held at once (tests)
+        self._arr_lru: "OrderedDict[object, bool]" = OrderedDict()  # uid -> hydrated
+        self.result_cache_max_images = RESULT_CACHE_MAX_IMAGES
+        self.overlays = OverlayCache()
 
     # ------------------------------------------------------------------ settings
     def save_settings(self) -> None:
@@ -1005,6 +1037,12 @@ class AppState(QObject):
         im.manual = set(d.get("manual") or [])
         im.edits = list(d.get("edits") or [])
         im.detector_labels = d.get("detector_labels")
+        im.det_packed = d.get("det_packed")
+        self.overlays.discard_uid(im.uid)
+        if is_packed(im.raw) or is_packed(im.result):
+            self._arr_lru.pop(im.uid, None)
+        else:
+            self.hold_arrays(im)
         im.filter_override = options_from_dict(ov) if ov else None
         im.scan_rect = scan
         im.px_override = override
@@ -1222,6 +1260,8 @@ class AppState(QObject):
         self.flush()
         self.session = None
         self.current_uid = None
+        self._arr_lru.clear()
+        self.overlays.clear()
         self._records_pending = 0
         self._setup_pending = set()
         self.undo_stack.clear()
@@ -1592,7 +1632,10 @@ class AppState(QObject):
         return list(self.session.images) if self.session else []
 
     def current_image(self) -> Optional[ImageDoc]:
-        return self.session.image(self.current_uid) if self.session else None
+        im = self.session.image(self.current_uid) if self.session else None
+        if im is not None:
+            self.ensure_arrays(im)          # labels / masks full size while shown
+        return im
 
     def set_current_image(self, uid) -> None:
         if uid == self.current_uid:
@@ -1726,6 +1769,9 @@ class AppState(QObject):
         im.raw = raw
         im.manual = set()
         im.edits, im.detector_labels = [], None     # a new detection: hand edits start over
+        im.det_packed = None
+        self.overlays.discard_uid(uid)
+        self.hold_arrays(im)
         im.excluded, im.counts = {}, {}
         im.status, im.progress, im.message = "running", 99, "Applying grain filters"
         self.image_updated.emit(uid)
@@ -1814,7 +1860,9 @@ class AppState(QObject):
                 im.status, im.progress, im.message = "done", 100, ""
             if im.result is not None and im.result.overlay_image is not None:
                 im.thumb = thumb_qimage(im.result.overlay_image)
+            self.overlays.discard_uid(uid)
             self._dirty.add(uid)
+            self.hold_arrays(im)
             self._meta_dirty = True
             self.result_edited.emit(uid)
             self.image_updated.emit(uid)
@@ -1830,8 +1878,10 @@ class AppState(QObject):
                     self.image_updated.emit(uid)
             self.message.emit("Grain filters failed", msg.splitlines()[0], "danger")
 
-        run_task(_filter_task, im.raw, im.image_bgr, im.path, opts, frozenset(im.manual),
-                 params, on_done=done, on_error=failed)
+        # shallow copy: compacting ``im.raw`` meanwhile only rebinds the
+        # original's attributes, never the worker's
+        run_task(_filter_task, copy.copy(im.raw), im.image_bgr, im.path, opts,
+                 frozenset(im.manual), params, on_done=done, on_error=failed)
 
     def _run_final_filters(self) -> None:
         for uid in list(self._final_pending):
@@ -1862,6 +1912,7 @@ class AppState(QObject):
     def _edit_target(self, uid):
         from core.grain_edit import GrainEditError, label_offset
         im = self.session.image(uid) if (self.session and uid is not None) else None
+        self.ensure_arrays(im)
         if im is None or im.raw is None or im.raw.label_image is None:
             raise GrainEditError("Analyse this image before editing its grains.")
         lab = im.raw.label_image
@@ -1907,6 +1958,100 @@ class AppState(QObject):
     @staticmethod
     def _frame_shape(im: ImageDoc):
         return tuple(im.shape[:2]) if im.shape else None
+
+    # ------------------------------------------------------------------ result arrays
+    def hold_arrays(self, im: Optional[ImageDoc]) -> None:
+        """``im``'s label maps / masks / overlay are full size (most recently
+        used); the least recently used analysed images over
+        ``result_cache_max_images`` are compacted."""
+        if im is None or (im.raw is None and im.result is None):
+            return
+        self._arr_lru[im.uid] = True
+        self._arr_lru.move_to_end(im.uid)
+        self._evict_arrays()
+
+    def ensure_arrays(self, im: Optional[ImageDoc], touch: bool = True) -> Optional[ImageDoc]:
+        """Unpack a compacted image's label maps / masks (the overlay is drawn
+        again on demand: :meth:`overlay_job`)."""
+        if im is None:
+            return im
+        memo: dict = {}
+        changed = unpack_result(im.raw, memo)
+        changed = unpack_result(im.result, memo) or changed
+        if im.det_packed is not None:
+            im.detector_labels = memo.get(id(im.det_packed))
+            if im.detector_labels is None:
+                im.detector_labels = im.det_packed.unpack()
+            im.det_packed = None
+            changed = True
+        if changed:
+            self.hold_arrays(im)
+        elif touch and im.uid in self._arr_lru:
+            self._arr_lru.move_to_end(im.uid)
+        return im
+
+    def compact_arrays(self, im: ImageDoc) -> bool:
+        """Keep only compressed labels / masks and drop the overlay."""
+        memo: dict = {}
+        changed = pack_result(im.raw, memo)
+        changed = pack_result(im.result, memo) or changed
+        if im.detector_labels is not None:
+            im.det_packed = pack_array(im.detector_labels, memo)
+            im.detector_labels = None
+            changed = True
+        self._arr_lru.pop(im.uid, None)
+        return changed
+
+    def _evict_arrays(self) -> None:
+        lru = self._arr_lru
+        while len(lru) > self.result_cache_max_images:
+            victim = next((u for u in lru if u != self.current_uid
+                           and u not in self._filtering and u not in self._dirty
+                           and u not in self._px_pins), None)
+            if victim is None:
+                break
+            im = self._image_any(victim)
+            if im is None:
+                del lru[victim]
+                continue
+            self.compact_arrays(im)
+
+    def held_array_count(self) -> int:
+        return len(self._arr_lru)
+
+    def held_array_bytes(self) -> int:
+        """Bytes of label maps, masks and overlays (full size or compressed)
+        held by every image in the analyzer, plus the overlay LRU."""
+        doc = self.session
+        if doc is None:
+            return 0
+        seen: set = set()
+        total = 0
+        for im in doc.images + doc.removed:
+            total += live_bytes(im.raw, seen) + live_bytes(im.result, seen)
+            a = im.detector_labels
+            if isinstance(a, np.ndarray) and id(a) not in seen:
+                seen.add(id(a))
+                total += a.nbytes
+            if im.det_packed is not None and id(im.det_packed) not in seen:
+                seen.add(id(im.det_packed))
+                total += im.det_packed.nbytes
+        return total + self.overlays.nbytes()
+
+    def overlay_job(self, im: ImageDoc) -> OverlayJob:
+        """Callable (any thread) returning ``im``'s current filtered overlay:
+        the one in memory while the image is in use, else drawn again from
+        the pixels + compressed labels (small LRU: ``self.overlays``)."""
+        res = im.result
+        ov = getattr(res, "overlay_image", None) if res is not None else None
+        return OverlayJob(key=(im.uid, im.filter_gen), path=im.path, image_bgr=im.image_bgr,
+                          raw=im.raw, result=res, excluded=im.excluded, overlay=ov,
+                          cache=self.overlays)
+
+    def overlay_for(self, uid) -> Optional[np.ndarray]:
+        """Synchronous :meth:`overlay_job` (reads the pixels when evicted)."""
+        im = self._image_any(uid)
+        return self.overlay_job(im)() if im is not None else None
 
     # ------------------------------------------------------------------ pixel cache
     def _image_any(self, uid) -> Optional[ImageDoc]:
@@ -2063,6 +2208,7 @@ class AppState(QObject):
         def done(stamp):
             self._saving = False
             self.last_saved = stamp
+            self._evict_arrays()             # saved images may be compacted now
             if self._save_again or self.is_dirty():
                 self._save_again = False
                 self.save_now()
@@ -2087,6 +2233,7 @@ class AppState(QObject):
             if im.loading:
                 continue
             if im.uid in with_result and im.result is not None:
+                self.ensure_arrays(im, touch=False)
                 snap = snapshot_result(im.result)
                 # The saved label image keeps EVERY raw grain so filters can be
                 # switched off again after reload; grains.json / summary.json /

@@ -281,23 +281,42 @@ def session_metadata(state) -> dict:
     }
 
 
-def collect_inputs(state) -> List[ReportImageInput]:
+def collect_inputs(state, images=None) -> List[ReportImageInput]:
     """GUI-thread snapshot of every analysed image (filtered results).
 
     HIER-01: each image carries its display name (the stem of the file name
-    the profile's image-name template produced on import)."""
-    from ui.workers import snapshot_result
+    the profile's image-name template produced on import).
+
+    Memory for large loads: only the per-grain numbers are snapshotted; the
+    overlay comes from ``overlay_loader`` (``AppState.overlay_job``), drawn
+    again from compressed labels on the report thread one image at a time
+    when the image is not in use."""
     sample, lot = _session_ids(state)
     out: List[ReportImageInput] = []
-    for im in state.images():
+    for im in (state.images() if images is None else images):
         if im.result is None:
             continue
-        res = snapshot_result(im.result)
+        res = light_snapshot(im.result)
         path = str(im.path) if im.path else im.filename
-        out.append(ReportImageInput(image_path=path, result=res, overlay_bgr=res.overlay_image,
+        job = state.overlay_job(im) if hasattr(state, "overlay_job") else None
+        out.append(ReportImageInput(image_path=path, result=res,
+                                    overlay_bgr=getattr(im.result, "overlay_image", None),
+                                    overlay_loader=job,
                                     sample_id=sample, lot_number=lot,
                                     display_name=im.display_name))
     return out
+
+
+def light_snapshot(result):
+    """Copy of a result for the report thread: grain list and ASTM dict
+    copied, image-sized arrays shared by reference (never copied -- edits
+    and compaction only rebind them on the original)."""
+    import copy as _copy
+    r = _copy.copy(result)
+    r.grains = list(result.grains)
+    if isinstance(getattr(result, "astm", None), dict):
+        r.astm = dict(result.astm)
+    return r
 
 
 # ======================================================================

@@ -20,7 +20,7 @@ import os
 import tempfile
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -56,6 +56,11 @@ class ReportImageInput:
     notes: str = ""
     display_name: str = ""
     levels: Dict[str, str] = field(default_factory=dict)
+    # Memory for large loads: a zero-argument callable returning the overlay
+    # (BGR ndarray or None), called once while the report assets are written
+    # and released right after -- so a report over hundreds of images never
+    # holds every overlay at once. Used when ``overlay_bgr`` is None.
+    overlay_loader: Optional[Callable[[], Optional[np.ndarray]]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +380,23 @@ class ReportModel:
 
             overlay_path = None
             image_path = item.image_path
-            if item.image_bgr is not None or item.overlay_bgr is not None:
+            if (item.overlay_bgr is None and getattr(res, "overlay_image", None) is None
+                    and item.overlay_loader is not None):
+                try:
+                    lazy = item.overlay_loader()
+                except Exception:
+                    lazy = None
+                if lazy is not None:
+                    if _asset_dir is None:
+                        _asset_dir = tempfile.mkdtemp(prefix="grain_report_assets_")
+                    base = os.path.splitext(os.path.basename(
+                        item.image_path or f"image_{idx}"))[0] or f"image_{idx}"
+                    overlay_path = _save_bgr(lazy, _asset_dir, f"{idx:03d}_{base}_overlay.png")
+                    if item.image_bgr is not None:
+                        image_path = _save_bgr(item.image_bgr, _asset_dir,
+                                               f"{idx:03d}_{base}_original.png")
+                lazy = None
+            elif item.image_bgr is not None or item.overlay_bgr is not None:
                 if _asset_dir is None:
                     _asset_dir = tempfile.mkdtemp(prefix="grain_report_assets_")
                 base = os.path.splitext(os.path.basename(item.image_path or f"image_{idx}"))[0] or f"image_{idx}"

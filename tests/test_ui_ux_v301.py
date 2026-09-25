@@ -455,6 +455,12 @@ def test_pixel_memory_bounded_200_images_analysed(env, qtbot, monkeypatch):
     # arrays alive anywhere (cache + images being read/analysed right now)
     in_flight = QThreadPool.globalInstance().maxThreadCount() + 1
     assert peak[0] <= cap + in_flight, (peak[0], cap, in_flight)
+    # label maps / overlays: only the most recently used images stay full size
+    qtbot.waitUntil(lambda: st.held_array_count() <= app_state.RESULT_CACHE_MAX_IMAGES,
+                    timeout=10000)
+    one = max(im.raw.label_image.nbytes * 3 for im in st.images()
+              if im.raw is not None and im.raw.label_image is not None)
+    assert st.held_array_bytes() < one * (app_state.RESULT_CACHE_MAX_IMAGES + 60),         st.held_array_bytes()
     # an evicted image comes back from disk when it is shown again
     far = next(im for im in st.images() if im.image_bgr is None)
     st.set_current_image(far.uid)
