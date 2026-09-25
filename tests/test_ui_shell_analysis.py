@@ -13,7 +13,7 @@ pytest.importorskip("pytestqt")
 from data.models import AppSettings  # noqa: E402
 from data.session_io import load_session  # noqa: E402
 from data.settings import save_settings  # noqa: E402
-from tests.ui_shell_helpers import make_session  # noqa: E402
+from tests.ui_shell_helpers import confirm_setup, make_session  # noqa: E402
 
 TIMEOUT = 90000
 
@@ -45,6 +45,7 @@ def _open_shell(qtbot, path: Path):
 def _analyse_all(shell, qtbot):
     st = shell.state
     shell.analyze.params.set_mode("threshold")
+    confirm_setup(shell, qtbot)            # UX-02: scan area + scale confirmed first
     with qtbot.waitSignal(shell.analyze.queue.queue_finished, timeout=TIMEOUT):
         shell.analyze_all()
     qtbot.waitUntil(lambda: all(im.status == "done" and im.result is not None
@@ -216,6 +217,7 @@ def test_close_window_mid_analysis_exits_cleanly(env, qtbot, capfd):
     from ui.workers import pending_tasks
     path = make_session(env, n=3)
     shell = _open_shell(qtbot, path)
+    confirm_setup(shell, qtbot)
     shell.analyze.analyze_all()
     qtbot.waitUntil(lambda: shell.analyze.queue.is_running(), timeout=10000)
     shell.close()

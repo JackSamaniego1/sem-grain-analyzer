@@ -32,7 +32,7 @@ pytest.importorskip("pytestqt")
 from data.models import AppSettings  # noqa: E402
 from data.settings import save_settings  # noqa: E402
 from tests.conftest import make_mosaic  # noqa: E402
-from tests.ui_shell_helpers import make_session  # noqa: E402
+from tests.ui_shell_helpers import confirm_setup, make_session  # noqa: E402
 
 TIMEOUT = 90000
 
@@ -69,6 +69,7 @@ def _open_shell(qtbot, path: Path, probe: bool = False):
 def _analyse_all(shell, qtbot, mode="threshold"):
     st = shell.state
     shell.analyze.params.set_mode(mode)
+    confirm_setup(shell, qtbot)            # UX-02: scan area + scale confirmed first
     with qtbot.waitSignal(shell.analyze.queue.queue_finished, timeout=TIMEOUT):
         shell.analyze_all()
     qtbot.waitUntil(lambda: all(im.status == "done" and im.result is not None
@@ -309,7 +310,30 @@ def test_journey_uncalibrated_image_report_flags_missing_calibration(env, qtbot)
     im = st.images()[0]
     assert im.px_override == 0.0
 
-    _analyse_all(shell, qtbot, "threshold")
+    # ---- UX-02: Analyze is refused while the image has no scale; the tile is
+    # spotlighted (tour-style) with the gate text and nothing starts ----
+    from ui.pages.analyze_page import GATE_TEXT
+    shell.analyze.params.set_mode("threshold")
+    shell.analyze.setup_tile.btn_auto.click()
+    qtbot.waitUntil(lambda: not st.is_setting_up(), timeout=TIMEOUT)
+    assert st.setup_issues(im) == ["scale"]
+    shell.analyze.btn_all.click()
+    assert not shell.analyze.queue.is_running()
+    hint = shell.setup_hint
+    qtbot.waitUntil(lambda: hint.is_active() and hint.overlay.callout.isVisible(),
+                    timeout=5000)
+    assert hint.overlay.callout.body.text() == GATE_TEXT
+    hint.finish()
+
+    # ---- a result analysed without a scale (as sessions saved before v3.0.1
+    # may hold): the report must flag the missing calibration ----
+    from core.grain_detector import DetectionParams
+    from ui.workers import analyze_image
+    raw = analyze_image(im.image_bgr, 0.0, DetectionParams(detection_mode="threshold"),
+                        st.scan_for(im))
+    st.set_result(im.uid, raw)
+    qtbot.waitUntil(lambda: im.status == "done" and im.result is not None
+                    and not st.is_filtering(), timeout=TIMEOUT)
     assert im.result.grain_count > 5
     assert im.result.has_calibration is False
 
