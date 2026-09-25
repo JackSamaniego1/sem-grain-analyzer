@@ -21,8 +21,8 @@ from PySide6.QtWidgets import (
 )
 
 from reports.charts import (
-    derive_custom_palette, new_custom_palette_id, normalize_hex, palette_choices,
-    resolve_chart_options,
+    convert_bound, derive_custom_palette, new_custom_palette_id, normalize_hex, palette_choices,
+    resolve_chart_options, resolve_units,
 )
 from ui.design import icons
 from ui.design.tokens import SPACE
@@ -41,6 +41,7 @@ PALETTES = palette_choices()
 # setting a theme directly.
 NEW_CUSTOM_PALETTE = "__new_custom_palette__"
 CHART_METRICS = (("area", "Area"), ("diameter", "Diameter"))
+CHART_METRIC_LABELS = dict(CHART_METRICS)
 
 
 def _cap(text: str):
@@ -269,6 +270,13 @@ class ReportInspector(QWidget):
             sec = self.model.get_section("cover")
             if sec is not None:
                 sec.title = value
+        if field == "units":
+            # UX-14 fix: the min/max text fields show values in the unit
+            # that is currently rendering (``_bound_display_unit``) -- that
+            # unit just changed, so redraw them (the underlying stored
+            # value + its recorded ``bound_unit`` are untouched; only the
+            # *display* is converted).
+            self._load_chart_options(self.model)
         self.doc_changed.emit(field)
 
     def _set_bins(self, kind: str, n: int) -> None:
@@ -307,15 +315,40 @@ class ReportInspector(QWidget):
         self.normal_fit_cb.setChecked(opts["normal_fit"])
         for metric, w in self.metric_rows.items():
             o = opts[metric]
+            unit = self._bound_display_unit(metric)
+            # UX-14 fix: show min/max converted from the unit they were
+            # entered in (``bound_unit``) into the unit this chart is
+            # currently rendering in -- ``None``/old-file bounds convert to
+            # themselves (treated as already being in the current unit), so
+            # this is a no-op for report.json files saved before the fix.
+            lo = convert_bound(o["min"], o.get("bound_unit"), unit, metric)
+            hi = convert_bound(o["max"], o.get("bound_unit"), unit, metric)
             w["enabled"].setChecked(o["enabled"])
-            w["min"].setText(_fmt_optional_float(o["min"]))
-            w["max"].setText(_fmt_optional_float(o["max"]))
+            w["min"].setText(_fmt_optional_float(lo))
+            w["max"].setText(_fmt_optional_float(hi))
+            metric_label = CHART_METRIC_LABELS.get(metric, metric.title())
+            w["min"].setToolTip(f"Only chart {metric_label.lower()} values >= this ({unit})")
+            w["max"].setToolTip(f"Only chart {metric_label.lower()} values <= this ({unit})")
             if w["title"].text() != (o["title"] or ""):
                 w["title"].setText(o["title"] or "")
             if w["color"].text() != (o["color"] or ""):
                 w["color"].setText(o["color"] or "")
             w["swatch"].color = QColor(o["color"] or "#888888")
             w["swatch"].update()
+
+    def _bound_display_unit(self, metric: str) -> str:
+        """UX-14 fix: the unit chart-option min/max should be shown/typed in
+        for ``metric`` ("area"|"diameter") -- the same unit the exported
+        charts render in. Mirrors ``reports.excel_renderer._combined_unit``:
+        every included image calibrated -> ``resolve_units`` of the first
+        one (matches the report's ``units`` auto/um/nm preference);
+        otherwise the uncalibrated px unit, since there is nothing to scale."""
+        m = self.model
+        images = m.ordered_images(included_only=True) if m is not None else []
+        if images and all(i.has_calibration for i in images):
+            au, _, du, _ = resolve_units(images[0].px_per_um, m.units)
+            return au if metric == "area" else du
+        return "px²" if metric == "area" else "px"
 
     # ------------------------------------------------------------------ palette (UX-15)
     def _reload_palette_combo(self, select: Optional[str] = None) -> None:
@@ -406,6 +439,13 @@ class ReportInspector(QWidget):
         lo, hi = _parse_optional_float(w["min"].text()), _parse_optional_float(w["max"].text())
         opts = self._chart_opts()
         opts[metric]["min"], opts[metric]["max"] = lo, hi
+        # UX-14 fix: record the unit these numbers were just typed in (the
+        # field's current display unit) so renderers/the preview can convert
+        # them correctly even if the report's units preference changes, or
+        # "Auto" resolves a different unit per image, later. No bound left
+        # -> no unit to record either.
+        opts[metric]["bound_unit"] = self._bound_display_unit(metric) if (lo is not None or
+                                                                           hi is not None) else None
         # Reflect back-parsed/cleared text (e.g. "abc" -> "") without
         # re-triggering editingFinished.
         w["min"].blockSignals(True)

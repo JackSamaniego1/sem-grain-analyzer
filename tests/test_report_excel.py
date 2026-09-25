@@ -57,6 +57,22 @@ def _build_mixed_model(tmp_path):
     return ReportModel.from_results(items, title="Mixed", asset_dir=str(tmp_path / "assets"))
 
 
+def _build_model_varied_ppu(tmp_path, ppu_list):
+    """One image per ``px_per_um`` in ``ppu_list`` -- used to exercise
+    "Auto" units resolving to a different unit per image (UX-14 fix)."""
+    det = GrainDetector()
+    items = []
+    for i, ppu in enumerate(ppu_list):
+        gray, _ = make_mosaic(seed=i + 1, h=256, w=256, n_grains=30)
+        bgr = np.repeat(gray[:, :, None], 3, axis=2)
+        res = det.analyze(bgr, px_per_um=ppu, params=DetectionParams())
+        img_path = str(tmp_path / f"synth_{i}.png")
+        cv2.imwrite(img_path, bgr)
+        items.append(ReportImageInput(image_path=img_path, result=res, image_bgr=bgr,
+                                       sample_id=f"S{i}", lot_number="L1"))
+    return ReportModel.from_results(items, title="Varied PPU", asset_dir=str(tmp_path / "assets"))
+
+
 def test_uncalibrated_overview_row_has_no_zero_size_stats(tmp_path):
     model = _build_model(tmp_path, n=1, px_per_um=0.0)
     out = str(tmp_path / "report.xlsx")
@@ -217,6 +233,85 @@ def test_chart_options_min_max_restricts_binned_grains(tmp_path):
     render_excel(model, out_narrow)
     narrow_total = _diameter_hist_total(out_narrow)
     assert narrow_total < full_total
+
+
+# ---------------------------------------------------------------------------
+# UX-14 fix: unit-aware chart min/max
+# ---------------------------------------------------------------------------
+
+def _sheet_diameter_hist_total(xlsx_path: str, sheet_name: str) -> float:
+    ws = openpyxl.load_workbook(xlsx_path)[sheet_name]
+    chart = next(c for c in ws._charts
+                 if "Diameter" in c.x_axis.title.tx.rich.p[0].r[0].t)
+    pts = chart.series[0].val.numRef.numCache.pt
+    return sum(pt.v for pt in pts)
+
+
+def test_chart_options_min_max_bound_unit_um_to_nm_keeps_same_grains(tmp_path):
+    """UX-14 fix: a diameter bound recorded as entered in µm keeps selecting
+    the same physical grains after the report's unit preference switches
+    from µm to nm -- before the fix the raw number was applied straight to
+    the nm-scaled values, silently dropping almost everything."""
+    model = _build_model(tmp_path, n=3, px_per_um=8.0)
+    diam_um = [g["diameter_um"] for img in model.images for g in img.grains]
+    lo, hi = min(diam_um), (min(diam_um) + max(diam_um)) / 2
+    expected = len([d for d in diam_um if lo <= d <= hi])
+    assert 0 < expected < len(diam_um)          # bound actually restricts something
+
+    model.chart_options = {"diameter": {"min": lo, "max": hi, "bound_unit": "µm"}}
+    model.units = "um"
+    out_um = str(tmp_path / "um.xlsx")
+    render_excel(model, out_um)
+    assert _diameter_hist_total(out_um) == expected
+
+    model.units = "nm"       # force the render unit to nm for every chart
+    out_nm = str(tmp_path / "nm.xlsx")
+    render_excel(model, out_nm)
+    assert _diameter_hist_total(out_nm) == expected
+
+
+def test_chart_options_min_max_bound_unit_auto_per_image(tmp_path):
+    """UX-14 fix: under "Auto" units, each image's own histogram can resolve
+    to a different unit (µm for a coarsely-calibrated image, nm for a
+    finely-calibrated one) -- a bound recorded in µm must be converted
+    per image, not applied unconverted to whichever unit that image
+    happens to render in."""
+    model = _build_model_varied_ppu(tmp_path, [8.0, 100.0])
+    assert model.units == "auto"
+    lo, hi = 0.5, 8.0    # µm
+    expected_by_order = {}
+    for img in model.images:
+        diam_um = [g["diameter_um"] for g in img.grains]
+        expected_by_order[img.order] = len([d for d in diam_um if lo <= d <= hi])
+        assert 0 < expected_by_order[img.order] < len(diam_um)   # actually restricts something
+
+    model.chart_options = {"diameter": {"min": lo, "max": hi, "bound_unit": "µm"}}
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+
+    sheet_names = [n for n in openpyxl.load_workbook(out).sheetnames if n.startswith("Img ")]
+    assert len(sheet_names) == len(model.images)
+    for name in sheet_names:
+        order = int(name.split(" ")[1])
+        assert _sheet_diameter_hist_total(out, name) == expected_by_order[order]
+
+
+def test_chart_options_min_max_without_bound_unit_treated_as_current_render_unit(tmp_path):
+    """Old report.json chart_options never had a "bound_unit" key -- UX-14
+    fix must keep interpreting a bound with no recorded unit as already
+    being in whatever unit is currently rendering (i.e. apply it
+    unconverted), matching the pre-fix behaviour exactly."""
+    model = _build_model(tmp_path, n=3, px_per_um=8.0)
+    model.units = "nm"
+    diam_nm = [g["diameter_um"] * 1000.0 for img in model.images for g in img.grains]
+    lo, hi = min(diam_nm), (min(diam_nm) + max(diam_nm)) / 2
+    expected = len([d for d in diam_nm if lo <= d <= hi])
+    assert 0 < expected < len(diam_nm)
+
+    model.chart_options = {"diameter": {"min": lo, "max": hi}}   # no bound_unit key at all
+    out = str(tmp_path / "report.xlsx")
+    render_excel(model, out)
+    assert _diameter_hist_total(out) == expected
 
 
 def test_raw_sheets_have_autofilter_and_freeze_panes(tmp_path):

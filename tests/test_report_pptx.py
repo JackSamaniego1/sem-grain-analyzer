@@ -232,6 +232,55 @@ def test_chart_options_min_max_restricts_binned_grains(tmp_path):
     assert total_narrow < total_full
 
 
+# ---------------------------------------------------------------------------
+# UX-14 fix: unit-aware chart min/max
+# ---------------------------------------------------------------------------
+
+def _diam_slide_chart_total(pptx_path: str):
+    prs = Presentation(pptx_path)
+    chart = next(sh for sh in list(prs.slides)[3].shapes if sh.has_chart).chart
+    return sum(chart.series[0].values)
+
+
+def test_chart_options_min_max_bound_unit_um_to_nm_keeps_same_grains(tmp_path):
+    """UX-14 fix: a diameter bound recorded as entered in µm keeps selecting
+    the same physical grains after the report's unit preference switches
+    from µm to nm, mirroring the Excel renderer's fix."""
+    model = _build_model(tmp_path, n=2, px_per_um=8.0)
+    diam_um = [g["diameter_um"] for img in model.images for g in img.grains]
+    lo, hi = min(diam_um), (min(diam_um) + max(diam_um)) / 2
+    expected = len([d for d in diam_um if lo <= d <= hi])
+    assert 0 < expected < len(diam_um)
+
+    model.chart_options = {"diameter": {"min": lo, "max": hi, "bound_unit": "µm"}}
+    model.units = "um"
+    out_um = str(tmp_path / "um.pptx")
+    render_pptx(model, out_um)
+    assert _diam_slide_chart_total(out_um) == expected
+
+    model.units = "nm"
+    out_nm = str(tmp_path / "nm.pptx")
+    render_pptx(model, out_nm)
+    assert _diam_slide_chart_total(out_nm) == expected
+
+
+def test_chart_options_min_max_without_bound_unit_treated_as_current_render_unit(tmp_path):
+    """Old report.json chart_options never had a "bound_unit" key -- it must
+    keep applying unconverted (matching the pre-fix behaviour) rather than
+    being (mis)treated as µm/nm."""
+    model = _build_model(tmp_path, n=2, px_per_um=8.0)
+    model.units = "nm"
+    diam_nm = [g["diameter_um"] * 1000.0 for img in model.images for g in img.grains]
+    lo, hi = min(diam_nm), (min(diam_nm) + max(diam_nm)) / 2
+    expected = len([d for d in diam_nm if lo <= d <= hi])
+    assert 0 < expected < len(diam_nm)
+
+    model.chart_options = {"diameter": {"min": lo, "max": hi}}
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    assert _diam_slide_chart_total(out) == expected
+
+
 def test_image_slides_have_metric_callouts_and_caption(tmp_path):
     model = _build_model(tmp_path, n=2)
     model.images[0].caption = "Notably coarse grains"

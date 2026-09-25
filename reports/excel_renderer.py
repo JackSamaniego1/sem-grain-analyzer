@@ -43,8 +43,8 @@ except Exception:  # pragma: no cover
     cv2 = None
 
 from reports.charts import (
-    SERIES, TAB_COLORS, build_bins, filter_range, normal_fit, resolve_chart_options,
-    resolve_units, series_for,
+    SERIES, TAB_COLORS, build_bins, convert_bound, filter_range, normal_fit,
+    resolve_chart_options, resolve_units, series_for,
 )
 from reports.model import ReportModel, ImageSummary, Section
 
@@ -601,13 +601,13 @@ def _write_summary_charts(wb, model: ReportModel, images: List[ImageSummary], fm
         row = _write_hist_block(ws, fmts, wb, row, area_vals, n_bins_area, au, "Grain Area",
                                 opts["area"]["color"] or series["area_bar"], chart_anchor="J2",
                                 fit_color=series["normal_fit"], opt=opts["area"],
-                                show_fit=opts["normal_fit"])
+                                show_fit=opts["normal_fit"], metric="area")
         row += 2
     if opts["diameter"]["enabled"]:
         row = _write_hist_block(ws, fmts, wb, row, diam_vals, n_bins_diam, du, "Grain Diameter",
                                 opts["diameter"]["color"] or series["diameter_bar"],
                                 chart_anchor="J22", fit_color=series["normal_fit"],
-                                opt=opts["diameter"], show_fit=opts["normal_fit"])
+                                opt=opts["diameter"], show_fit=opts["normal_fit"], metric="diameter")
 
     # Per-image mean diameter bar w/ error bars + grain count bar.
     row += 2
@@ -671,16 +671,24 @@ def _write_summary_charts(wb, model: ReportModel, images: List[ImageSummary], fm
 
 def _write_hist_block(ws, fmts, wb, start_row, values, n_bins, unit, label, color, chart_anchor,
                        fit_color: str = SERIES["normal_fit"], opt: Optional[dict] = None,
-                       show_fit: bool = True) -> int:
+                       show_fit: bool = True, metric: str = "area") -> int:
     """UX-14: ``opt`` is one metric's resolved ``chart_options`` entry
     (``reports.charts.resolve_chart_options``) — ``min``/``max`` filter the
     values before binning, ``title`` overrides the chart title (axis titles
     always keep their unit, so they are not overridable here). ``show_fit``
-    is the options' global ``normal_fit`` toggle."""
+    is the options' global ``normal_fit`` toggle. ``values`` are already in
+    ``unit`` (the render unit for *this* chart -- may differ per image, or
+    from when the bound was typed, under "Auto" units); ``metric``
+    ("area"/"diameter") + ``opt["bound_unit"]`` let UX-14's fix
+    (``reports.charts.convert_bound``) rescale ``min``/``max`` into ``unit``
+    before filtering, so a bound entered in µm still selects the same
+    grains after a unit switch."""
     if isinstance(chart_anchor, tuple):
         chart_anchor = xl_rowcol_to_cell(chart_anchor[0], chart_anchor[1])
     opt = opt or {}
-    values = filter_range(values, opt.get("min"), opt.get("max"))
+    lo = convert_bound(opt.get("min"), opt.get("bound_unit"), unit, metric)
+    hi = convert_bound(opt.get("max"), opt.get("bound_unit"), unit, metric)
+    values = filter_range(values, lo, hi)
     labels, counts, edges = build_bins(values, n_bins)
     if not labels:
         return start_row
@@ -896,14 +904,15 @@ def _write_image_sheet(wb, model: ReportModel, img: ImageSummary, sheet_name, fm
         hist_row = _write_hist_block(ws, fmts, wb, hist_row, area_vals, model.bins.get("area", 0),
                                       au, "Grain Area", opts["area"]["color"] or series["area_bar"],
                                       chart_anchor=(hist_row, 5), fit_color=series["normal_fit"],
-                                      opt=opts["area"], show_fit=opts["normal_fit"])
+                                      opt=opts["area"], show_fit=opts["normal_fit"], metric="area")
         hist_row += 2
     if opts["diameter"]["enabled"]:
         hist_row = _write_hist_block(ws, fmts, wb, hist_row, diam_vals,
                                       model.bins.get("diameter", 0), du, "Grain Diameter",
                                       opts["diameter"]["color"] or series["diameter_bar"],
                                       chart_anchor=(hist_row, 5), fit_color=series["normal_fit"],
-                                      opt=opts["diameter"], show_fit=opts["normal_fit"])
+                                      opt=opts["diameter"], show_fit=opts["normal_fit"],
+                                      metric="diameter")
 
     note_row = hist_row + 2
     ws.merge_range(note_row, 0, note_row, 2, "Caption / Notes", fmts["section"])

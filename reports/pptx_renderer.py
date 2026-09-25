@@ -35,8 +35,8 @@ from pptx.oxml.ns import nsdecls, nsuri
 from pptx.util import Emu, Inches, Pt
 
 from reports.charts import (
-    SERIES, build_bins, filter_range, normal_fit, resolve_chart_options, resolve_units,
-    resolve_palette, series_for,
+    SERIES, build_bins, convert_bound, filter_range, normal_fit, resolve_chart_options,
+    resolve_units, resolve_palette, series_for,
 )
 from reports.model import ReportModel, ImageSummary, Section
 from reports.excel_renderer import _resized_png, _row_size_stats
@@ -658,7 +658,10 @@ def _distribution_slide(slide, model: ReportModel, images: List[ImageSummary], k
     """UX-14: ``model.chart_options[kind]`` (min/max/title/colour) and the
     global ``normal_fit`` toggle — see ``reports.charts.
     resolve_chart_options`` — mirror the Excel renderer's ``_write_hist_block``
-    so both exports agree."""
+    so both exports agree. UX-14 fix: ``min``/``max`` are stored in
+    ``opt["bound_unit"]`` and converted to ``unit`` (this slide's render
+    unit) via ``reports.charts.convert_bound`` before filtering, so a bound
+    typed in µm still selects the same grains after a unit switch."""
     label = "Grain Area" if kind == "area" else "Grain Diameter"
     _slide_heading(slide, f"Combined {label} Distribution", navy)
     opts = resolve_chart_options(model.chart_options)
@@ -678,7 +681,9 @@ def _distribution_slide(slide, model: ReportModel, images: List[ImageSummary], k
         else:
             values, unit = [g["diameter_px"] for g in all_grains], "px"
 
-    values = filter_range(values, opt.get("min"), opt.get("max"))
+    lo = convert_bound(opt.get("min"), opt.get("bound_unit"), unit, kind)
+    hi = convert_bound(opt.get("max"), opt.get("bound_unit"), unit, kind)
+    values = filter_range(values, lo, hi)
     n_bins = model.bins.get(kind, 0)
     labels, counts, edges = build_bins(values, n_bins)
     if not labels:

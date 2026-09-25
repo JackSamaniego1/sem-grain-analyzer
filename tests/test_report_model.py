@@ -430,3 +430,33 @@ def test_validate_catches_min_greater_than_max(tmp_path):
     model.chart_options = {"diameter": {"min": 50, "max": 10}}
     problems = model.validate()
     assert any("chart_options" in p and "diameter" in p for p in problems)
+
+
+# ---------------------------------------------------------------------------
+# UX-14 fix: unit-aware chart min/max (bound_unit) round-trips
+# ---------------------------------------------------------------------------
+
+def test_chart_options_bound_unit_round_trips_through_json(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    model.chart_options = {"diameter": {"min": 5.0, "max": 50.0, "bound_unit": "µm"}}
+    restored = ReportModel.from_json(model.to_json())
+    assert restored.chart_options == model.chart_options
+    assert restored.chart_options["diameter"]["bound_unit"] == "µm"
+
+
+def test_old_report_json_chart_options_without_bound_unit_key_loads_cleanly(tmp_path):
+    """A report.json saved before UX-14's fix has ``min``/``max`` but no
+    ``bound_unit`` key at all in the ``chart_options`` sub-dicts -- it must
+    load without error, and ``reports.charts.resolve_chart_options`` must
+    fill in ``bound_unit: None`` (treated as "already the current render
+    unit", i.e. unconverted, at render time)."""
+    from reports.charts import resolve_chart_options
+    model = _build_model(tmp_path, n=1)
+    model.chart_options = {"area": {"min": 1.0, "max": 50.0}}
+    d = model.to_dict()
+    assert "bound_unit" not in d["chart_options"]["area"]   # genuinely old-shaped dict
+    restored = ReportModel.from_dict(d)
+    assert restored.chart_options == {"area": {"min": 1.0, "max": 50.0}}
+    resolved = resolve_chart_options(restored.chart_options)
+    assert resolved["area"]["bound_unit"] is None
+    assert resolved["area"]["min"] == 1.0 and resolved["area"]["max"] == 50.0

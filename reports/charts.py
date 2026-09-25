@@ -211,11 +211,15 @@ def derive_custom_palette(colors: Sequence[str], name: str = "Custom") -> Dict[s
 # global (matches the single "Normal Fit" toggle users think in terms of).
 # ``title`` overrides the chart's title only -- axis titles always keep
 # their unit per the report's chart rules, so they are not user-overridable
-# text here.
+# text here. ``bound_unit`` (UX-14 fix) records the unit ``min``/``max`` were
+# entered in ("µm"/"nm"/"px" for diameter, "µm²"/"nm²"/"px²" for area) so
+# renderers can convert them to whatever unit is actually being rendered
+# (``reports.charts.convert_bound``) -- ``None`` means "not recorded", which
+# old report.json files always resolve to, keeping their pre-fix behaviour.
 DEFAULT_CHART_OPTIONS: Dict[str, object] = {
     "normal_fit": True,
-    "area": {"enabled": True, "min": None, "max": None, "title": "", "color": ""},
-    "diameter": {"enabled": True, "min": None, "max": None, "title": "", "color": ""},
+    "area": {"enabled": True, "min": None, "max": None, "bound_unit": None, "title": "", "color": ""},
+    "diameter": {"enabled": True, "min": None, "max": None, "bound_unit": None, "title": "", "color": ""},
 }
 
 
@@ -237,6 +241,47 @@ def resolve_chart_options(raw: Optional[Dict[str, object]]) -> Dict[str, object]
         if isinstance(sub, dict):
             out[metric].update({k: v for k, v in sub.items() if k in out[metric]})
     return out
+
+
+# UX-14 fix: multiplier from the base unit (um / um^2 -- what values are
+# always stored in) to each unit ``resolve_units``/``_unit`` can produce.
+# Lets ``convert_bound`` translate a bound between any two of them without
+# needing the image's ``px_per_um`` again.
+_AREA_UNIT_MULT: Dict[str, float] = {"µm²": 1.0, "nm²": 1e6, "px²": 1.0}
+_LENGTH_UNIT_MULT: Dict[str, float] = {"µm": 1.0, "nm": 1000.0, "px": 1.0}
+
+
+def convert_bound(value: Optional[float], from_unit: Optional[str], to_unit: str,
+                   metric: str) -> Optional[float]:
+    """UX-14 fix: rescale a ``chart_options[metric]["min"/"max"]`` bound that
+    was entered in ``from_unit`` (``chart_options[metric]["bound_unit"]``)
+    into ``to_unit`` -- the unit the values about to be histogrammed are
+    *currently* rendered in. Needed because the render unit can differ from
+    the bound's unit: the report's ``units`` preference can change after the
+    bound was typed, and "Auto" units resolve independently per image, so
+    the same stored bound must be converted freshly for whichever unit is
+    being rendered right now.
+
+    ``value is None`` -> ``None`` (no bound set). ``from_unit`` falsy (in
+    particular ``None``) or already equal to ``to_unit`` -> ``value``
+    returned unchanged -- this is what makes old ``report.json`` files
+    (saved before ``bound_unit`` existed) keep behaving exactly as before:
+    an un-tagged bound is treated as already being in whichever unit
+    renders it, i.e. never converted. ``px``/``px²`` (uncalibrated -- no
+    real-world scale to convert with) are likewise left unconverted.
+    """
+    if value is None:
+        return None
+    value = float(value)
+    if not from_unit or from_unit == to_unit:
+        return value
+    if from_unit in ("px", "px²") or to_unit in ("px", "px²"):
+        return value
+    table = _AREA_UNIT_MULT if metric == "area" else _LENGTH_UNIT_MULT
+    fm, tm = table.get(from_unit), table.get(to_unit)
+    if not fm or not tm:
+        return value
+    return value * (tm / fm)
 
 
 def new_custom_palette_id(existing: Sequence[dict]) -> str:

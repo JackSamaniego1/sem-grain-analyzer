@@ -345,7 +345,7 @@ class ChartsPreview(SectionPreview):
         self.refresh()
 
     def refresh(self) -> None:
-        from reports.charts import filter_range, resolve_chart_options
+        from reports.charts import convert_bound, filter_range, resolve_chart_options
         m = self.model
         opts = resolve_chart_options(m.chart_options)
         for kind, h, card in (("area", self.h_area, self.cards[0]),
@@ -356,7 +356,13 @@ class ChartsPreview(SectionPreview):
                 continue
             card.set_title(o["title"] or f"Grain {kind} distribution — all included images")
             vals, unit = combined_values(m, kind)
-            vals = filter_range(vals, o["min"], o["max"])
+            # UX-14 fix: min/max were typed in o["bound_unit"] (may not be
+            # this preview's current ``unit`` -- the report's units
+            # preference can change after the bound was set) -- convert
+            # before filtering so the preview matches the exported charts.
+            lo = convert_bound(o["min"], o.get("bound_unit"), unit, kind)
+            hi = convert_bound(o["max"], o.get("bound_unit"), unit, kind)
+            vals = filter_range(vals, lo, hi)
             labels, counts, edges = build_bins(vals, int(m.bins.get(kind, 0) or 0))
             h.set_binned(vals, edges, counts, [f"{lb} {unit}" for lb in labels],
                          f"Grain {kind} ({unit})", unit)
