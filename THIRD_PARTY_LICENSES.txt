@@ -5,7 +5,7 @@ This application bundles the following third-party software. All are
 permissive (MIT/BSD/Apache/HPND) or LGPL; none require a paid licence to
 distribute. No dependency was added that requires network access at
 runtime — this application never connects to the internet
-(see core/offline_guard.py and CLAUDE.md HARD CONSTRAINT #1).
+(see core/offline_guard.py).
 
 --------------------------------------------------------------------------
 PySide6 — Qt for Python

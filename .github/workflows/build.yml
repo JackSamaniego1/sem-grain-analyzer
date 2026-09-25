@@ -36,19 +36,7 @@ jobs:
           }
 
       - name: Generate icon
-        run: |
-          python -c "
-          from PIL import Image, ImageDraw
-          import os
-          os.makedirs('resources', exist_ok=True)
-          img = Image.new('RGBA', (256,256), (26,43,74,255))
-          draw = ImageDraw.Draw(img)
-          draw.ellipse([30,30,226,226], fill=(0,140,200,255))
-          draw.ellipse([80,80,176,176], fill=(26,43,74,255))
-          draw.rectangle([118,60,138,196], fill=(255,255,255,255))
-          draw.rectangle([60,118,196,138], fill=(255,255,255,255))
-          img.save('resources/icon.ico', format='ICO', sizes=[(256,256),(64,64),(32,32),(16,16)])
-          "
+        run: python -m ui.design.branding resources\icon.ico
 
       - name: Build with PyInstaller
         run: pyinstaller grain_analyzer.spec --clean --noconfirm

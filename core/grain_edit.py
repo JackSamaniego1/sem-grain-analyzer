@@ -13,10 +13,12 @@ Hand *removal* of grains stays what it always was: an id list
 only a selection — deleting it goes through that same path.
 
 *Merge* and *split* change the grain geometry, so they produce a new label
-image.  Every edit is described by a small JSON-able ``op`` dict (stored in
-the session manifest as ``grain_edits``) that :func:`replay_edits` can
-re-apply deterministically to the detector's original labels, so the
-detector output is never lost and every edit is auditable:
+image.  Every edit is described by a small JSON-able ``op`` dict, stored in
+the session manifest as ``grain_edits`` next to the already-edited label
+image (``results/*.labels.npz``), so the detector's original output
+(``detector_label_image``) is never lost and every edit is auditable, even
+though the op list itself is not replayed on load — the edited labels are
+saved and reloaded directly:
 
 ``{"op": "merge", "ids": [4, 9, 12], "into": 4, "gap_px": 3}``
     grains 9 and 12 become part of grain 4; background pixels (grain
@@ -312,41 +314,6 @@ def split_grain(labels: np.ndarray, polyline, grain_id: Optional[int] = None,
 
 
 # ======================================================================
-# Replay (persisted edit list -> labels)
-# ======================================================================
-
-def apply_edit(labels: np.ndarray, op: dict, valid_mask: Optional[np.ndarray] = None
-               ) -> EditOutcome:
-    kind = (op or {}).get("op")
-    if kind == "merge":
-        return merge_grains(labels, op.get("ids") or [], int(op.get("gap_px", DEFAULT_GAP_PX)),
-                            valid_mask, into=op.get("into"))
-    if kind == "split":
-        return split_grain(labels, op.get("line") or [], int(op.get("id") or 0),
-                           new_ids=op.get("new_ids"))
-    raise GrainEditError(f"Unknown grain edit {kind!r}")
-
-
-def replay_edits(labels: Optional[np.ndarray], ops: Iterable[dict],
-                 valid_mask: Optional[np.ndarray] = None
-                 ) -> Tuple[Optional[np.ndarray], List[dict]]:
-    """Apply a persisted edit list in order.  Edits that no longer apply
-    (e.g. a re-analysis changed the grains) are skipped with a warning.
-    Returns ``(labels, applied_ops)``."""
-    if labels is None:
-        return None, []
-    applied: List[dict] = []
-    cur = labels
-    for op in ops or []:
-        try:
-            cur = apply_edit(cur, op, valid_mask).labels
-            applied.append(dict(op))
-        except GrainEditError as exc:
-            logger.warning("Skipping grain edit %s: %s", op, exc)
-    return cur, applied
-
-
-# ======================================================================
 # Measurements
 # ======================================================================
 
@@ -399,6 +366,6 @@ def remeasure_after_edit(raw, outcome: EditOutcome, image_shape=None):
 __all__ = [
     "GrainEditError", "EditOutcome", "MIN_PIECE_PX", "DEFAULT_GAP_PX",
     "label_offset", "to_label_coords", "grains_in_polygon", "merge_grains",
-    "grain_under_line", "split_grain", "apply_edit", "replay_edits", "measure_ids",
+    "grain_under_line", "split_grain", "measure_ids",
     "remeasure_after_edit",
 ]

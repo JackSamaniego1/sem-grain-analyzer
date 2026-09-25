@@ -81,32 +81,17 @@ if not exist models\sam_vit_b_01ec64.pth (
     exit /b 1
 )
 
-:: Generate icon
+:: Generate icon (drawn in-app by ui.design.branding — no download, no PIL
+:: placeholder; same artwork the app itself uses as its window/taskbar icon)
 echo.
 echo [4/7] Creating application icon...
-python -c "
-import struct, zlib, base64
-# Minimal valid .ico file (16x16, blue microscope-themed)
-# We generate a simple colored icon programmatically
-try:
-    from PIL import Image, ImageDraw
-    img = Image.new('RGBA', (256,256), (26, 43, 74, 255))
-    draw = ImageDraw.Draw(img)
-    draw.ellipse([40,40,216,216], fill=(0,140,200,255))
-    draw.ellipse([80,80,176,176], fill=(26,43,74,255))
-    draw.rectangle([118,80,138,200], fill=(255,255,255,255))
-    draw.rectangle([80,118,176,138], fill=(255,255,255,255))
-    import os
-    os.makedirs('resources', exist_ok=True)
-    img.save('resources/icon.ico', format='ICO', sizes=[(256,256),(128,128),(64,64),(32,32),(16,16)])
-    print('Icon created.')
-except Exception as e:
-    print(f'Icon skipped ({e}) - using default.')
-    import os
-    os.makedirs('resources', exist_ok=True)
-    open('resources/icon.ico','wb').close()
-"
-echo [OK] Icon step done.
+python -m ui.design.branding resources\icon.ico
+if errorlevel 1 (
+    echo ERROR: Failed to generate resources\icon.ico.
+    pause
+    exit /b 1
+)
+echo [OK] Icon created: resources\icon.ico
 
 :: Run PyInstaller
 echo.

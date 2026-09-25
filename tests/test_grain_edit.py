@@ -6,7 +6,7 @@ import pytest
 from core.grain_detector import AnalysisResult, DetectionParams, GrainDetector
 from core.grain_edit import (
     GrainEditError, MIN_PIECE_PX, grain_under_line, grains_in_polygon, label_offset,
-    measure_ids, merge_grains, remeasure_after_edit, replay_edits, split_grain,
+    measure_ids, merge_grains, remeasure_after_edit, split_grain,
     to_label_coords,
 )
 from core.metrics import compute_statistics
@@ -104,18 +104,6 @@ def test_split_must_cross_the_grain():
         split_grain(lab, [(1, 1), (1, 2)])              # no grain
     assert grain_under_line(lab, [(48, 20), (48, 80)]) == 5
     assert grain_under_line(lab, [(48, 20), (48, 80)], candidates=[2]) == 2
-
-
-# ---------------------------------------------------------------- replay
-def test_replay_reproduces_edits_and_skips_stale_ops():
-    lab = _grid(1)
-    m = merge_grains(lab, [1, 2])
-    s = split_grain(m.labels, [(48, 20), (48, 80)])
-    ops = [m.op, s.op, {"op": "merge", "ids": [77, 78], "into": 77}]
-    out, applied = replay_edits(lab, ops, np.ones(lab.shape, bool))
-    assert np.array_equal(out, s.labels)
-    assert applied == [m.op, s.op]
-    assert replay_edits(None, ops) == (None, [])
 
 
 # ---------------------------------------------------------------- measurements
