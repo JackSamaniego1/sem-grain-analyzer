@@ -23,7 +23,8 @@ from PySide6.QtCore import (
     Qt, Signal,
 )
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QCheckBox, QGridLayout, QHBoxLayout, QHeaderView, QSpinBox, QSplitter,
+    QAbstractItemView, QButtonGroup, QCheckBox, QGridLayout, QHBoxLayout, QHeaderView, QSizePolicy,
+    QSpinBox, QSplitter,
     QTableView, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -42,6 +43,8 @@ from ui.widgets import (
     AnimatedButton, Card, EmptyState, FadeStackedWidget, IconButton, KeyValueList,
     SegmentedControl, label,
 )
+
+from ui.widgets.layout import ResponsiveToolbar, group as tool_group
 
 VIEW_KEYS = ("original", "overlay", "mask", "excluded")
 SORT_ROLE = Qt.UserRole + 10
@@ -169,27 +172,24 @@ class ReviewPage(QWidget):
         tv = QVBoxLayout(top)
         tv.setContentsMargins(SPACE.lg, SPACE.md, SPACE.lg, SPACE.sm)
         tv.setSpacing(SPACE.sm)
-        tb = QHBoxLayout()
-        tb.setSpacing(SPACE.sm)
-        col = QVBoxLayout()
+        lead = QWidget()
+        col = QVBoxLayout(lead)
+        col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(0)
         self.img_title = label("", "h3")
         self.img_sub = label("", "caption")
-        col.addWidget(self.img_title)
-        col.addWidget(self.img_sub)
-        tb.addLayout(col, 1)
+        for w in (self.img_title, self.img_sub):
+            w.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            col.addWidget(w)
         self.view_seg = SegmentedControl(["Original", "Overlay", "Mask", "Excluded"], 1)
         self.view_seg.setToolTip("Original image · grain overlay · grain mask · areas not analysed")
         self.view_seg.setFixedWidth(330)
-        tb.addWidget(self.view_seg)
         self.btn_undo = IconButton("undo", "Undo (Ctrl+Z)")
         self.btn_redo = IconButton("redo", "Redo (Ctrl+Y)")
         self.btn_del = AnimatedButton("Remove", "delete", "ghost", "sm")
         self.btn_del.setToolTip("Remove the selected grains from the results (Delete). "
                                 "Undo with Ctrl+Z.")
         self.btn_del.setEnabled(False)
-        tb.addWidget(self.btn_undo)
-        tb.addWidget(self.btn_redo)
         # edit tools (UI-05 / INN-04): exclusive Select / Lasso / Cut + Merge
         self.btn_tool_select = IconButton("pointer", "Select grains (V) - click, Ctrl+click adds",
                                           checkable=True)
@@ -203,21 +203,23 @@ class ReviewPage(QWidget):
                        (self.btn_tool_split, "split")):
             b.setProperty("tool", key)
             self.tool_group.addButton(b)
-            tb.addWidget(b)
         self.btn_tool_select.setChecked(True)
         self.btn_merge = AnimatedButton("Merge", "merge", "ghost", "sm")
         self.btn_merge.setToolTip("Merge the selected touching grains into one grain (M). "
                                   "Undo with Ctrl+Z.")
         self.btn_merge.setEnabled(False)
-        tb.addWidget(self.btn_merge)
-        tb.addWidget(self.btn_del)
         self.btn_zo = IconButton("zoom_out", "Zoom out (−)")
         self.btn_zi = IconButton("zoom_in", "Zoom in (+)")
         self.btn_fit = IconButton("fit", "Fit to window (F)")
         self.btn_11 = IconButton("target", "Actual pixels, 1:1 (1)")
-        for b in (self.btn_zo, self.btn_zi, self.btn_fit, self.btn_11):
-            tb.addWidget(b)
-        tv.addLayout(tb)
+        # FIX-09: control groups wrap onto a second row instead of overlapping
+        self.toolbar = ResponsiveToolbar(lead, [
+            tool_group(self.view_seg),
+            tool_group(self.btn_undo, self.btn_redo),
+            tool_group(self.btn_tool_select, self.btn_tool_lasso, self.btn_tool_split,
+                       self.btn_merge, self.btn_del),
+            tool_group(self.btn_zo, self.btn_zi, self.btn_fit, self.btn_11)])
+        tv.addWidget(self.toolbar)
         self.canvas = GrainCanvas(placeholder="Select an analysed image")
         tv.addWidget(self.canvas, 1)
         hint = label("Click a grain to select · Ctrl+click adds · L lasso · M merge · "

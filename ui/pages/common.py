@@ -89,15 +89,18 @@ class PageHeader(QWidget):
 class CardGrid(QWidget):
     """Responsive grid: equal-width columns of at least ``min_col`` px."""
 
-    def __init__(self, min_col: int = 270, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, min_col: int = 270, parent: Optional[QWidget] = None,
+                 max_cols: int = 8, spacing: int = SPACE.lg) -> None:
         super().__init__(parent)
         self._min = min_col
+        self._max_cols = max(1, min(8, max_cols))
+        self._sp = spacing
         self._items: List[QWidget] = []
         self._cols = 0
         self._grid = QGridLayout(self)
         self._grid.setContentsMargins(0, 0, 0, 0)
-        self._grid.setHorizontalSpacing(SPACE.lg)
-        self._grid.setVerticalSpacing(SPACE.lg)
+        self._grid.setHorizontalSpacing(spacing)
+        self._grid.setVerticalSpacing(spacing)
         self._grid.setAlignment(Qt.AlignTop)
 
     def set_widgets(self, widgets: Sequence[QWidget]) -> None:
@@ -109,12 +112,30 @@ class CardGrid(QWidget):
         self._cols = 0
         self._relayout(force=True)
 
+    def adopt(self, widgets: Sequence[QWidget]) -> None:
+        """Lay out long-lived widgets (never deleted, unlike set_widgets)."""
+        for w in self._items:
+            self._grid.removeWidget(w)
+        self._items = list(widgets)
+        self._cols = 0
+        self._relayout(force=True)
+
+    def columns(self) -> int:
+        return self._cols
+
     def widgets(self) -> List[QWidget]:
         return list(self._items)
 
+    def minimumSizeHint(self):
+        # one column is always possible: the grid must never force its width
+        hint = super().minimumSizeHint()
+        if self._items:
+            hint.setWidth(max(it.minimumSizeHint().width() for it in self._items))
+        return hint
+
     def _relayout(self, force: bool = False) -> None:
         w = max(1, self.width())
-        cols = max(1, (w + SPACE.lg) // (self._min + SPACE.lg))
+        cols = max(1, min(self._max_cols, (w + self._sp) // (self._min + self._sp)))
         if cols == self._cols and not force:
             return
         self._cols = cols
@@ -254,6 +275,7 @@ class MetricCard(StatCard):
         stop(self._count_anim)
         self.set_unit("")
         self._value.setText(text)
+        self._text_shown = True
 
     def set_metric(self, value: Optional[float], unit: str = "", decimals: Optional[int] = None,
                    animate: bool = True) -> None:
@@ -265,7 +287,13 @@ class MetricCard(StatCard):
             self._target = 0.0
             self._shown = 0.0
             self._value.setText("—")
+            self._text_shown = True
             return
+        if getattr(self, "_text_shown", False):
+            # a text/"—" value was showing: redraw the number even when the
+            # count-up has nothing to animate (same value as before)
+            self._text_shown = False
+            self._render(self._shown)
         self.set_value(float(value), animate=animate)
 
 

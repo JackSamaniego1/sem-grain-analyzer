@@ -882,6 +882,36 @@ class AppState(QObject):
         self.current_uid = uid
         self.current_image_changed.emit(uid)
 
+    # ------------------------------------------------------------------ INN-29 / FIX-08
+    def calibration_store(self):
+        from data.cal_records import CalibrationStore
+        return CalibrationStore(self.root, enabled=bool(
+            getattr(self.settings, "calibration_verification_enabled", False)))
+
+    def refresh_calibration_check(self):
+        """Stamp the open session with the calibration check it cites
+        (``data.cal_records.apply_to_session``) and return the lookup, or
+        None (no session / records unreadable).  Only a changed stamp marks
+        the session dirty, so with the feature off nothing is ever written."""
+        doc = self.session
+        if doc is None:
+            return None
+        from data.cal_records import apply_to_session
+        m = doc.meta
+        try:
+            lk = self.calibration_store().find_applicable_check(
+                m.instrument, m.magnification,
+                instruments=getattr(self.settings, "instruments", None))
+        except (OSError, ValueError):
+            return None
+        before = (m.calibration_check_id, m.calibration_status, m.calibration_reason)
+        apply_to_session(m, lk)
+        if (m.calibration_check_id, m.calibration_status, m.calibration_reason) != before:
+            doc.acquisition_dirty = True
+            self._meta_dirty = True
+            self.schedule_save()
+        return lk
+
     def px_for(self, im: ImageDoc) -> float:
         if im.px_override > 0:
             return im.px_override
@@ -1229,7 +1259,11 @@ class AppState(QObject):
             m = doc.meta
             meta.update(instrument=m.instrument, magnification=m.magnification,
                         accelerating_voltage_kv=m.accelerating_voltage_kv,
-                        working_distance_mm=m.working_distance_mm)
+                        working_distance_mm=m.working_distance_mm,
+                        # INN-29 / FIX-08 (CLEAR resets a stale id to null)
+                        calibration_check_id=m.calibration_check_id or CLEAR,
+                        calibration_status=m.calibration_status,
+                        calibration_reason=m.calibration_reason)
         self._dirty.clear()
         self._meta_dirty = False
         self._saving = True

@@ -46,6 +46,7 @@ class SettingsPage(QWidget):
     theme_requested = Signal(str)
     workspace_changed = Signal()
     defaults_from_analyze_requested = Signal()
+    calibration_check_saved = Signal(object)    # FIX-08: CalibrationCheck
 
     def __init__(self, state, toasts=None, parent=None) -> None:
         super().__init__(parent)
@@ -285,6 +286,7 @@ class SettingsPage(QWidget):
             inst = str(getattr(getattr(s, "meta", None), "instrument", "") or "")
         dlg = CalCheckDialog(self.state, self.toasts, self, instrument=inst)
         dlg.saved.connect(lambda _c: self._refresh_cal())
+        dlg.saved.connect(self.calibration_check_saved)
         self._cal_dlg = dlg
         dlg.open()
         return dlg

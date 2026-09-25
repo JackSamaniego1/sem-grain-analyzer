@@ -20,11 +20,14 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QModelIndex, QSize, Qt, Signal
-from PySide6.QtGui import QKeySequence, QShortcut, QStandardItem, QStandardItemModel
+from PySide6.QtCore import QModelIndex, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import (
+    QFontMetrics, QKeySequence, QPainter, QPen, QShortcut, QStandardItem, QStandardItemModel,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QHBoxLayout,
-    QLabel, QMenu, QSizePolicy, QSplitter, QTreeView, QVBoxLayout, QWidget,
+    QLabel, QMenu, QSizePolicy, QSplitter, QStyledItemDelegate,
+    QStyleOptionViewItem, QTreeView, QVBoxLayout, QWidget,
 )
 
 from data import file_ops
@@ -36,7 +39,9 @@ from data.workspace import Workspace
 from ui import hierarchy_ui as hui
 from ui.app_state import NodeRef, node_display_name, node_for_path
 from ui.design import icons
-from ui.design.tokens import SPACE
+from ui.design.theme import ui_font
+from ui.design.tokens import SPACE, TypeStyle
+from ui.widgets._base import qcolor, tokens
 from ui.format import fmt_date_utc, fmt_int, fmt_opt, smart_format
 from ui.pages.common import (
     CardGrid, ConfirmBar, MetricCard, PageHeader, Panel, SelectableCard, ThumbStrip, scroll,
@@ -46,12 +51,14 @@ from ui.widgets import (
     AnimatedButton, Badge, Card, Divider, EmptyState, FadeStackedWidget, IconButton,
     KeyValueList, SearchBox, SelectionBar, Skeleton, label,
 )
+from ui.widgets.layout import WrapLabel
 from ui.widgets.selection_bar import MOVE_ICON
 from ui.widgets.field_editors import editor_value, make_editor, mark_invalid
 from ui.workers import IMAGE_EXTS, load_thumb_file, run_task
 
 KIND_ROLE = Qt.UserRole + 1
 PATH_ROLE = Qt.UserRole + 2
+VERDICT_ROLE = Qt.UserRole + 3          # FIX-08: "pass" | "fail" | "inconclusive" | ""
 
 _KIND_ICON = hui.KIND_ICON
 
@@ -104,7 +111,22 @@ def _lot_image_count(lot: Path) -> int:
     return n
 
 
+def lot_verdict_overall(lot: Path) -> str:
+    """FIX-08: the lot's INN-02 verdict ("pass" / "fail" / "inconclusive"),
+    or "" (no spec, or it could not be evaluated).  Evaluated live from the
+    saved results (the catalog cache can lag a re-analysis); only called
+    for projects that have spec limits, on the tree's worker thread."""
+    from data.catalog import compute_lot_verdict
+    try:
+        v = compute_lot_verdict(lot)
+    except Exception:            # a broken spec must never break the tree
+        return ""
+    o = str((v or {}).get("overall", ""))
+    return o if o in ("pass", "fail", "inconclusive") else ""
+
+
 def scan_tree(root: str) -> List[dict]:
+    from data.specs import specs_from_project_dict
     ws = Workspace(root)
     lot_mode = hui.lot_mode(ws.profile)
     out = []
@@ -112,16 +134,25 @@ def scan_tree(root: str) -> List[dict]:
         pp = Path(pm.path)
         pd = {"kind": "project", "path": pp, "meta": _safe_json(pp / "project.json"),
               "children": []}
+        try:
+            specced = bool(specs_from_project_dict(pd["meta"]))
+        except Exception:
+            specced = False
         for sm in ws.list_samples(pp):
             sp = Path(sm.path)
             sd = {"kind": "sample", "path": sp, "meta": _safe_json(sp / "sample.json"),
                   "children": []}
             for lm in ws.list_lots(pp, sp):
                 lp = Path(lm.path)
+                n_sess = len(_session_dirs(lp))
+                n_img = _lot_image_count(lp) if lot_mode else 0
+                # an empty lot has nothing to judge: no pill
+                has_data = n_img if lot_mode else n_sess
                 sd["children"].append({"kind": "lot", "path": lp,
                                        "meta": _safe_json(lp / "lot.json"),
-                                       "n_sessions": len(_session_dirs(lp)),
-                                       "n_images": _lot_image_count(lp) if lot_mode else 0,
+                                       "n_sessions": n_sess, "n_images": n_img,
+                                       "verdict": lot_verdict_overall(lp)
+                                       if specced and has_data else "",
                                        "children": []})
             pd["children"].append(sd)
         out.append(pd)
@@ -301,6 +332,47 @@ class ElidedLabel(QLabel):
                                                     max(20, self.width())))
 
 
+TREE_VERDICT_TEXT = {"pass": "PASS", "fail": "FAIL", "inconclusive": "INCONCLUSIVE"}
+_TREE_VERDICT_SHORT = {"pass": "PASS", "fail": "FAIL", "inconclusive": "INC"}
+_TREE_VERDICT_KIND = {"pass": "success", "fail": "danger", "inconclusive": "warning"}
+
+
+class VerdictTreeDelegate(QStyledItemDelegate):
+    """FIX-08: draws a small PASS / FAIL / INC pill at the right of lot rows
+    that have an INN-02 spec verdict (nothing at all without a spec)."""
+
+    def paint(self, p, option, index) -> None:
+        v = index.data(VERDICT_ROLE)
+        if v not in _TREE_VERDICT_SHORT:
+            super().paint(p, option, index)
+            return
+        sem = tokens().semantic(_TREE_VERDICT_KIND[v])
+        font = ui_font(TypeStyle(10, 600, 14, 2.0))
+        fm = QFontMetrics(font)
+        text = _TREE_VERDICT_SHORT[v]
+        w, h = fm.horizontalAdvance(text) + 12, min(option.rect.height() - 6, fm.height() + 2)
+        # row text elides before the pill instead of running under it
+        opt = QStyleOptionViewItem(option)
+        opt.rect = option.rect.adjusted(0, 0, -(w + 10), 0)
+        super().paint(p, opt, index)
+        r = QRectF(option.rect.right() - w - 6, option.rect.center().y() - h / 2 + 0.5, w, h)
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(qcolor(sem.border), 1))
+        p.setBrush(qcolor(sem.bg))
+        p.drawRoundedRect(r, h / 2, h / 2)
+        p.setFont(font)
+        p.setPen(qcolor(sem.fg))
+        p.drawText(r, Qt.AlignCenter, text)
+        p.restore()
+
+    def sizeHint(self, option, index) -> QSize:
+        s = super().sizeHint(option, index)
+        if index.data(VERDICT_ROLE) in _TREE_VERDICT_SHORT:
+            s.setWidth(s.width() + 52)
+        return s
+
+
 class NodeCard(SelectableCard):
     """Card for a project / sample / lot / session / image (labels from the
     profile). Selectable cards carry a checkbox (multi-select) and an
@@ -338,14 +410,15 @@ class NodeCard(SelectableCard):
         ic = label()
         ic.setPixmap(icons.pixmap(_KIND_ICON[kind], 16))
         top.addWidget(ic, 0, Qt.AlignVCenter)
-        # long names elide instead of widening the card past its grid column
-        self.title_lbl = ElidedLabel(self.title_text(), "h3")
-        self.title_lbl.setToolTip(self.title_text())
+        # FIX-09: long names wrap onto a second line (then elide, full name in
+        # the tooltip) instead of "Ses…n A"; the status badge moved to the
+        # badge row so the title gets the card's full width
+        self.title_lbl = WrapLabel(self.title_text(), "h3", max_lines=2)
         top.addWidget(self.title_lbl, 1)
+        status = None
         if kind == "session" or (kind == "lot" and item.get("lot_mode") and item.get("n_images")):
-            st, sk = item.get("status", ("", "neutral")) if kind == "session" else \
+            status = item.get("status", ("", "neutral")) if kind == "session" else \
                 self._lot_status()
-            top.addWidget(Badge(st, sk, dot=True), 0, Qt.AlignVCenter)
         self.trash_btn: Optional[IconButton] = None
         if self.selectable:
             self.trash_btn = IconButton(
@@ -361,8 +434,12 @@ class NodeCard(SelectableCard):
         row = QHBoxLayout()
         row.setSpacing(SPACE.xs)
         if kind == "image":          # status in the badge row: the title row stays readable
-            row.addWidget(Badge(*(("Analysed", "success") if item.get("has_result")
-                                  else ("Not analysed", "neutral")), dot=True))
+            status = (("Analysed", "success") if item.get("has_result")
+                      else ("Not analysed", "neutral"))
+        self.status_badge: Optional[Badge] = None
+        if status is not None:
+            self.status_badge = Badge(status[0], status[1], dot=True)
+            row.addWidget(self.status_badge)
         for text, k, icn in self._badges():
             row.addWidget(Badge(text, k, icon=icn))
         row.addStretch(1)
@@ -862,6 +939,7 @@ class ProjectsPage(QWidget):
         self.model = QStandardItemModel(self)
         self.model.itemChanged.connect(self._on_item_renamed)
         self.tree.setModel(self.model)
+        self.tree.setItemDelegate(VerdictTreeDelegate(self.tree))
         self.tree.selectionModel().currentChanged.connect(self._on_tree_current)
         self.tree.doubleClicked.connect(self._on_tree_double)
         lv.addWidget(self.tree, 1)
@@ -1019,6 +1097,11 @@ class ProjectsPage(QWidget):
                         text += f"   ·  {cnt}"
                 it = self._make_item(n["kind"], n["path"], text,
                                      hui.crumb_caption(p, n["kind"], n["meta"], n["path"]))
+                if n.get("verdict"):
+                    it.setData(n["verdict"], VERDICT_ROLE)
+                    word = TREE_VERDICT_TEXT[n["verdict"]]
+                    it.setToolTip(f"{it.toolTip()}\nSpec verdict: {word}")
+                    it.setAccessibleDescription(f"Spec verdict {word}")
                 parent.appendRow(it)
                 add(it, n.get("children", []))
         add(rootitem, data)

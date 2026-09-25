@@ -113,6 +113,35 @@ class CalStatusChip(Badge):
         self.setToolTip(tip)
         self.show()
 
+    def refresh_session(self, store: CalibrationStore, meta, instruments=None) -> None:
+        """FIX-08: status-bar chip for the open session -- the instrument's
+        check state, plus whether THIS session's scale is verified (the
+        stamp ``apply_to_session`` put on ``meta``).  Hidden with no session
+        or before the instrument's first check."""
+        self.session_status = ""
+        if meta is None:
+            self.state = "off"
+            self.hide()
+            return
+        self.refresh(store, str(getattr(meta, "instrument", "") or ""), instruments)
+        if self.state == "off":
+            return
+        status = str(getattr(meta, "calibration_status", "") or "")
+        self.session_status = status
+        reason = str(getattr(meta, "calibration_reason", "") or "")
+        if status == "verified":
+            line = "This session's scale is verified"
+            line += f" ({reason})" if reason else ""
+        elif status:
+            line = "This session's scale is not verified" + (f": {reason}" if reason else "")
+            if self.state == "ok":            # instrument fine, not at this magnification
+                self.set_kind("warning")
+        else:
+            line = ""
+        if line:
+            self.setToolTip(f"{self.toolTip()}\n{line}".strip())
+        self.setAccessibleName(f"Calibration check: {self.text()}. {line}".strip())
+
 
 # ======================================================================
 # preview

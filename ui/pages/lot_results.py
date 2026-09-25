@@ -45,6 +45,9 @@ VERDICT_TEXT = {"pass": "PASS", "fail": "FAIL", "inconclusive": "INCONCLUSIVE"}
 STATUS_KIND = {"green": "success", "amber": "warning", "grey": "neutral"}
 FIELD_ROLE = Qt.UserRole + 11
 _COLS = ["Include", "Image", "Session", "ASTM G", "Grains", "Valid area", "Note"]
+IMAGE_COL, SESSION_COL, NOTE_COL = 1, 2, 6
+IMAGE_MIN, NOTE_MIN = 120, 180
+ROW_H = 38
 
 
 # ======================================================================
@@ -161,7 +164,9 @@ class _Figure(QWidget):
         self.title = label(title.upper(), "overline")
         self.value = label("—", "h3")
         self.caption = label("", "caption")
-        self.caption.setWordWrap(True)
+        # FIX-09: figures wrap in a narrow window instead of widening the card
+        for w in (self.title, self.value, self.caption):
+            w.setWordWrap(True)
         v.addWidget(self.title)
         v.addWidget(self.value)
         v.addWidget(self.caption)
@@ -247,7 +252,10 @@ class LotResultCard(Card):
         hero.addWidget(self.g_pm, 0, Qt.AlignBottom)
         hero.addStretch(1)
         self.method = label("", "caption")
+        self.method.setWordWrap(True)
+        self.method.setAlignment(Qt.AlignRight | Qt.AlignBottom)
         hero.addWidget(self.method, 0, Qt.AlignBottom)
+        self._subtitle.setWordWrap(True)
         self.add_widget(self._wrap(hero))
 
         # figures
@@ -487,11 +495,20 @@ class FieldTable(QTableWidget):
         self.setAlternatingRowColors(True)
         self.setShowGrid(False)
         self.setIconSize(QPixmap(40, 30).size())
-        self.verticalHeader().setDefaultSectionSize(38)
+        self.verticalHeader().setDefaultSectionSize(ROW_H)
+        # FIX-15: the Note column takes the spare width and wraps, and rows
+        # grow to fit it, so a long exclusion reason is readable in full
+        self.setWordWrap(True)
+        self.setTextElideMode(Qt.ElideMiddle)      # long file names: "SEM_…_0042.tif"
+        self.verticalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.verticalHeader().setMinimumSectionSize(ROW_H)
         h = self.horizontalHeader()
         h.setSectionResizeMode(QHeaderView.ResizeToContents)
-        h.setSectionResizeMode(1, QHeaderView.Stretch)
+        h.setSectionResizeMode(IMAGE_COL, QHeaderView.Interactive)
+        h.setSectionResizeMode(NOTE_COL, QHeaderView.Stretch)
+        h.setMinimumSectionSize(48)
         h.setStretchLastSection(False)
+        h.sectionResized.connect(lambda *_a: self._fit_height())
         self.setToolTip("Fields of this lot. Untick Include to leave a field out of the "
                         "statistics (a reason is required and logged). Space toggles; "
                         "double-click or Enter opens the image.")
@@ -545,8 +562,51 @@ class FieldTable(QTableWidget):
                     it.setForeground(warn)
                 self.setItem(r, c, it)
         self.blockSignals(False)
-        self.setFixedHeight(min(8, max(len(fields), 1)) * 38 +
-                            self.horizontalHeader().sizeHint().height() + 4)
+        # one session: the Session column repeats the lot name -- give its
+        # width to the Note column instead
+        self.setColumnHidden(SESSION_COL, len({f.session_id for f in fields}) <= 1)
+        self._balance()
+        self._fit_height()
+
+    def _balance(self) -> None:
+        """Image column as wide as its names, but the Note column keeps at
+        least NOTE_MIN px so an exclusion reason wraps over a few lines
+        rather than one word per line (FIX-15)."""
+        h = self.horizontalHeader()
+        others = sum(h.sectionSize(c) for c in range(len(_COLS))
+                     if c not in (IMAGE_COL, NOTE_COL) and not self.isColumnHidden(c))
+        want = max(self.sizeHintForColumn(IMAGE_COL), h.sectionSizeHint(IMAGE_COL))
+        avail = self.viewport().width() - others
+        if avail >= IMAGE_MIN + NOTE_MIN:
+            # room for both: the Note column stretches over the rest
+            if h.sectionResizeMode(NOTE_COL) != QHeaderView.Stretch:
+                h.setSectionResizeMode(NOTE_COL, QHeaderView.Stretch)
+            w = max(IMAGE_MIN, min(want, avail - NOTE_MIN))
+        else:
+            # very narrow: keep the Note readable and scroll sideways
+            if h.sectionResizeMode(NOTE_COL) != QHeaderView.Interactive:
+                h.setSectionResizeMode(NOTE_COL, QHeaderView.Interactive)
+            if h.sectionSize(NOTE_COL) != NOTE_MIN:
+                h.resizeSection(NOTE_COL, NOTE_MIN)
+            w = IMAGE_MIN
+        if h.sectionSize(IMAGE_COL) != w:
+            h.resizeSection(IMAGE_COL, w)
+
+    def _fit_height(self) -> None:
+        """Show up to 8 rows without an inner scrollbar; rows wrap (FIX-15)."""
+        vh = self.verticalHeader()
+        n = self.rowCount()
+        rows = sum(vh.sectionSize(r) for r in range(min(n, 8))) if n else ROW_H
+        hs = self.horizontalScrollBar()
+        extra = hs.sizeHint().height() if hs.isVisible() else 0
+        h = rows + self.horizontalHeader().sizeHint().height() + 2 * self.frameWidth() + extra + 2
+        if self.height() != h or self.minimumHeight() != h:
+            self.setFixedHeight(h)
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        self._balance()
+        self._fit_height()
 
     def set_checked(self, field_id: str, on: bool) -> None:
         for r, f in enumerate(self._fields):

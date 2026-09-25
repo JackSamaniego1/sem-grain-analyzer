@@ -208,7 +208,15 @@ class AppShell(QMainWindow):
         self.chip_cal.setToolTip("Scale of the current image (Ctrl+K to set)")
         self.chip_save = Badge("No session", "neutral", icon="save")
         self.chip_save.setToolTip("Session save state — changes are saved automatically")
-        for c in (self.chip_device, self.chip_cal, self.chip_save):
+        # FIX-08 (INN-29, optional): calibration-check chip; hidden unless the
+        # session's instrument has at least one recorded check
+        from ui.dialogs.cal_check_dialog import CalStatusChip
+        self.chip_calcheck = CalStatusChip()
+        self._calcheck_timer = QTimer(self)
+        self._calcheck_timer.setSingleShot(True)
+        self._calcheck_timer.setInterval(300)
+        self._calcheck_timer.timeout.connect(self._update_calcheck_chip)
+        for c in (self.chip_device, self.chip_cal, self.chip_calcheck, self.chip_save):
             sb.addPermanentWidget(c)
         self.overlay = ShortcutOverlay(self, SHORTCUTS)
 
@@ -318,6 +326,8 @@ class AppShell(QMainWindow):
         st.calibration_changed.connect(self._update_cal_chip)
         st.message.connect(lambda t, b, s: self.toasts.show_toast(t, b, s))
         st.settings_changed.connect(lambda: self.op_btn.setText(st.operator() or "Operator"))
+        st.settings_changed.connect(self._calcheck_timer.start)
+        st.sem_metadata_ready.connect(lambda _u: self._calcheck_timer.start())
         st.undo_stack.canUndoChanged.connect(self.act_undo.setEnabled)
         st.undo_stack.canRedoChanged.connect(self.act_redo.setEnabled)
         st.session_loading.connect(lambda p: self._status(f"Opening {Path(p).name}…"))
@@ -338,6 +348,8 @@ class AppShell(QMainWindow):
         self.review.open_projects_requested.connect(lambda: self.go("projects"))
         self.reports.empty_session.action_triggered.connect(lambda: self.go("projects"))
         self.settings_page.theme_requested.connect(self.set_theme)
+        self.settings_page.calibration_check_saved.connect(
+            lambda _c: self._update_calcheck_chip())
         self.settings_page.defaults_from_analyze_requested.connect(
             lambda: self.settings_page.set_defaults(self.analyze.params.get_params()))
 
@@ -511,11 +523,13 @@ class AppShell(QMainWindow):
         self.setWindowTitle(f"{s.title} — {APP_NAME}" if s else APP_NAME)
         self._update_breadcrumb()
         self._update_cal_chip()
+        self._update_calcheck_chip()
 
     def _on_session_closed(self) -> None:
         self.setWindowTitle(APP_NAME)
         self._update_breadcrumb()
         self._update_cal_chip()
+        self._update_calcheck_chip()
 
     def open_images(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(self, "Open SEM images", "", IMAGE_FILTER)
@@ -722,6 +736,22 @@ class AppShell(QMainWindow):
             self.chip_cal.set_text("Not calibrated")
             self.chip_cal.set_kind("warning")
         self.chip_cal.updateGeometry()
+
+    def _update_calcheck_chip(self) -> None:
+        """FIX-08: stamp the open session with the check it cites
+        (apply_to_session) and show the result in the status bar."""
+        self._calcheck_timer.stop()
+        s = self.state.session
+        if s is None:
+            self.chip_calcheck.refresh_session(None, None)
+            return
+        self.state.refresh_calibration_check()
+        try:
+            self.chip_calcheck.refresh_session(self.state.calibration_store(), s.meta,
+                                               getattr(self.state.settings, "instruments", None))
+        except (OSError, ValueError):
+            self.chip_calcheck.hide()
+        self.chip_calcheck.updateGeometry()
 
     def _rec_word(self) -> str:
         from ui import hierarchy_ui as hui

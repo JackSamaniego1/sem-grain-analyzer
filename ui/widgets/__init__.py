@@ -11,6 +11,7 @@ from ui.widgets.cards import Card, Sparkline, StatCard, label
 from ui.widgets.collapsible import CollapsibleSection
 from ui.widgets.display import Divider, EmptyState, KeyValueList
 from ui.widgets.inputs import SearchBox
+from ui.widgets.layout import ResponsiveToolbar, WrapLabel, wrap_elide
 from ui.widgets.loading import ProgressRing, Skeleton, Spinner
 from ui.widgets.navigation import Breadcrumb, FadeStackedWidget, NavRail
 from ui.widgets.overlay import ShortcutOverlay
@@ -24,4 +25,5 @@ __all__ = [
     "Toast", "ToastManager", "Skeleton", "Spinner", "ProgressRing",
     "Breadcrumb", "SearchBox", "EmptyState", "NavRail", "FadeStackedWidget",
     "Divider", "KeyValueList", "ShortcutOverlay", "SelectionBar",
+    "ResponsiveToolbar", "WrapLabel", "wrap_elide",
 ]

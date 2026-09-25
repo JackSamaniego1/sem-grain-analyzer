@@ -19,7 +19,7 @@ from typing import Dict, List, Optional
 
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QDoubleSpinBox, QFormLayout, QGridLayout, QHBoxLayout, QSpinBox,
+    QCheckBox, QDoubleSpinBox, QFormLayout, QGridLayout, QHBoxLayout, QSizePolicy, QSpinBox,
     QVBoxLayout, QWidget,
 )
 
@@ -30,13 +30,14 @@ from ui.canvas.edit_actions import GrainEditController
 from ui.design import icons
 from ui.design.tokens import SPACE
 from ui.format import astm_g, fmt_int, fmt_px_per_um, smart_format
-from ui.pages.common import MetricCard, Panel, SelectableCard, scroll
+from ui.pages.common import CardGrid, MetricCard, Panel, SelectableCard, scroll
 from ui.pages.filmstrip import Filmstrip
 from ui.pages.filter_card import FilterCard, Reveal
 from ui.widgets import (
     AnimatedButton, Badge, Card, CollapsibleSection, EmptyState, FadeStackedWidget,
     IconButton, KeyValueList, ProgressRing, SegmentedControl, label,
 )
+from ui.widgets.layout import ResponsiveToolbar, group as tool_group
 from ui.workers import AnalysisJob, AnalysisQueue
 
 MODES = [
@@ -327,38 +328,39 @@ class AnalyzePage(QWidget):
         cv = QVBoxLayout(centre)
         cv.setContentsMargins(SPACE.lg, SPACE.md, SPACE.lg, SPACE.md)
         cv.setSpacing(SPACE.sm)
-        tb = QHBoxLayout()
-        tb.setSpacing(SPACE.sm)
-        col = QVBoxLayout()
+        lead = QWidget()
+        col = QVBoxLayout(lead)
+        col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(0)
         self.img_title = label("", "h3")
         self.img_sub = label("", "caption")
-        col.addWidget(self.img_title)
-        col.addWidget(self.img_sub)
-        tb.addLayout(col, 1)
+        for w in (self.img_title, self.img_sub):
+            w.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            col.addWidget(w)
         self.view_seg = SegmentedControl(["Original", "Overlay", "Excluded"])
         self.view_seg.setToolTip("Original image · detected grains · areas not analysed")
         self.view_seg.setFixedWidth(270)
-        tb.addWidget(self.view_seg)
         self.btn_zo = IconButton("zoom_out", "Zoom out (−)")
         self.btn_zi = IconButton("zoom_in", "Zoom in (+)")
         self.btn_fit = IconButton("fit", "Fit to window (F)")
         self.btn_11 = IconButton("target", "Actual pixels, 1:1 (1)")
-        for b in (self.btn_zo, self.btn_zi, self.btn_fit, self.btn_11):
-            tb.addWidget(b)
-        cv.addLayout(tb)
+        # FIX-09: groups wrap onto a second row instead of overlapping
+        self.toolbar = ResponsiveToolbar(lead, [
+            tool_group(self.view_seg),
+            tool_group(self.btn_zo, self.btn_zi, self.btn_fit, self.btn_11)])
+        cv.addWidget(self.toolbar)
         self.canvas = GrainCanvas(placeholder="Select an image in the filmstrip")
         cv.addWidget(self.canvas, 1)
-        stats = QHBoxLayout()
-        stats.setSpacing(SPACE.md)
         self.st_images = MetricCard("Images analysed", 0, "", 0)
         self.st_grains = MetricCard("Grains (session)", 0, "", 0)
         self.st_diam = MetricCard("Mean diameter", 0, "µm", 2)
         self.st_g = MetricCard("ASTM grain size", 0, "G", 1)
         for c in (self.st_images, self.st_grains, self.st_diam, self.st_g):
             c.setMaximumHeight(96)
-            stats.addWidget(c)
-        cv.addLayout(stats)
+        # FIX-09: 4 across when there is room, else 2 x 2 (labels never clip)
+        self.stats_grid = CardGrid(min_col=168, max_cols=4, spacing=SPACE.md)
+        self.stats_grid.adopt([self.st_images, self.st_grains, self.st_diam, self.st_g])
+        cv.addWidget(self.stats_grid)
         h.addWidget(centre, 1)
 
         side = Panel("left")
