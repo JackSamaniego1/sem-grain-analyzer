@@ -1,7 +1,9 @@
 """SelectionBar — contextual action bar shown while items are selected (UI-09).
 
-Layout: [check] "N selected" · Select all ····· Compare · Move to… · Delete · Clear
-(Compare -- INN-43 -- is shown only when two or more lots are selected.)
+Layout: [check] "N selected" · Select all ····· Compare · Load into analyzer ·
+        Move to… · Delete · Clear
+(Compare -- INN-43 -- is shown only when two or more lots are selected;
+"Load into analyzer" -- UX-09 -- for jobs / parts / lots / sessions.)
 Slides open (animated height, 200 ms ease-out) when the first item is
 selected and collapses when the selection is cleared. The Delete button is
 the danger variant so deleting is always visible, never hidden in a menu.
@@ -31,6 +33,7 @@ class SelectionBar(Card):
     clear_requested = Signal()
     select_all_requested = Signal()
     compare_requested = Signal()
+    load_requested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent=parent, elevation=2)
@@ -55,6 +58,11 @@ class SelectionBar(Card):
                                     "equivalence to the baseline lot")
         self.compare_btn.hide()
         row.addWidget(self.compare_btn, 0, Qt.AlignVCenter)
+        self.load_btn = AnimatedButton("Load into analyzer", "analyze", "secondary", "sm")
+        self.load_btn.setToolTip("Open every image of the selected items in the analyzer, "
+                                 "grouped by job, part and lot")
+        self.load_btn.hide()
+        row.addWidget(self.load_btn, 0, Qt.AlignVCenter)
         self.move_btn = AnimatedButton("Move to…", MOVE_ICON, "secondary", "sm")
         self.move_btn.setToolTip("Move the selected items to another folder of the same level")
         self.delete_btn = AnimatedButton("Delete", "delete", "danger", "sm")
@@ -68,6 +76,7 @@ class SelectionBar(Card):
         self.select_all_btn.clicked.connect(self.select_all_requested)
         self.move_btn.clicked.connect(self.move_requested)
         self.compare_btn.clicked.connect(self.compare_requested)
+        self.load_btn.clicked.connect(self.load_requested)
         self.delete_btn.clicked.connect(self.delete_requested)
         self.clear_btn.clicked.connect(self.clear_requested)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
@@ -101,6 +110,10 @@ class SelectionBar(Card):
     def set_compare_visible(self, on: bool) -> None:
         """INN-43: offer Compare only for a selection of two or more lots."""
         self.compare_btn.setVisible(on)
+
+    def set_load_visible(self, on: bool) -> None:
+        """UX-09: offer "Load into analyzer" for jobs / parts / lots / sessions."""
+        self.load_btn.setVisible(on)
 
     def is_open(self) -> bool:
         return self._open

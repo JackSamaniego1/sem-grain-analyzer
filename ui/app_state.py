@@ -36,6 +36,7 @@ from ui.canvas.layers import kept_labels
 from ui.workers import read_image, run_task, serial_pool, snapshot_result, thumb_qimage
 
 _uid_counter = itertools.count(1)
+_seq_counter = itertools.count(1)
 
 KIND_ORDER = ("workspace", "project", "sample", "lot", "session")
 META_FILES = {"project": "project.json", "sample": "sample.json",
@@ -175,7 +176,19 @@ class ImageDoc:
     sem_meta: Optional[dict] = None       # INN-05: read_sem_metadata(path).to_dict()
     cal_suggestion: Optional[tuple] = None  # (px_per_um, source, confidence)
     info_bar: Optional[dict] = None       # DET-05: detect_info_bar().to_dict(); {} = none
+    # UX-09: the lot / session folder the image belongs to (None = the
+    # session's primary record) and whether its pixels are still loading
+    record: Optional["RecordRef"] = None
+    loading: bool = False
+    # UX-02: where the scan area / scale came from ("auto", "metadata",
+    # "manual", "" = unknown / saved earlier) and the scale-bar line found
+    # in the info bar (px) with the length the operator typed for it (µm)
+    scan_source: str = ""
+    scale_source: str = ""
+    bar_px: float = 0.0
+    bar_um: float = 0.0
     uid: int = field(default_factory=lambda: next(_uid_counter))
+    seq: int = field(default_factory=lambda: next(_seq_counter))
 
     @property
     def name(self) -> str:
@@ -193,6 +206,29 @@ class ImageDoc:
 
 
 @dataclass(eq=False)
+class RecordRef:
+    """UX-09: one lot / session folder whose images are in the analyzer.
+
+    ``px_per_um`` / ``scan_rect`` / ``filters`` are the record's own
+    session-level values as read from disk (used to keep each image's
+    effective scale, scan area and filters when several records are loaded
+    together with one shared set of analysis settings)."""
+    path: Path
+    meta: SessionMeta
+    project_meta: dict = field(default_factory=dict)
+    sample_meta: dict = field(default_factory=dict)
+    lot_meta: dict = field(default_factory=dict)
+    px_per_um: float = 0.0
+    scan_rect: Optional[tuple] = None
+    filters: dict = field(default_factory=dict)
+    loaded: bool = True
+
+    @property
+    def is_lot(self) -> bool:
+        return (self.path / "lot.json").exists()
+
+
+@dataclass(eq=False)
 class SessionDoc:
     path: Path
     meta: SessionMeta
@@ -206,6 +242,8 @@ class SessionDoc:
     project_meta: dict = field(default_factory=dict)
     sample_meta: dict = field(default_factory=dict)
     lot_meta: dict = field(default_factory=dict)
+    records: List[RecordRef] = field(default_factory=list)       # UX-09
+    removed: List[ImageDoc] = field(default_factory=list)        # UX-06 (not on disk)
 
     def image(self, uid) -> Optional[ImageDoc]:
         for im in self.images:
@@ -225,7 +263,30 @@ class SessionDoc:
         return (self.path / "lot.json").exists()
 
     @property
+    def multi(self) -> bool:
+        """UX-09: images of several lots / sessions are loaded together."""
+        return len(self.records) > 1
+
+    def record_for(self, im: ImageDoc) -> Optional[RecordRef]:
+        if im.record is not None:
+            return im.record
+        return self.records[0] if self.records else None
+
+    def removed_for(self, record_paths=None) -> List[ImageDoc]:
+        """Images taken out of the analyzer (optionally of some records)."""
+        if record_paths is None:
+            return list(self.removed)
+        want = {Path(p) for p in record_paths}
+        return [im for im in self.removed
+                if (self.record_for(im) is not None and self.record_for(im).path in want)]
+
+    @property
     def title(self) -> str:
+        if self.multi:
+            n = len(self.records)
+            lots = {r.path if r.is_lot else r.path.parent for r in self.records}
+            what = f"{len(lots)} lots" if len(lots) > 1 else f"{n} sessions"
+            return f"{what} · {len(self.images)} images"
         if self.is_lot:
             lot = self.meta.lot_number or (self.lot_meta or {}).get("lot_number") or self.path.name
             return self.meta.label or str(lot)
@@ -355,6 +416,116 @@ def _persist(session_path: Path, root: Path, entries: List[ImageEntry],
     update_session(session_path, images=entries or None,
                    meta_updates=meta_updates or None, catalog=Catalog(root))
     return datetime.now().strftime("%H:%M")
+
+
+def _persist_many(root: Path, jobs: List[tuple]) -> str:
+    """Worker-thread autosave of several records (UX-09): ``jobs`` =
+    [(record_path, entries, meta_updates)].  Records are written one after
+    the other on the serial pool, so saves never overlap."""
+    stamp = ""
+    for path, entries, meta in jobs:
+        if entries or meta:
+            stamp = _persist(path, root, entries, meta)
+    return stamp or datetime.now().strftime("%H:%M")
+
+
+def _index_records(paths: List[Path]) -> List[dict]:
+    """Worker-thread (UX-09): manifests + level metadata of several records,
+    without reading any pixels or results (fast, so the analyzer can list
+    every image at once and fill them in as they load)."""
+    out = []
+    for path in paths:
+        path = Path(path)
+        try:
+            if (path / "lot.json").exists() and not (path / "manifest.json").exists():
+                continue                  # a lot with no images yet
+            ls = load_session(path)
+        except Exception:
+            continue
+        m = ls.manifest
+        out.append(dict(path=path, meta=m, project_meta=ls.project_meta or {},
+                        sample_meta=ls.sample_meta or {}, lot_meta=ls.lot_meta or {},
+                        filenames=[e.filename for e in m.images]))
+    return out
+
+
+def records_under(root: Path, paths) -> List[Path]:
+    """Worker-thread (UX-09): every record (a lot holding its own images,
+    or a session folder) below the given job / part / lot / session
+    folders, in folder order, without duplicates."""
+    from data.hierarchy import RESERVED_LOT_SUBDIRS
+    root = Path(root)
+    ws = Workspace(root)
+    out: List[Path] = []
+
+    def add(p: Path) -> None:
+        if p not in out:
+            out.append(p)
+
+    def add_lot(lp: Path) -> None:
+        lp = Path(lp)
+        if (lp / "manifest.json").exists():
+            add(lp)
+        if lp.is_dir():
+            for d in sorted(lp.iterdir()):
+                if d.is_dir() and d.name not in RESERVED_LOT_SUBDIRS and \
+                        (d / "manifest.json").exists():
+                    add(d)
+
+    for p in paths:
+        p = Path(p)
+        kind = node_for_path(root, p).kind
+        try:
+            if kind == "project":
+                for sm in ws.list_samples(p):
+                    for lm in ws.list_lots(p, Path(sm.path)):
+                        add_lot(Path(lm.path))
+            elif kind == "sample":
+                for lm in ws.list_lots(p.parent, p):
+                    add_lot(Path(lm.path))
+            elif kind == "lot":
+                add_lot(p)
+            elif kind == "session" and (p / "manifest.json").exists():
+                add(p)
+            elif kind == "workspace":
+                for pm in ws.list_projects():
+                    pp = Path(pm.path)
+                    for sm in ws.list_samples(pp):
+                        for lm in ws.list_lots(pp, Path(sm.path)):
+                            add_lot(Path(lm.path))
+        except (OSError, FileNotFoundError, ValueError):
+            continue
+    return out
+
+
+def setup_probe(image_bgr, path=None, want_meta: bool = True) -> dict:
+    """Worker-thread (UX-02): everything "Auto-find scan area & scale bar"
+    needs for one image -- the SEM info bar (-> scan area), the scale-bar
+    line inside it (length in px) and the pixel size stored in the file by
+    the microscope (-> scale).  Local only; nothing leaves the PC."""
+    out: Dict[str, Any] = {"info": {}, "bar_px": 0.0, "cal": None, "meta": None}
+    if image_bgr is None:
+        return out
+    try:
+        from core.infobar import detect_info_bar
+        from core.scale_bar import find_scale_bar_line
+        ib = detect_info_bar(image_bgr)
+        out["info"] = ib.to_dict() if ib is not None and ib.bars else {}
+        if ib is not None and ib.bars:
+            bar = find_scale_bar_line(image_bgr, info_bar=ib)
+            if bar and bar.get("length_px", 0) >= 10:
+                out["bar_px"] = float(bar["length_px"])
+    except Exception:
+        pass
+    if want_meta and path:
+        try:
+            info = probe_sem_metadata(str(path))
+        except Exception:
+            info = None
+        if info:
+            out["meta"] = info.get("meta") or {}
+            out["cal"] = tuple(info["cal"]) if info.get("cal") else None
+    return out
 
 
 def _add_images_worker(session_path: Path, root: Path, paths: List[str], known: set) -> List[dict]:
@@ -561,6 +732,12 @@ class AppState(QObject):
     sem_metadata_ready = Signal(object)          # uid: SEM metadata / calibration read
     metadata_calibration = Signal(object, float, str, str, float)  # uid, px, src, conf, prev
     info_bar_ready = Signal(object)              # uid: info bar detected (or not)
+    records_loading = Signal(int, int)           # UX-09: records loaded, total
+    records_loaded = Signal()                    # UX-09: every record's pixels are in
+    setup_changed = Signal()                     # UX-02: scan area / scale readiness changed
+    setup_progress = Signal(int, int)            # UX-02: auto-find done, total
+    setup_finished = Signal(dict)                # UX-02: auto-find summary
+    overlay_opacity_changed = Signal(float)      # UX-05
 
     def __init__(self, settings_path: Optional[Path] = None,
                  parent: Optional[QObject] = None) -> None:
@@ -589,6 +766,9 @@ class AppState(QObject):
         self._save_timer.setSingleShot(True)
         self._save_timer.setInterval(700)
         self._save_timer.timeout.connect(self.save_now)
+        self._records_pending = 0
+        self._setup_pending: set = set()
+        self._setup_stats: dict = {}
 
     # ------------------------------------------------------------------ settings
     def save_settings(self) -> None:
@@ -643,7 +823,35 @@ class AppState(QObject):
         return self.settings.operator or default_operator()
 
     def default_params(self) -> DetectionParams:
-        return params_from_dict(self.ui_state.get("default_params"))
+        """New-session detection parameters.  UX-01: without saved defaults
+        the mode is AI-assisted (or Boundary when the AI model file is not
+        installed -- the Analyze page then shows the reinstall hint)."""
+        from ui.detection_modes import normalize_mode
+        saved = self.ui_state.get("default_params")
+        p = params_from_dict(saved)
+        p.detection_mode = normalize_mode(p.detection_mode if saved else "")
+        return p
+
+    # ------------------------------------------------------------------ UX-05
+    @property
+    def overlay_opacity(self) -> float:
+        """Opacity (0-1) of the grain overlay on the canvas and in report
+        images.  Stored locally in the app's ui_state (key
+        ``overlay_opacity``)."""
+        try:
+            v = float(self.ui_state.get("overlay_opacity", 1.0))
+        except (TypeError, ValueError):
+            v = 1.0
+        return max(0.0, min(1.0, v))
+
+    def set_overlay_opacity(self, value: float, persist: bool = True) -> None:
+        v = max(0.0, min(1.0, float(value)))
+        if abs(v - self.overlay_opacity) < 1e-6 and "overlay_opacity" in self.ui_state:
+            return
+        self.ui_state["overlay_opacity"] = round(v, 3)
+        if persist:
+            self.persist_ui_state()
+        self.overlay_opacity_changed.emit(v)
 
     # ------------------------------------------------------------------ nodes
     def set_node(self, node: Optional[NodeRef]) -> None:
@@ -656,7 +864,7 @@ class AppState(QObject):
     # ------------------------------------------------------------------ session
     def open_session(self, path, on_done=None) -> None:
         path = Path(path)
-        if self.session is not None and self.session.path == path:
+        if self.session is not None and self.session.path == path and not self.session.multi:
             if on_done:
                 on_done(True)
             self.session_opened.emit()
@@ -690,8 +898,13 @@ class AppState(QObject):
                          filters_touched=bool(pf),
                          project_meta=ls.project_meta or {}, sample_meta=ls.sample_meta or {},
                          lot_meta=ls.lot_meta or {})
+        rec = RecordRef(path=path, meta=m, project_meta=doc.project_meta,
+                        sample_meta=doc.sample_meta, lot_meta=doc.lot_meta,
+                        px_per_um=doc.px_per_um, scan_rect=scan, filters=dict(pf))
+        doc.records = [rec]
         for d in bundle["images"]:
-            doc.images.append(self._make_image(doc, d))
+            doc.images.append(self._make_image(doc, d, rec))
+        self._records_pending = 0
         self.session = doc
         self.undo_stack.clear()
         self._dirty.clear()
@@ -709,29 +922,244 @@ class AppState(QObject):
         self.calibration_changed.emit()
         self.filters_changed.emit()
 
-    def _make_image(self, doc: SessionDoc, d: dict) -> ImageDoc:
+    def _make_image(self, doc: SessionDoc, d: dict, rec: Optional[RecordRef] = None,
+                    into: Optional[ImageDoc] = None) -> ImageDoc:
+        """ImageDoc from a loaded image dict.  ``rec`` is the record the image
+        belongs to: its own session-level scale / scan area / filters become
+        per-image values when they differ from the analyzer's shared ones
+        (UX-09).  ``into`` fills an existing placeholder instead."""
+        rec = rec or (doc.records[0] if doc.records else None)
         res = d.get("result")
         px = float(d.get("px") or 0.0)
-        override = px if (px > 0 and doc.px_per_um > 0 and abs(px - doc.px_per_um) > 1e-9) else 0.0
-        if px > 0 and doc.px_per_um <= 0:
-            override = px
+        eff = px if px > 0 else (rec.px_per_um if rec is not None else doc.px_per_um)
+        override = eff if (eff > 0 and (doc.px_per_um <= 0
+                                        or abs(eff - doc.px_per_um) > 1e-9)) else 0.0
         excluded = d.get("excluded") or {}
-        im = ImageDoc(filename=d["filename"], path=d.get("path"), image_bgr=d.get("bgr"),
-                      thumb=d.get("thumb"), result=res, raw=d.get("raw") or res,
-                      excluded=excluded, counts=_counts_from(excluded),
-                      manual=set(d.get("manual") or []),
-                      edits=list(d.get("edits") or []),
-                      detector_labels=d.get("detector_labels"),
-                      filter_override=options_from_dict(d["override"]) if d.get("override") else None,
-                      scan_rect=tuple(d["scan_rect"]) if d.get("scan_rect") else None,
-                      px_override=override,
-                      original_name=d.get("original_name") or "",
-                      status="done" if res is not None else "pending")
+        scan = tuple(d["scan_rect"]) if d.get("scan_rect") else (
+            rec.scan_rect if rec is not None else None)
+        ov = d.get("override")
+        if not ov and rec is not None and rec.filters and doc.records and \
+                rec is not doc.records[0] and \
+                options_to_dict(options_from_dict(rec.filters)) != options_to_dict(doc.filters):
+            ov = rec.filters
+        im = into if into is not None else ImageDoc(filename=d["filename"])
+        im.filename = d["filename"]
+        im.path, im.image_bgr, im.thumb = d.get("path"), d.get("bgr"), d.get("thumb")
+        im.result, im.raw = res, d.get("raw") or res
+        im.excluded, im.counts = excluded, _counts_from(excluded)
+        im.manual = set(d.get("manual") or [])
+        im.edits = list(d.get("edits") or [])
+        im.detector_labels = d.get("detector_labels")
+        im.filter_override = options_from_dict(ov) if ov else None
+        im.scan_rect = scan
+        im.px_override = override
+        im.original_name = d.get("original_name") or ""
+        im.status = "done" if res is not None else "pending"
+        im.progress, im.message = 0, ""
+        im.record = rec
+        im.loading = False
         if im.image_bgr is None:
             im.status, im.message = "error", "Image file is missing or unreadable"
         if im.scan_rect is not None and im.scan_rect == doc.scan_rect:
             im.scan_rect = None
         return im
+
+    # ------------------------------------------------------------------ UX-09 several records
+    def open_records(self, paths, on_done=None) -> None:
+        """Load the images of several lots / sessions into the analyzer.
+
+        The manifests are indexed first (fast, off-thread) so every image is
+        listed at once; pixels and saved results then stream in record by
+        record on the thread pool (``records_loading`` / ``records_loaded``)
+        -- the GUI never waits for them.  One record = :meth:`open_session`."""
+        paths = list(dict.fromkeys(Path(p) for p in paths))
+        if not paths:
+            if on_done:
+                on_done(False)
+            return
+        if len(paths) == 1:
+            self.open_session(paths[0], on_done)
+            return
+        self.flush()
+        self.session_loading.emit(paths[0])
+
+        def done(index):
+            if not index:
+                self.message.emit("Nothing to load", "The selected folders contain no images.",
+                                  "info")
+                if on_done:
+                    on_done(False)
+                return
+            if len(index) == 1:
+                self.open_session(index[0]["path"], on_done)
+                return
+            self._install_records(index)
+            if on_done:
+                on_done(True)
+
+        def failed(msg):
+            self.message.emit("Could not load the images", msg.splitlines()[0], "danger")
+            if on_done:
+                on_done(False)
+
+        run_task(_index_records, paths, on_done=done, on_error=failed)
+
+    def _install_records(self, index: List[dict]) -> None:
+        first = index[0]
+        m0: SessionMeta = first["meta"]
+        params = {k: v for k, v in (m0.detection_params or {}).items() if k != "post_filters"}
+        if not params:
+            params = params_to_dict(self.default_params())
+        scan0 = tuple(m0.scan_rect) if m0.scan_rect else None
+        pf0 = dict(m0.filters or {})
+        doc = SessionDoc(path=first["path"], meta=m0, px_per_um=float(m0.px_per_um or 0.0),
+                         scan_rect=scan0, params=params,
+                         filters=options_from_dict(pf0) if pf0 else default_options(scan0),
+                         filters_touched=bool(pf0), project_meta=first["project_meta"],
+                         sample_meta=first["sample_meta"], lot_meta=first["lot_meta"])
+        for d in index:
+            m = d["meta"]
+            rec = RecordRef(path=d["path"], meta=m, project_meta=d["project_meta"],
+                            sample_meta=d["sample_meta"], lot_meta=d["lot_meta"],
+                            px_per_um=float(m.px_per_um or 0.0),
+                            scan_rect=tuple(m.scan_rect) if m.scan_rect else None,
+                            filters=dict(m.filters or {}), loaded=False)
+            doc.records.append(rec)
+            for fn in d["filenames"]:
+                doc.images.append(ImageDoc(filename=fn, record=rec, loading=True,
+                                           status="queued", message="Loading…"))
+        self.session = doc
+        self.undo_stack.clear()
+        self._dirty.clear()
+        self._meta_dirty = False
+        self.current_uid = doc.images[0].uid if doc.images else None
+        self.current_node = NodeRef("lot" if doc.is_lot else "session", doc.path)
+        self._set_save_state("saved", "")
+        self._records_pending = len(doc.records)
+        self.node_changed.emit(self.current_node)
+        self.session_opened.emit()
+        self.images_changed.emit()
+        self.current_image_changed.emit(self.current_uid)
+        self.calibration_changed.emit()
+        self.filters_changed.emit()
+        self.records_loading.emit(0, len(doc.records))
+        for rec in doc.records:
+            run_task(_load_session_bundle, rec.path,
+                     on_done=lambda b, r=rec: self._fill_record(doc, r, b),
+                     on_error=lambda msg, r=rec: self._record_failed(doc, r, msg))
+
+    def is_loading(self) -> bool:
+        """True while a multi-record load is still streaming pixels in."""
+        return self._records_pending > 0
+
+    def _record_done(self, doc: SessionDoc, rec: RecordRef) -> None:
+        rec.loaded = True
+        self._records_pending = max(0, self._records_pending - 1)
+        total = len(doc.records)
+        self.records_loading.emit(total - self._records_pending, total)
+        if self._records_pending == 0:
+            self.records_loaded.emit()
+            self.setup_changed.emit()
+            if self.is_dirty():
+                self.schedule_save()
+
+    def _fill_record(self, doc: SessionDoc, rec: RecordRef, bundle: dict) -> None:
+        if self.session is not doc:
+            return
+        by_name = {im.filename: im for im in doc.images + doc.removed if im.record is rec}
+        for d in bundle["images"]:
+            ph = by_name.pop(d["filename"], None)
+            if ph is None:
+                continue
+            self._make_image(doc, d, rec, into=ph)
+            self.image_updated.emit(ph.uid)
+        for ph in by_name.values():          # listed but not loadable
+            ph.loading = False
+            ph.status, ph.message = "error", "Image file is missing or unreadable"
+            self.image_updated.emit(ph.uid)
+        cur = doc.image(self.current_uid) if self.current_uid is not None else None
+        if cur is not None and cur.record is rec:
+            self.current_image_changed.emit(self.current_uid)
+        self.calibration_changed.emit()
+        self._record_done(doc, rec)
+
+    def _record_failed(self, doc: SessionDoc, rec: RecordRef, msg: str) -> None:
+        if self.session is not doc:
+            return
+        first = msg.splitlines()[0] if msg else "Unreadable"
+        for im in doc.images + doc.removed:
+            if im.record is rec and im.loading:
+                im.loading = False
+                im.status, im.message = "error", first
+                self.image_updated.emit(im.uid)
+        self.message.emit("Could not load a folder", f"{rec.path.name}: {first}", "danger")
+        self._record_done(doc, rec)
+
+    # ------------------------------------------------------------------ UX-06 remove / put back
+    def remove_images(self, uids) -> int:
+        """Take images out of the analyzer only -- the files, the lot and
+        the saved results are untouched.  Returns how many were removed."""
+        doc = self.session
+        if doc is None:
+            return 0
+        uids = set(uids)
+        gone = [im for im in doc.images if im.uid in uids]
+        if not gone:
+            return 0
+        idx = doc.index_of(self.current_uid)
+        doc.images = [im for im in doc.images if im.uid not in uids]
+        doc.removed.extend(gone)
+        if self.current_uid in uids:
+            self.current_uid = (doc.images[min(max(idx, 0), len(doc.images) - 1)].uid
+                                if doc.images else None)
+        self.images_changed.emit()
+        self.current_image_changed.emit(self.current_uid)
+        self.setup_changed.emit()
+        return len(gone)
+
+    def restore_images(self, record_paths=None, uids=None) -> int:
+        """Put removed images back ("Add all from lot"), optionally only
+        those of some records, and pick up images added to those records on
+        disk meanwhile (off-thread).  ``uids`` restores exactly those images
+        (Undo of a removal).  Returns how many came back at once."""
+        doc = self.session
+        if doc is None:
+            return 0
+        if uids is not None:
+            want_ids = set(uids)
+            back = [im for im in doc.removed if im.uid in want_ids]
+            doc.removed = [im for im in doc.removed if im.uid not in want_ids]
+            doc.images = sorted(doc.images + back, key=lambda im: im.seq)
+            if back:
+                self.images_changed.emit()
+                self.setup_changed.emit()
+            return len(back)
+        back = doc.removed_for(record_paths)
+        ids = {im.uid for im in back}
+        doc.removed = [im for im in doc.removed if im.uid not in ids]
+        doc.images = sorted(doc.images + back, key=lambda im: im.seq)
+        want = None if record_paths is None else {Path(p) for p in record_paths}
+        for rec in doc.records:
+            if (want is not None and rec.path not in want) or not rec.loaded:
+                continue
+            known = {im.filename for im in doc.images + doc.removed
+                     if doc.record_for(im) is rec}
+
+            def got(new, rec=rec):
+                if self.session is not doc or not new:
+                    return
+                for d in new:
+                    doc.images.append(self._make_image(doc, d, rec))
+                self.images_changed.emit()
+                self.setup_changed.emit()
+            run_task(_load_new_images, rec.path, known, on_done=got)
+        if back:
+            if self.current_uid is None and doc.images:
+                self.current_uid = doc.images[0].uid
+                self.current_image_changed.emit(self.current_uid)
+            self.images_changed.emit()
+            self.setup_changed.emit()
+        return len(back)
 
     def close_session(self) -> None:
         if self.session is None:
@@ -739,6 +1167,8 @@ class AppState(QObject):
         self.flush()
         self.session = None
         self.current_uid = None
+        self._records_pending = 0
+        self._setup_pending = set()
         self.undo_stack.clear()
         self._set_save_state("none", "")
         self.session_closed.emit()
@@ -750,7 +1180,9 @@ class AppState(QObject):
         if self.session is None or not paths:
             return
         doc = self.session
-        known = {im.filename for im in doc.images}
+        cur = self.current_image()
+        rec = (doc.record_for(cur) if cur is not None else None) or doc.records[0]
+        known = {im.filename for im in doc.images + doc.removed if doc.record_for(im) is rec}
         root = self.root
         self.flush()
 
@@ -759,7 +1191,7 @@ class AppState(QObject):
                 return
             added = []
             for d in new:
-                im = self._make_image(doc, d)
+                im = self._make_image(doc, d, rec)
                 doc.images.append(im)
                 added.append(im.uid)
             if self.current_uid is None and doc.images:
@@ -773,7 +1205,7 @@ class AppState(QObject):
             if on_done:
                 on_done(len(new))
 
-        run_task(_add_images_worker, doc.path, root, [str(p) for p in paths], known,
+        run_task(_add_images_worker, rec.path, root, [str(p) for p in paths], known,
                  on_done=done, pool=serial_pool(),
                  on_error=lambda m: self.message.emit("Could not add images",
                                                       m.splitlines()[0], "danger"))
@@ -797,7 +1229,8 @@ class AppState(QObject):
                 im.sem_meta = info.get("meta") or {}
                 cal = info.get("cal")
                 im.cal_suggestion = tuple(cal) if cal else None
-                self._fill_acquisition(doc, im.sem_meta)
+                if doc.record_for(im) is doc.records[0]:
+                    self._fill_acquisition(doc, im.sem_meta)
                 if cal and cal[2] == "high" and im.px_override <= 0 and im.result is None:
                     prev = im.px_override
                     self.set_calibration(float(cal[0]), im.uid)
@@ -848,6 +1281,234 @@ class AppState(QObject):
         prev = im.scan_rect if this_image else self.session.scan_rect
         self.set_scan_rect(tuple(info["analysis_rect"]), uid if this_image else None)
         return (prev,)
+
+    # ------------------------------------------------------------------ UX-02 pre-analysis setup
+    def setup_issues(self, im: Optional[ImageDoc]) -> List[str]:
+        """What still has to be set before ``im`` may be analysed:
+        ``"loading"``, ``"missing"`` (no pixels), ``"scan"`` (no confirmed
+        scan area) and/or ``"scale"`` (no scale / magnification)."""
+        if im is None:
+            return ["missing"]
+        if im.loading:
+            return ["loading"]
+        if im.image_bgr is None:
+            return ["missing"]
+        out = []
+        if self.scan_for(im) is None:
+            out.append("scan")
+        if self.px_for(im) <= 0:
+            out.append("scale")
+        return out
+
+    def setup_ready(self, im: Optional[ImageDoc]) -> bool:
+        return not self.setup_issues(im)
+
+    def is_setting_up(self) -> bool:
+        return bool(self._setup_pending)
+
+    def auto_setup(self, uids=None) -> int:
+        """"Auto-find scan area & scale bar" on the given images (default:
+        every image in the analyzer), off the GUI thread.  Per image: the
+        SEM info bar becomes the scan area boundary (else the full frame),
+        and the scale comes from the file's own metadata or from the scale
+        bar found in the info bar.  Values the operator set by hand are
+        kept.  Returns how many images are being examined."""
+        doc = self.session
+        if doc is None:
+            return 0
+        wanted = None if uids is None else set(uids)
+        targets = [im for im in doc.images if (wanted is None or im.uid in wanted)
+                   and not im.loading and im.image_bgr is not None
+                   and im.uid not in self._setup_pending]
+        if not targets:
+            return 0
+        if not self._setup_pending:
+            self._setup_stats = dict(total=0, done=0, info_bar=0, full_frame=0, kept_scan=0,
+                                     scale_meta=0, scale_bar=0, kept_scale=0,
+                                     needs_length=0, no_scale=0)
+        self._setup_stats["total"] += len(targets)
+        for im in targets:
+            self._setup_pending.add(im.uid)
+        self.setup_progress.emit(self._setup_stats["done"], self._setup_stats["total"])
+        for im in targets:
+            run_task(setup_probe, im.image_bgr, str(im.path) if im.path else None,
+                     im.cal_suggestion is None,
+                     on_done=lambda out, im=im: self._apply_setup(doc, im, out),
+                     on_error=lambda _m, im=im: self._apply_setup(doc, im, {}))
+        return len(targets)
+
+    def _matching_bar_um(self, im: ImageDoc) -> float:
+        """Length (µm) the operator gave a scale bar of the same pixel
+        length on another image (same magnification)."""
+        best = 0.0
+        for o in self.images():
+            if o is im or o.bar_um <= 0 or o.bar_px <= 0:
+                continue
+            if abs(o.bar_px - im.bar_px) <= 2:
+                if o.scale_source == "manual":
+                    return o.bar_um
+                best = best or o.bar_um
+        return best
+
+    def _apply_setup(self, doc: SessionDoc, im: ImageDoc, out: dict) -> None:
+        if self.session is not doc or im.uid not in self._setup_pending:
+            return
+        self._setup_pending.discard(im.uid)
+        st = self._setup_stats
+        st["done"] += 1
+        if im.image_bgr is not None:
+            info = out.get("info") or {}
+            if info or im.info_bar is None:
+                im.info_bar = info
+            # scan area
+            ar = info.get("analysis_rect")
+            if im.scan_source == "manual" or (doc.scan_rect is not None and im.scan_rect is None
+                                              and not ar):
+                st["kept_scan"] += 1
+            else:
+                if ar:
+                    im.scan_rect = tuple(int(v) for v in ar)
+                    st["info_bar"] += 1
+                else:
+                    h, w = im.image_bgr.shape[:2]
+                    im.scan_rect = (0, 0, int(w), int(h))
+                    st["full_frame"] += 1
+                im.scan_source = "auto"
+            # scale
+            if out.get("meta") is not None:
+                im.sem_meta = out.get("meta") or {}
+                cal = out.get("cal")
+                im.cal_suggestion = tuple(cal) if cal else None
+            bar = float(out.get("bar_px") or 0.0)
+            if bar > 0:
+                im.bar_px = bar
+            cal = im.cal_suggestion
+            if im.scale_source == "manual":
+                st["kept_scale"] += 1
+            elif cal and str(cal[2]) in ("high", "medium") and float(cal[0]) > 0:
+                im.px_override = float(cal[0])
+                im.scale_source = "metadata"
+                st["scale_meta"] += 1
+            elif im.bar_px > 0 and (im.bar_um > 0 or self._matching_bar_um(im) > 0):
+                im.bar_um = im.bar_um or self._matching_bar_um(im)
+                im.px_override = im.bar_px / im.bar_um
+                im.scale_source = "auto"
+                st["scale_bar"] += 1
+            elif self.px_for(im) > 0:
+                st["kept_scale"] += 1
+            elif im.bar_px > 0:
+                st["needs_length"] += 1
+            else:
+                st["no_scale"] += 1
+            self._meta_dirty = True
+            self.image_updated.emit(im.uid)
+        self.setup_progress.emit(st["done"], st["total"])
+        if not self._setup_pending:
+            self.calibration_changed.emit()
+            self.setup_changed.emit()
+            self.info_bar_ready.emit(self.current_uid)
+            self.schedule_save()
+            self.setup_finished.emit(dict(st))
+
+    def set_bar_length(self, uid, length_um: float, same_bar: bool = True) -> List:
+        """The operator typed the length of the scale bar found on image
+        ``uid``: scale = bar px / µm.  ``same_bar`` also applies it to the
+        other images whose bar has the same pixel length (same
+        magnification) and no scale of their own from metadata or by hand.
+        Returns the undo snapshot."""
+        doc = self.session
+        im = doc.image(uid) if doc is not None else None
+        if im is None or im.bar_px <= 0 or length_um <= 0:
+            return []
+        targets = [im]
+        if same_bar:
+            targets += [o for o in doc.images if o is not im and o.bar_px > 0
+                        and abs(o.bar_px - im.bar_px) <= 2
+                        and o.scale_source not in ("manual", "metadata")]
+        snap = [(o.uid, o.px_override, o.scale_source, o.bar_um) for o in targets]
+        for o in targets:
+            o.bar_um = float(length_um)
+            o.px_override = o.bar_px / float(length_um)
+            o.scale_source = "manual" if o is im else "auto"
+        self._meta_dirty = True
+        self.calibration_changed.emit()
+        self.setup_changed.emit()
+        self.schedule_save()
+        return snap
+
+    def restore_scales(self, snap: List) -> None:
+        """Undo :meth:`set_bar_length` / :meth:`set_calibration_all`."""
+        doc = self.session
+        if doc is None or not snap:
+            return
+        for item in snap:
+            if item[0] == "session":
+                doc.px_per_um = float(item[1])
+                continue
+            o = doc.image(item[0])
+            if o is not None:
+                o.px_override, o.scale_source = float(item[1]), item[2]
+                if len(item) > 3:
+                    o.bar_um = float(item[3])
+        self._meta_dirty = True
+        self.calibration_changed.emit()
+        self.setup_changed.emit()
+        self.schedule_save()
+
+    def set_calibration_all(self, px_per_um: float) -> List:
+        """UX-03: one scale for EVERY image in the analyzer (per-image
+        scales are dropped).  Returns the undo snapshot."""
+        doc = self.session
+        if doc is None:
+            return []
+        snap = [("session", doc.px_per_um)] + [
+            (o.uid, o.px_override, o.scale_source, o.bar_um) for o in doc.images]
+        doc.px_per_um = float(px_per_um)
+        for o in doc.images:
+            o.px_override = 0.0
+            o.scale_source = "manual"
+        self._meta_dirty = True
+        self.calibration_changed.emit()
+        self.setup_changed.emit()
+        self.schedule_save()
+        return snap
+
+    def set_scan_rect_all(self, rect) -> List:
+        """One scan area for every image in the analyzer (per-image areas
+        dropped).  ``None`` = the full frame of each image.  Returns the
+        undo snapshot."""
+        doc = self.session
+        if doc is None:
+            return []
+        snap = [("session", doc.scan_rect)] + [(o.uid, o.scan_rect, o.scan_source)
+                                               for o in doc.images]
+        rect = tuple(int(v) for v in rect) if rect else None
+        for o in doc.images:
+            if rect is None and o.image_bgr is not None:
+                h, w = o.image_bgr.shape[:2]
+                o.scan_rect = (0, 0, int(w), int(h))
+            else:
+                o.scan_rect = None
+            o.scan_source = "manual"
+        self.set_scan_rect(rect, None)
+        self.setup_changed.emit()
+        return snap
+
+    def restore_scans(self, snap: List) -> None:
+        doc = self.session
+        if doc is None or not snap:
+            return
+        for item in snap:
+            if item[0] == "session":
+                doc.scan_rect = item[1]
+                continue
+            o = doc.image(item[0])
+            if o is not None:
+                o.scan_rect, o.scan_source = item[1], item[2]
+        self._meta_dirty = True
+        self.calibration_changed.emit()
+        self.setup_changed.emit()
+        self.schedule_save()
 
     def _fill_acquisition(self, doc: "SessionDoc", md: dict) -> None:
         m = doc.meta
@@ -934,8 +1595,10 @@ class AppState(QObject):
             if im is None:
                 return
             im.px_override = float(px_per_um)
+            im.scale_source = "manual" if px_per_um > 0 else ""
             self._meta_dirty = True        # per-image fields travel with every save
         self.calibration_changed.emit()
+        self.setup_changed.emit()
         self.schedule_save()
 
     def reset_image_calibration(self, uid) -> None:
@@ -951,8 +1614,10 @@ class AppState(QObject):
         if im is None or im.scan_rect is None:
             return
         im.scan_rect = None
+        im.scan_source = ""
         self._meta_dirty = True
         self.calibration_changed.emit()
+        self.setup_changed.emit()
         self.schedule_save()
 
     def set_scan_rect(self, rect, uid=None) -> None:
@@ -971,8 +1636,10 @@ class AppState(QObject):
             im = self.session.image(uid)
             if im is not None:
                 im.scan_rect = rect
+                im.scan_source = "manual" if rect else ""
                 self._meta_dirty = True
         self.calibration_changed.emit()
+        self.setup_changed.emit()
         self.schedule_save()
 
     def set_params(self, params: DetectionParams) -> None:
@@ -1226,44 +1893,22 @@ class AppState(QObject):
         if self._saving:
             self._save_again = True
             return
-        entries = []
+        if self._records_pending:
+            # UX-09: a record is written only once its images are all in
+            # memory (else its session-level values could be overwritten)
+            self._save_timer.start()
+            return
         with_result = set(self._dirty)
-        all_fields = self._meta_dirty or bool(with_result)
-        for im in doc.images:
-            if im.uid in with_result and im.result is not None:
-                snap = snapshot_result(im.result)
-                # The saved label image keeps EVERY raw grain so filters can be
-                # switched off again after reload; grains.json / summary.json /
-                # overlay.png hold the filtered (reported) result.
-                if im.raw is not None and im.raw.label_image is not None:
-                    snap.label_image = im.raw.label_image.copy()
-                base = (im.detector_labels.copy()
-                        if im.edits and im.detector_labels is not None else None)
-                entries.append(ImageEntry(filename=im.filename, image_bgr=im.image_bgr,
-                                          result=snap, detector_label_image=base,
-                                          **self._image_fields(im)))
-            elif all_fields:
-                # manifest-only update: overrides, filter override, manual ids
-                entries.append(ImageEntry(filename=im.filename, **self._image_fields(im)))
-        meta = {}
-        if self._meta_dirty or with_result:
-            meta = dict(px_per_um=doc.px_per_um,
-                        scan_rect=list(doc.scan_rect) if doc.scan_rect else CLEAR,
-                        detection_params=dict(doc.params),
-                        filters=options_to_dict(doc.filters),
-                        detector_mode=doc.params.get("detection_mode", ""))
-            from version import __version__
-            meta["software_version"] = __version__
+        jobs = []
+        for rec in doc.records:
+            entries, meta = self._record_payload(doc, rec, with_result)
+            if entries or meta:
+                jobs.append((rec.path, entries, meta))
+            if "px_per_um" in meta:        # the record now follows the shared values
+                rec.px_per_um, rec.scan_rect = doc.px_per_um, doc.scan_rect
+                rec.filters = options_to_dict(doc.filters)
         if doc.acquisition_dirty:
             doc.acquisition_dirty = False
-            m = doc.meta
-            meta.update(instrument=m.instrument, magnification=m.magnification,
-                        accelerating_voltage_kv=m.accelerating_voltage_kv,
-                        working_distance_mm=m.working_distance_mm,
-                        # INN-29 / FIX-08 (CLEAR resets a stale id to null)
-                        calibration_check_id=m.calibration_check_id or CLEAR,
-                        calibration_status=m.calibration_status,
-                        calibration_reason=m.calibration_reason)
         self._dirty.clear()
         self._meta_dirty = False
         self._saving = True
@@ -1283,12 +1928,60 @@ class AppState(QObject):
             self._set_save_state("error", msg.splitlines()[0])
             self.message.emit("Autosave failed", msg.splitlines()[0], "danger")
 
-        run_task(_persist, doc.path, self.root, entries, meta,
+        run_task(_persist_many, self.root, jobs,
                  on_done=done, on_error=failed, pool=serial_pool())
+
+    def _record_payload(self, doc: SessionDoc, rec: RecordRef, with_result: set):
+        """(entries, meta_updates) to write into one record's manifest."""
+        entries = []
+        mine = [im for im in doc.images + doc.removed if doc.record_for(im) is rec]
+        rec_result = any(im.uid in with_result for im in mine)
+        all_fields = self._meta_dirty or rec_result
+        for im in mine:
+            if im.loading:
+                continue
+            if im.uid in with_result and im.result is not None:
+                snap = snapshot_result(im.result)
+                # The saved label image keeps EVERY raw grain so filters can be
+                # switched off again after reload; grains.json / summary.json /
+                # overlay.png hold the filtered (reported) result.
+                if im.raw is not None and im.raw.label_image is not None:
+                    snap.label_image = im.raw.label_image.copy()
+                base = (im.detector_labels.copy()
+                        if im.edits and im.detector_labels is not None else None)
+                entries.append(ImageEntry(filename=im.filename, image_bgr=im.image_bgr,
+                                          result=snap, detector_label_image=base,
+                                          **self._image_fields(im)))
+            elif all_fields:
+                # manifest-only update: overrides, filter override, manual ids
+                entries.append(ImageEntry(filename=im.filename, **self._image_fields(im)))
+        meta = {}
+        if self._meta_dirty or rec_result:
+            meta = dict(px_per_um=doc.px_per_um,
+                        scan_rect=list(doc.scan_rect) if doc.scan_rect else CLEAR,
+                        detection_params=dict(doc.params),
+                        filters=options_to_dict(doc.filters),
+                        detector_mode=doc.params.get("detection_mode", ""))
+            from version import __version__
+            meta["software_version"] = __version__
+        if doc.acquisition_dirty and doc.records and rec is doc.records[0]:
+            m = doc.meta
+            meta.update(instrument=m.instrument, magnification=m.magnification,
+                        accelerating_voltage_kv=m.accelerating_voltage_kv,
+                        working_distance_mm=m.working_distance_mm,
+                        # INN-29 / FIX-08 (CLEAR resets a stale id to null)
+                        calibration_check_id=m.calibration_check_id or CLEAR,
+                        calibration_status=m.calibration_status,
+                        calibration_reason=m.calibration_reason)
+        return entries, meta
 
     def flush(self, timeout_ms: int = 15000) -> None:
         """Synchronously wait for pending saves (close / session switch)."""
         self.about_to_flush.emit()
+        if self._records_pending:
+            from PySide6.QtCore import QThreadPool, QCoreApplication
+            QThreadPool.globalInstance().waitForDone(timeout_ms)
+            QCoreApplication.processEvents()
         if self._final_pending:
             self._final_timer.stop()
             self._run_final_filters()
@@ -1307,7 +2000,8 @@ class AppState(QObject):
 
 
 __all__ = [
-    "AppState", "ImageDoc", "SessionDoc", "NodeRef", "ExcludeGrainsCommand",
+    "AppState", "ImageDoc", "SessionDoc", "RecordRef", "NodeRef", "ExcludeGrainsCommand",
+    "setup_probe", "records_under",
     "RestoreGrainsCommand",
     "DeleteGrainsCommand", "node_for_path", "node_chain", "node_display_name",
     "session_title", "load_ui_state", "save_ui_state", "ui_state_path",

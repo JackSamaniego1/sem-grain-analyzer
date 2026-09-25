@@ -853,6 +853,7 @@ class ProjectsPage(QWidget):
     import_requested = Signal(list)                  # image paths (no lot selected)
     choose_workspace_requested = Signal()
     compare_requested = Signal(list)                 # INN-43: lot Paths (2 or more)
+    load_requested = Signal(list)                    # UX-09: job/part/lot/session Paths
 
     def __init__(self, state, toasts=None, parent=None) -> None:
         super().__init__(parent)
@@ -1008,6 +1009,7 @@ class ProjectsPage(QWidget):
         self.selbar.clear_requested.connect(self.clear_selection)
         self.selbar.select_all_requested.connect(self.select_all)
         self.selbar.compare_requested.connect(self.compare_selected)
+        self.selbar.load_requested.connect(self.load_selected)
         cv.addWidget(self.selbar)
 
         self.stack = FadeStackedWidget()
@@ -1257,6 +1259,9 @@ class ProjectsPage(QWidget):
         if node.kind == "session":
             acts.append(("Open session", "open", lambda: self.open_session_requested.emit(node.path)))
         if node.kind in ("project", "sample", "lot", "session"):
+            what = self.lbl(node.kind) if node.kind != "session" else "session"
+            acts.append((f"Load this {what.lower()}'s images into analyzer", "analyze",
+                         lambda: self.load_requested.emit([node.path])))
             acts.append(("Edit metadata", "edit", lambda: self._edit(node)))
         if node.kind == "project":
             acts.append(("Spec limits (optional)…", "tune", lambda: self.open_spec_editor(node)))
@@ -1841,6 +1846,7 @@ class ProjectsPage(QWidget):
         k, why = self._move_kind(items)
         self.selbar.set_move_enabled(k is not None, why)
         self.selbar.set_compare_visible(len(self.selected_lot_paths()) >= 2)
+        self.selbar.set_load_visible(bool(self.loadable_paths()))
 
     def selected_lot_paths(self) -> List[Path]:
         """INN-43: the selected lots (only when the selection is all lots)."""
@@ -1848,6 +1854,19 @@ class ProjectsPage(QWidget):
         if not items or any(it["kind"] != "lot" for it in items):
             return []
         return [Path(it["path"]) for it in items]
+
+    def loadable_paths(self) -> List[Path]:
+        """UX-09: the selected jobs / parts / lots / sessions (not images)."""
+        items = self.selected_items()
+        if not items or any(it["kind"] not in ("project", "sample", "lot", "session")
+                            for it in items):
+            return []
+        return [Path(it["path"]) for it in items]
+
+    def load_selected(self) -> None:
+        paths = self.loadable_paths()
+        if paths:
+            self.load_requested.emit(paths)
 
     def compare_selected(self) -> None:
         paths = self.selected_lot_paths()
