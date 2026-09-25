@@ -23,11 +23,11 @@ If the app ever reports a missing asset (icon, model file, template, etc.) after
 
 The app is organized into five pages, in the order you'll normally use them:
 
-1. **Projects** — your workspace: Company/Project or Project/Sample/Lot folders. Create, rename, and organize projects and lots here. Deleted items go to a **Trash** folder inside the workspace and can be restored (an "Undo" option appears right after you delete or move something).
+1. **Projects** — your workspace: Company/Project or Project/Sample/Lot folders. Create, rename, and organize projects and lots here. Deleted items go to a **Trash** folder inside the workspace and can be restored (an "Undo" option appears right after you delete or move something). Select a job, part, or lot and press **Load into analyzer** to send every image under it to the Analyze page in one step.
 2. **Wizard** ("New session") — starts a new lot: pick or confirm the folder, load your SEM images, and set up calibration and scan area before analysis.
-3. **Analyze** — run detection on one image or all images in the lot. Press **F5** to analyze all, **Ctrl+F5** to re-analyze the current image.
+3. **Analyze** — run detection on one image or all images loaded. Loaded images appear as a collapsible tree (Job › Part › Lot › images) when you load more than one lot at once, so a single Analyze-all run and a single report can cover several lots together. Before analysis starts, each image's scan area and magnification/scale must be confirmed — use **Auto-find scan area & scale bar (all images)** to detect both automatically, or edit them by hand. Press **F5** to analyze all, **Ctrl+F5** to re-analyze the current image.
 4. **Review** — inspect and correct the results image by image (see Grain Editing below).
-5. **Reports** — build and export the Excel workbook and/or PowerPoint deck for the lot.
+5. **Reports** — build and export the Excel workbook and/or PowerPoint deck. If more than one lot was loaded into the Analyzer, this produces a combined multi-lot report (per-lot summary, lot comparison, combined distribution chart, and raw data tagged by lot) instead of a single-lot report.
 
 A **guided tour** (11 steps) walks a first-time user through the app; it never starts on its own during automated testing, and you can dismiss or replay it from the Help menu.
 

@@ -2,7 +2,7 @@
 
 All notable changes to Grain Analyzer are documented here.
 
-## [3.0.0] — 2026-09-24
+## [3.0.0] — 2026-09-25
 
 The v3.0 release is a ground-up rebuild of the app: correct grain detection
 on images with black/invalid regions, a real project/sample/lot data
@@ -56,6 +56,40 @@ tests cover the release.
   themes, and an animated navigation shell across every page.
 - `THIRD_PARTY_LICENSES.txt` listing the licence and upstream URL for every
   runtime dependency, bundled into the installer.
+- **Load a job, part, or lot straight into the Analyzer.** From the
+  Projects page, select any level of the tree and press "Load into
+  analyzer" to pull in every image under it in one step. The Analyzer's
+  image list becomes a collapsible tree (Job › Part › Lot › images)
+  showing counts and status per group, and loads lazily in the background
+  so a few hundred images stay responsive.
+- **Multi-lot report, built and exported straight from Analyze.** Once
+  more than one lot is loaded, Reports produces a combined Excel/PowerPoint
+  export: a per-lot summary table (grain count, mean G ± CI, mean ECD,
+  spec verdict), a lot-comparison section (ΔG matrix and equivalence test
+  against a baseline lot), per-lot detail sections, a combined grain-size
+  distribution overlay, and raw per-grain data tagged with its Lot.
+  Single-lot reports are unchanged.
+- **Pre-analysis scan-area & scale confirmation.** Analysis can't start
+  until every image's scan area and magnification/scale are confirmed.
+  An "Auto-find scan area & scale bar (all images)" button detects both in
+  one pass; a result tile under each image shows the scan area, scale-bar
+  length, µm/px, and its source (auto/metadata/manual), with a way to
+  correct it. Clicking Analyze before everything is confirmed highlights
+  exactly what still needs checking.
+- Scale bar can be set for "this image only" instead of all loaded images,
+  for fixing one image's calibration without touching the rest of the lot.
+- **Overlay opacity slider** in the Analyze settings; the same value is
+  used for the grain overlay drawn into exported reports.
+- **Remove an image from the Analyzer** without touching its file or the
+  lot on disk, plus an "Add all from lot" button to bring removed images
+  back.
+- **Editable summary charts.** Bin/bucket size, units (µm/nm, ECD/area/G…),
+  axis ranges, titles, labels, the normal-fit line, and colours can all be
+  adjusted on a chart, with a "Save as my default" option that's
+  remembered and applied to new reports.
+- **Custom report palettes.** Pick three colours by hex code or colour
+  wheel to build your own report palette; it's saved locally and
+  selectable next to the four built-in palettes.
 
 ### Changed
 
@@ -73,6 +107,15 @@ tests cover the release.
 - CPU-only PyTorch wheel used in build scripts and CI
   (`--index-url https://download.pytorch.org/whl/cpu`) to keep the
   installer smaller; a GPU is never required to run the app.
+- **AI-assisted is now the first and default detection mode**; the old
+  "Automatic" mode has been removed and the Advanced parameters section is
+  hidden while AI-assisted is selected.
+- Cancelling an analysis run now stops within about a second, instead of
+  continuing to grind through remaining images in the background.
+- Large jobs (hundreds of images loaded at once) use less memory: label
+  maps for images you're not actively viewing are compressed, and overlay
+  images are generated on demand instead of all being held in memory
+  together.
 
 ### Fixed
 
@@ -87,6 +130,16 @@ tests cover the release.
   app remains usable on smaller/laptop screens.
 - `BUILD_WINDOWS.bat` no longer refers to the stale `dist\SEMGrainAnalyzer`
   path; it always matches the spec's `GrainAnalyzer` output folder.
+- The report editor's Images tab no longer freezes the app — thumbnails
+  load lazily in the background and are cached.
+- "Analyze current" no longer spins the "Analyze all" button's spinner
+  (and vice versa); only the button you clicked animates.
+- Nav rail hover labels (e.g. "Analyze") now appear almost instantly
+  instead of after a noticeable delay.
+- The bottom-right status chip now reads clearly, e.g. "AI runs on: CPU"
+  (or the GPU name), with a tooltip explaining it.
+- The grain filters "Apply" button no longer says "Apply to all images"
+  when its scope is set to "This image".
 
 ### Security / privacy
 
@@ -108,3 +161,5 @@ tests cover the release.
   a past mistake).
 - PyQt6, PyQt6-Qt6, PyQt6-sip — no longer installed or referenced anywhere
   in the app.
+- The "Automatic" detection mode (superseded by AI-assisted, now the
+  default).
