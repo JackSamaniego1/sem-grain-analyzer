@@ -302,6 +302,16 @@ class ReportModel:
     # label mask.
     overlay_opacity: float = 1.0
 
+    # UX-15: the fully-resolved custom palette (``reports.charts.
+    # derive_custom_palette``) when ``theme`` is a custom one — ``None``
+    # for a built-in ``theme`` (default). Embedding the resolved colours
+    # (not just an id into AppSettings.custom_palettes) keeps a report
+    # self-contained: it renders identically later even if the user
+    # renames/edits/deletes that saved palette. ``theme`` still carries the
+    # saved palette's id (``"custom:<id>"``) so the designer can re-select
+    # it in the combo when the report is reopened.
+    custom_palette: Optional[Dict[str, str]] = None
+
     # ------------------------------------------------------------------
     # Construction from analysis results
     # ------------------------------------------------------------------
@@ -509,6 +519,7 @@ class ReportModel:
             "verdict": normalize_verdict(self.verdict),
             "calibration": dict(self.calibration) if self.calibration else None,
             "overlay_opacity": self.overlay_opacity,
+            "custom_palette": dict(self.custom_palette) if self.custom_palette else None,
         }
 
     def to_json(self, *, indent: int = 2) -> str:
@@ -537,6 +548,7 @@ class ReportModel:
             # UX-16: absent in reports saved before this field existed ->
             # 1.0, the exact look those reports already had.
             overlay_opacity=float(d.get("overlay_opacity", 1.0) or 1.0),
+            custom_palette=dict(d["custom_palette"]) if d.get("custom_palette") else None,
         )
 
     @classmethod
@@ -567,6 +579,8 @@ class ReportModel:
             problems.append(f"units must be auto|um|nm, got {self.units!r}.")
         if not (0.0 <= float(self.overlay_opacity) <= 1.0):
             problems.append(f"overlay_opacity must be between 0 and 1, got {self.overlay_opacity!r}.")
+        if str(self.theme).startswith("custom") and not self.custom_palette:
+            problems.append("theme is a custom palette but custom_palette is not set.")
 
         ids = [i.id for i in self.images]
         if len(ids) != len(set(ids)):

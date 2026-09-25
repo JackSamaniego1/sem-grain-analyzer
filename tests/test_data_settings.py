@@ -46,3 +46,23 @@ def test_get_settings_path_under_localappdata(monkeypatch, tmp_path):
     assert str(tmp_path) in str(p)
     assert p.name == "settings.json"
     assert "GrainAnalyzer" in str(p)
+
+
+def test_custom_palettes_and_chart_defaults_roundtrip(tmp_path):
+    """UX-14/UX-15: locally-saved custom palettes and chart defaults."""
+    p = tmp_path / "settings.json"
+    s = AppSettings(custom_palettes=[{"id": "custom-1", "name": "Lab blue",
+                                      "colors": ["#111111", "#222222", "#333333"]}],
+                    default_chart_options={"units": "nm", "normal_fit": False})
+    save_settings(s, p)
+    loaded = load_settings(p)
+    assert loaded.custom_palettes == [{"id": "custom-1", "name": "Lab blue",
+                                       "colors": ["#111111", "#222222", "#333333"]}]
+    assert loaded.default_chart_options == {"units": "nm", "normal_fit": False}
+
+
+def test_custom_palettes_default_to_empty(tmp_path):
+    p = tmp_path / "settings.json"
+    s = load_settings(p)
+    assert s.custom_palettes == []
+    assert s.default_chart_options == {}

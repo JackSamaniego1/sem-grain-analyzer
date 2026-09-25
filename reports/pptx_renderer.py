@@ -139,10 +139,10 @@ def render_pptx(model: ReportModel, output_path: str, template_path: Optional[st
     want_raw = model.is_enabled("raw_data", default=True)
     plan = _build_plan(model, images)
 
-    palette = resolve_palette(model.theme)
+    palette = resolve_palette(model.theme, model.custom_palette)
     navy = _hexrgb(palette["accent"])
     accent2 = _hexrgb(palette["accent2"])
-    series = series_for(model.theme)
+    series = series_for(model.theme, model.custom_palette)
 
     with tempfile.TemporaryDirectory(prefix="grain_report_pptx_") as tmpdir:
         page = [0]

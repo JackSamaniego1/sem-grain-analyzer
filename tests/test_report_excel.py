@@ -341,6 +341,23 @@ def test_each_palette_recolours_headers(tmp_path, theme_id):
     assert "#" + ws.sheet_properties.tabColor.rgb[-6:] == TAB_COLORS["overview"]
 
 
+def test_custom_palette_recolours_headers(tmp_path):
+    """UX-15: a user-derived 3-colour palette drives the workbook exactly
+    like a built-in one — the tab colour still stays kind-coded."""
+    from reports.charts import derive_custom_palette
+    model = _build_model(tmp_path, n=1)
+    model.theme = "custom:custom-1"
+    model.custom_palette = derive_custom_palette(["#123456", "#654321", "#00FF00"], "Lab palette")
+    out = str(tmp_path / "report_custom.xlsx")
+    render_excel(model, out)
+    wb = openpyxl.load_workbook(out)
+    ws = wb["Overview"]
+    title_cell = ws.cell(row=1, column=1)
+    fill_hex = "#" + title_cell.fill.fgColor.rgb[-6:]
+    assert fill_hex == model.custom_palette["accent"]
+    assert "#" + ws.sheet_properties.tabColor.rgb[-6:] == TAB_COLORS["overview"]
+
+
 def test_custom_text_sections_render_as_notes_sheets_in_order(tmp_path):
     model = _build_model(tmp_path, n=1)
     _add_custom_text(model, 1.1, "Sample Prep", "Etched per ASTM E407.")

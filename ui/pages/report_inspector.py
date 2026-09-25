@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from reports.charts import palette_choices
+from reports.charts import derive_custom_palette, new_custom_palette_id, palette_choices
 from ui.design import icons
 from ui.design.tokens import SPACE
 from ui.pages.report_builder import SECTION_LABELS, SECTION_TARGETS
@@ -32,6 +32,9 @@ UNITS = ("auto", "um", "nm")
 # Single source of truth: reports/charts.py (shared with the Excel/PowerPoint
 # renderers so the palette a user picks here is exactly what they get).
 PALETTES = palette_choices()
+# UX-15: trailing combo entry that opens CustomPaletteDialog instead of
+# setting a theme directly.
+NEW_CUSTOM_PALETTE = "__new_custom_palette__"
 
 
 def _cap(text: str):
@@ -108,10 +111,10 @@ class ReportInspector(QWidget):
             sb.setSpecialValueText("Auto")
             sb.setToolTip(f"Histogram bins for grain {what} (Auto = square-root rule)")
         self.palette = QComboBox()
-        for key, text in PALETTES:
-            self.palette.addItem(text, key)
+        self._reload_palette_combo()
         self.palette.setToolTip("Colour scheme of the exported workbook and deck (navy titles, "
-                                "colour-coded sheet tabs)")
+                                "colour-coded sheet tabs). \"New custom palette...\" picks 3 "
+                                "colours and derives the rest.")
         rows = [("Title", self.title), ("File name", self.export_name),
                 ("Organization", self.org), ("Operator", self.operator),
                 ("Date", drow), ("Logo", lrow), ("Units", self.units),
@@ -167,8 +170,7 @@ class ReportInspector(QWidget):
         self.units.current_changed.connect(lambda i: self._set("units", UNITS[i]))
         self.bins_area.valueChanged.connect(lambda n: self._set_bins("area", n))
         self.bins_diam.valueChanged.connect(lambda n: self._set_bins("diameter", n))
-        self.palette.currentIndexChanged.connect(
-            lambda _i: self._set("theme", self.palette.currentData()))
+        self.palette.currentIndexChanged.connect(self._on_palette_changed)
 
     # ------------------------------------------------------------------ document
     @property
@@ -210,11 +212,72 @@ class ReportInspector(QWidget):
                                      animate=False)
         self.bins_area.setValue(int(m.bins.get("area", 0) or 0))
         self.bins_diam.setValue(int(m.bins.get("diameter", 0) or 0))
-        i = self.palette.findData(m.theme)
-        self.palette.setCurrentIndex(max(0, i))
+        self._reload_palette_combo(select=m.theme)
         self.set_logo_name(m.logo_path)
         self._filling = False
         self.load_exports()
+
+    # ------------------------------------------------------------------ palette (UX-15)
+    def _reload_palette_combo(self, select: Optional[str] = None) -> None:
+        """Rebuild the combo from the 4 built-ins + this PC's saved custom
+        palettes (``AppSettings.custom_palettes``) + a trailing "New custom
+        palette..." entry, then select ``select`` (or keep the current
+        selection)."""
+        keep = select if select is not None else self.palette.currentData()
+        self.palette.blockSignals(True)
+        self.palette.clear()
+        for key, text in PALETTES:
+            self.palette.addItem(text, key)
+        customs = list(getattr(self.page.state.settings, "custom_palettes", None) or [])
+        if customs:
+            self.palette.insertSeparator(self.palette.count())
+            for rec in customs:
+                self.palette.addItem(rec.get("name") or "Custom", f"custom:{rec.get('id')}")
+        self.palette.insertSeparator(self.palette.count())
+        self.palette.addItem("New custom palette...", NEW_CUSTOM_PALETTE)
+        i = self.palette.findData(keep) if keep else -1
+        self.palette.setCurrentIndex(max(0, i))
+        self.palette.blockSignals(False)
+
+    def _on_palette_changed(self, _i: int) -> None:
+        if self._filling or self.model is None:
+            return
+        key = self.palette.currentData()
+        if key == NEW_CUSTOM_PALETTE:
+            self._open_new_custom_palette_dialog()
+            return
+        custom = None
+        if isinstance(key, str) and key.startswith("custom:"):
+            pid = key[len("custom:"):]
+            rec = next((p for p in (getattr(self.page.state.settings, "custom_palettes", None)
+                                    or []) if str(p.get("id")) == pid), None)
+            if rec is None:               # saved palette vanished (e.g. edited elsewhere)
+                self._reload_palette_combo(select=self.model.theme)
+                return
+            custom = derive_custom_palette(rec.get("colors") or [], rec.get("name") or "Custom")
+        self.model.theme = key
+        self.model.custom_palette = custom
+        self.doc_changed.emit("theme")
+
+    def _open_new_custom_palette_dialog(self) -> None:
+        from ui.dialogs.custom_palette_dialog import CustomPaletteDialog
+        dlg = CustomPaletteDialog(parent=self)
+
+        def on_submit(name: str, colors: list) -> None:
+            settings = self.page.state.settings
+            existing = list(getattr(settings, "custom_palettes", None) or [])
+            pid = new_custom_palette_id(existing)
+            settings.custom_palettes = existing + [{"id": pid, "name": name, "colors": colors}]
+            self.page.state.save_settings()
+            self.model.theme = f"custom:{pid}"
+            self.model.custom_palette = derive_custom_palette(colors, name)
+            self.doc_changed.emit("theme")
+
+        dlg.submitted.connect(on_submit)
+        dlg.exec()
+        # Whether saved or cancelled: reflect the (possibly unchanged) model
+        # theme, never leave the combo parked on the sentinel entry.
+        self._reload_palette_combo(select=self.model.theme if self.model is not None else None)
 
     def set_logo_name(self, path: Optional[str]) -> None:
         ok = bool(path) and os.path.exists(path)

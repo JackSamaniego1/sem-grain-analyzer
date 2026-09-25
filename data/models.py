@@ -495,6 +495,15 @@ class AppSettings:
     calibration_verification_enabled: bool = False
     # [{name, tolerance_pct (2.0), check_interval_days (7)}]
     instruments: List[dict] = field(default_factory=list)
+    # UX-15: user-made report palettes, each {id, name, colors: [hex, hex, hex]}
+    # (reports.charts.derive_custom_palette expands the 3 colours to the
+    # full palette shape at render time, so tweaking the derivation later
+    # improves every saved palette for free). Listed in the report
+    # designer's Palette combo next to the 4 built-ins.
+    custom_palettes: List[dict] = field(default_factory=list)
+    # UX-14: "Save as my default" chart options, applied to new reports
+    # (reports.model.ReportModel.chart_options for the shape).
+    default_chart_options: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)

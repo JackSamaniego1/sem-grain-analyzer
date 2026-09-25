@@ -346,6 +346,22 @@ def test_each_palette_recolours_title_slide(tmp_path, theme_id):
     assert run.font.color.rgb == expected
 
 
+def test_custom_palette_recolours_title_slide(tmp_path):
+    from pptx.dml.color import RGBColor
+    from reports.charts import derive_custom_palette
+    model = _build_model(tmp_path, n=1)
+    model.theme = "custom:custom-1"
+    model.custom_palette = derive_custom_palette(["#123456", "#654321", "#00FF00"], "Lab palette")
+    out = str(tmp_path / "deck_custom.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    title_shape = next(sh for sh in prs.slides[0].shapes if sh.has_text_frame
+                        and model.title in sh.text_frame.text)
+    run = title_shape.text_frame.paragraphs[0].runs[0]
+    expected = RGBColor.from_string(model.custom_palette["accent"].lstrip("#"))
+    assert run.font.color.rgb == expected
+
+
 def test_two_custom_text_sections_render_native_text_slides_in_order(tmp_path):
     model = _build_model(tmp_path, n=1)
     _add_custom_text(model, 1.1, "Sample Prep", "Etched per ASTM E407.")

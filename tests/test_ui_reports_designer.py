@@ -15,7 +15,7 @@ pytest.importorskip("pytestqt")
 
 from data.models import AppSettings  # noqa: E402
 from data.settings import save_settings  # noqa: E402
-from tests.ui_shell_helpers import make_session  # noqa: E402
+from tests.ui_shell_helpers import confirm_setup, make_session  # noqa: E402
 
 TIMEOUT = 90000
 
@@ -48,6 +48,7 @@ def _open_shell(qtbot, path: Path):
 def _analyse_all(shell, qtbot):
     st = shell.state
     shell.analyze.params.set_mode("threshold")
+    confirm_setup(shell, qtbot)            # UX-02: scan area + scale confirmed first
     with qtbot.waitSignal(shell.analyze.queue.queue_finished, timeout=TIMEOUT):
         shell.analyze_all()
     qtbot.waitUntil(lambda: all(im.status == "done" and im.result is not None
@@ -352,6 +353,61 @@ def test_images_tab_stays_responsive_with_many_images(env, qtbot, monkeypatch):
 
     # The slow decodes still complete (off the GUI thread) and get cached.
     qtbot.waitUntil(lambda: rp.is_pixmaps_ready(rp.model.images[0]), timeout=10000)
+    shell.close()
+
+
+def test_custom_palette_saved_locally_and_listed_next_to_builtins(analysed, qtbot, monkeypatch):
+    """UX-15: creating a custom palette persists it to AppSettings (local,
+    survives restart), applies it to the current report, and lists it in
+    the Palette combo next to the 4 built-ins on future reports."""
+    shell, path = analysed
+    rp = _build(shell, qtbot)
+    insp = rp.inspector
+
+    # Only the 4 built-ins + a separator + the trailing "New custom
+    # palette..." entry so far (no custom palettes saved yet).
+    from reports.charts import PALETTES
+    assert insp.palette.count() == len(PALETTES) + 2
+
+    class _FakeSignal:
+        def __init__(self):
+            self._cb = None
+
+        def connect(self, cb):
+            self._cb = cb
+
+    class _FakeDialog:
+        def __init__(self, *a, **kw):
+            self.submitted = _FakeSignal()
+
+        def exec(self):
+            self._cb_result = self.submitted._cb("Lab blue",
+                                                  ["#111111", "#222222", "#333333"])
+            return 1
+
+    monkeypatch.setattr("ui.dialogs.custom_palette_dialog.CustomPaletteDialog", _FakeDialog)
+    insp._open_new_custom_palette_dialog()
+
+    from reports.charts import derive_custom_palette
+    expected = derive_custom_palette(["#111111", "#222222", "#333333"], "Lab blue")
+    assert rp.model.theme == "custom:custom-1"
+    assert rp.model.custom_palette == expected
+
+    # Saved locally (AppSettings), not just on the model.
+    assert shell.state.settings.custom_palettes == [
+        {"id": "custom-1", "name": "Lab blue", "colors": ["#111111", "#222222", "#333333"]}]
+    from data.settings import load_settings
+    on_disk = load_settings(shell.state.settings_path)
+    assert on_disk.custom_palettes == shell.state.settings.custom_palettes
+
+    # Listed in the combo, selected, next to the 4 built-ins.
+    assert insp.palette.count() == len(PALETTES) + 4   # 2 separators + 1 custom + "New..."
+    assert insp.palette.currentData() == "custom:custom-1"
+    assert insp.palette.currentText() == "Lab blue"
+
+    # Selecting it again on a fresh inspector reload still applies it.
+    rp.inspector.load()
+    assert rp.inspector.palette.currentData() == "custom:custom-1"
     shell.close()
 
 

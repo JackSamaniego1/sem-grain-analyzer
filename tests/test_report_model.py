@@ -355,3 +355,38 @@ def test_validate_catches_overlay_opacity_out_of_range(tmp_path):
     model.overlay_opacity = 1.4
     problems = model.validate()
     assert any("overlay_opacity" in p for p in problems)
+
+
+# ---------------------------------------------------------------------------
+# UX-15: custom_palette
+# ---------------------------------------------------------------------------
+
+def test_custom_palette_defaults_to_none(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    assert model.custom_palette is None
+
+
+def test_custom_palette_round_trips_through_json(tmp_path):
+    from reports.charts import derive_custom_palette
+    model = _build_model(tmp_path, n=1)
+    model.theme = "custom:custom-1"
+    model.custom_palette = derive_custom_palette(["#111111", "#222222", "#333333"], "Mine")
+    restored = ReportModel.from_json(model.to_json())
+    assert restored.theme == "custom:custom-1"
+    assert restored.custom_palette == model.custom_palette
+    assert restored.to_dict() == model.to_dict()
+
+
+def test_legacy_report_json_without_custom_palette_key_loads_cleanly(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    d = model.to_dict()
+    del d["custom_palette"]
+    restored = ReportModel.from_dict(d)
+    assert restored.custom_palette is None
+
+
+def test_validate_catches_custom_theme_without_palette(tmp_path):
+    model = _build_model(tmp_path, n=1)
+    model.theme = "custom:custom-1"
+    problems = model.validate()
+    assert any("custom_palette" in p for p in problems)

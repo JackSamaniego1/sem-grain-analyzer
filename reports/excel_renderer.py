@@ -196,7 +196,7 @@ def _build_plan(model: ReportModel, images: List[ImageSummary]) -> List[Tuple[st
 def render_excel(model: ReportModel, output_path: str) -> str:
     with tempfile.TemporaryDirectory(prefix="grain_report_xlsx_") as tmpdir:
         wb = xlsxwriter.Workbook(output_path)
-        series = series_for(model.theme)
+        series = series_for(model.theme, model.custom_palette)
         fmts = _build_formats(wb, series)
         used_names: Dict[str, int] = {}
 

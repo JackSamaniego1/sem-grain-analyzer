@@ -8,7 +8,8 @@ users see familiar bin edges.
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Sequence, Tuple
+import re
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -97,6 +98,9 @@ PALETTES: Dict[str, Dict[str, str]] = {
 }
 
 DEFAULT_PALETTE_ID = "default"
+CUSTOM_PALETTE_ID = "custom"
+
+HEX_RE = re.compile(r"^#?([0-9A-Fa-f]{6})$")
 
 
 def palette_ids() -> List[str]:
@@ -108,16 +112,23 @@ def palette_choices() -> List[Tuple[str, str]]:
     return [(k, v["name"]) for k, v in PALETTES.items()]
 
 
-def resolve_palette(theme_id: str) -> Dict[str, str]:
+def resolve_palette(theme_id: str, custom: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """UX-15: ``theme_id == "custom"`` (or any unrecognised id) with a
+    resolved ``custom`` palette dict (``ReportModel.custom_palette``) uses
+    that instead of the built-ins — the model is self-contained, so a report
+    still renders identically even if the user later edits/deletes the
+    saved palette it was built from."""
+    if custom and (theme_id == CUSTOM_PALETTE_ID or theme_id not in PALETTES):
+        return custom
     return PALETTES.get(theme_id, PALETTES[DEFAULT_PALETTE_ID])
 
 
-def series_for(theme_id: str) -> Dict[str, str]:
+def series_for(theme_id: str, custom: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """``SERIES`` with the chart-series/header/accent entries swapped for
     the chosen palette. ``navy``/``header_bg``/``accent2`` are the
     section-background and PowerPoint-accent colours; everything else
     (typography, bands, gridlines) stays constant across palettes."""
-    p = resolve_palette(theme_id)
+    p = resolve_palette(theme_id, custom)
     out = dict(SERIES)
     out["area_bar"] = p["area_bar"]
     out["diameter_bar"] = p["diameter_bar"]
@@ -127,6 +138,73 @@ def series_for(theme_id: str) -> Dict[str, str]:
     out["accent2"] = p["accent2"]
     out["header_bg"] = p["header"]
     return out
+
+
+# ---------------------------------------------------------------------------
+# UX-15: custom (user-picked, 3-colour) palettes
+# ---------------------------------------------------------------------------
+
+def normalize_hex(value: str) -> Optional[str]:
+    """``"#a1b2c3"`` / ``"A1B2C3"`` -> ``"#A1B2C3"``; ``None`` if not a
+    6-digit hex colour."""
+    m = HEX_RE.match(str(value or "").strip())
+    return f"#{m.group(1).upper()}" if m else None
+
+
+def _rgb(hex_color: str) -> Tuple[int, int, int]:
+    h = hex_color.lstrip("#")
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
+def _to_hex(rgb: Tuple[float, float, float]) -> str:
+    r, g, b = (max(0, min(255, round(c))) for c in rgb)
+    return f"#{r:02X}{g:02X}{b:02X}"
+
+
+def shade(hex_color: str, factor: float) -> str:
+    """Darken (``factor < 1``) or lighten (``factor > 1``) a hex colour by
+    scaling its RGB components — used to derive a readable dark "accent"
+    (section headers, cover, PowerPoint titles) from a user-picked bar
+    colour without asking for a 4th colour."""
+    r, g, b = _rgb(hex_color)
+    if factor <= 1.0:
+        return _to_hex((r * factor, g * factor, b * factor))
+    return _to_hex((r + (255 - r) * (factor - 1.0), g + (255 - g) * (factor - 1.0),
+                    b + (255 - b) * (factor - 1.0)))
+
+
+def derive_custom_palette(colors: Sequence[str], name: str = "Custom") -> Dict[str, str]:
+    """Expand 3 user-picked hex colours into the full palette shape used by
+    ``PALETTES`` entries (``header``/``accent``/``accent2``/the 4 chart
+    series). Raises ``ValueError`` if fewer than 3 colours are given or any
+    is not a valid ``#RRGGBB`` hex colour.
+
+    Mapping: colour 1 drives the header band and the area-histogram bars
+    (plus a darkened shade for the navy accent used on covers/section
+    headers and the per-image-count bar); colour 2 drives the secondary
+    accent and the diameter-histogram bars; colour 3 is the normal-fit
+    line/contrast colour — the same three roles a built-in palette's
+    ``area_bar``/``diameter_bar``/``normal_fit`` play.
+    """
+    if len(colors) < 3:
+        raise ValueError(f"derive_custom_palette needs 3 colours, got {len(colors)}.")
+    c1, c2, c3 = (normalize_hex(c) for c in colors[:3])
+    bad = [orig for orig, norm in zip(colors[:3], (c1, c2, c3)) if norm is None]
+    if bad:
+        raise ValueError(f"Not a #RRGGBB hex colour: {bad!r}")
+    accent = shade(c1, 0.55)
+    return {"name": name or "Custom", "header": c1, "accent": accent, "accent2": c2,
+            "area_bar": c1, "diameter_bar": c2, "normal_fit": c3, "count_bar": accent}
+
+
+def new_custom_palette_id(existing: Sequence[dict]) -> str:
+    """A ``"custom-N"`` id not already used by ``existing`` (AppSettings.
+    custom_palettes) — stable/human-scannable, unlike a uuid."""
+    used = {str(p.get("id", "")) for p in existing}
+    n = 1
+    while f"custom-{n}" in used:
+        n += 1
+    return f"custom-{n}"
 
 
 def _unit(ppu: float) -> Tuple[str, float, str, float]:
