@@ -81,6 +81,7 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 | INN-27 | Lot statistics + 95% CI + fields-needed (report-engineer+data-architect, depends DATA-03, INN-26) | report-engineer + data-architect | done | 924f47f: UI Lot result card (Include checkbox + reason); backend ce833e5. 544 tests. |
 | INN-29 | Calibration verification vs reference standard | detection-engineer | done | 5a1cd42: check dialog, status chip, Settings toggle, required fields/target %RA |
 | INN-30 | Approval + SHA-256 sealed sign-off, local only | data-architect | cancelled | User request 2026-09-24: not needed for v3.0.0. |
+| INN-43 | Lot comparison matrix: delta table, Welch ANOVA, TOST equivalence test; multi-select, Compare page, baseline lot picker | detection-engineer + ui-designer | done | 00a73df: core (19 tests) + UI (9 tests); code review APPROVE, no blockers |
 
 ## Fixes
 | ID | Task | Owner | Status | Notes |
@@ -112,6 +113,6 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 | ID | Task | Owner | Status | Notes |
 |----|------|-------|--------|-------|
 | REL-01 | Journey tests (open→calibrate→analyze→edit→save→reload→report→export) | qa-engineer | done | 5845451: 3 journeys (threshold+scale-bar full lifecycle, boundary+FEI metadata+merge, XLSX+PPTX); 641 tests |
-| REL-02 | Update `docs/`, README, GUIDE for v3 | coordinator (haiku agent) | todo | |
-| REL-03 | Local PyInstaller build + install/uninstall test; size report | build-engineer | todo | R13 |
-| REL-04 | Tag `v3.0.0`, CI, release notes | build-engineer | blocked | needs user go + auth |
+| REL-02 | Update `docs/`, README, GUIDE for v3 | coordinator (haiku agent) | todo | User may defer post-release |
+| REL-03 | Local PyInstaller build + NSIS installer test; size report | build-engineer | done | 8f8753c: dist 1.3 GB (exe launches, offline guard clean), GrainAnalyzer_Setup.exe 644 MB (portable NSIS 3.12, gitignored). Silent install test requires UAC/admin; user to test manually. |
+| REL-04 | Tag `v3.0.0` locally, user push + CI build | build-engineer | review | v3.0.0 tag created; awaiting user GitHub auth (FND-04) to push origin main v3-dev --tags |

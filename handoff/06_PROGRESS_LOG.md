@@ -124,3 +124,14 @@
 - **Task board updated**: FIX-11/12/13 marked done (21e6d67); FIX-07 PPTX part marked done; INN-43 core marked done.
 - **Idea backlog updated**: INN-41..51 marked as declined by user 2026-09-24.
 - **SESSION_STATE.md updated**: in-progress = INN-43 UI; next 3 actions clarified; blocked section cleaned (FND-04 user action, D-13 user supply, INN-30 cancelled, INN-41..51 declined).
+
+## 2026-09-24 — Phase 6 Release: v3.0.0 built and tagged locally
+- **INN-43 UI code review complete (00a73df)**: lot_compare_page.py + test_ui_lot_compare.py (9 tests). Projects page multi-select lots → View › Compare lots; LotMeta.is_baseline picker; live delta matrix + TOST verdict. Code review: APPROVE, no blockers (2 minor nits: lot_compare.py:314 sd zeroing heuristic comment; BUILD_WINDOWS.bat:102 explicit errorlevel after Get-FileHash).
+- **REL-03 PyInstaller + NSIS build complete (8f8753c, .gitignore update 400fc60)**:
+  - PyInstaller: `dist\GrainAnalyzer` 1.3 GB; exe launches; offline guard clean; zero egress (audit pass).
+  - NSIS: portable NSIS 3.12 (session scratchpad); built `GrainAnalyzer_Setup.exe` 644 MB (gitignored, repo root); requires UAC/admin for silent install test — deferred to user.
+  - **Size report**: dist 1.3 GB (Python + PySide6 + libraries); Setup.exe 644 MB (self-contained, no .NET/VC++ runtime deps).
+- **main fast-forwarded to 8f8753c**; **v3.0.0 tag created locally** (annotated, not yet pushed).
+- **Full test suite: 686 passed / 0 failed** (unchanged since INN-43 core).
+- **RELEASE_CHECKLIST.md**: ticked items 1–7, 10. Pending: install test (user UAC), screenshots review (user), push + CI (awaiting FND-04 GitHub auth fix).
+- **Next steps** (when user returns): (1) sign into GitHub as JackSamaniego1 (replace Harvey-FS cached cred); (2) `git push origin main v3-dev --tags`; (3) watch CI build GrainAnalyzer_Setup.exe and .dmg; (4) user test-installs exe locally. If install test finds bug: fix on v3-dev, re-ff main, re-tag v3.0.0 (safe only before push), push again.

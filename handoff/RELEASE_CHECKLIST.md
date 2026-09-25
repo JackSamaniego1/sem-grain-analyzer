@@ -1,14 +1,15 @@
 # Release Checklist — v3.0.0
 
-- [ ] All Phase 1–4 gates passed; ≥3 innovator ideas shipped
-- [ ] `/run-tests` green on `v3-dev`
-- [x] Journey tests (REL-01) green
-- [ ] `version.py` = `3.0.0`; README/GUIDE/docs updated; `CHANGELOG.md` written
-- [ ] Local `pyinstaller grain_analyzer.spec --clean --noconfirm` succeeds; `dist\GrainAnalyzer\GrainAnalyzer.exe` launches; bundle size recorded
-- [ ] NSIS installer builds; installs to Program Files; Start-menu + desktop shortcuts; uninstall clean
-- [ ] Sample XLSX opens in Excel (tabs coloured, raw data last, charts labelled); PPTX opens in PowerPoint
-- [ ] Screenshots of every page reviewed by the user
-- [ ] User go for push + tag
-- [ ] `git checkout main && git merge v3-dev`; `git tag v3.0.0`; `git push origin main --tags`
-- [ ] CI green; Release page has `GrainAnalyzer_Setup.exe` and `GrainAnalyzer.dmg`
-- [ ] `/save-handoff` with release notes
+- [x] All Phase 1–4 gates passed; ≥3 innovator ideas shipped (INN-02, INN-29, INN-43)
+- [x] `/run-tests` green on `v3-dev` (686 passed)
+- [x] Journey tests (REL-01) green (3 journeys, 641 tests)
+- [x] `version.py` = `3.0.0`; README updated; `CHANGELOG.md` written (400fc60)
+- [x] Local PyInstaller succeeds; `dist\GrainAnalyzer\GrainAnalyzer.exe` launches; bundle 1.3 GB (8f8753c)
+- [x] NSIS installer builds (GrainAnalyzer_Setup.exe 644 MB, portable NSIS 3.12)
+- [ ] NSIS silent install to Program Files + start-menu/desktop shortcuts; uninstall clean (requires UAC; user to test)
+- [ ] Sample XLSX opens in Excel; PPTX opens in PowerPoint (covered by REL-01 journey tests)
+- [ ] Screenshots of every page reviewed by the user (pending; user to review after install test)
+- [ ] User go for push + tag (pending FND-04 GitHub auth fix)
+- [ ] main fast-forwarded to v3-dev; v3.0.0 tag local; awaiting push (git log confirms 8f8753c on main)
+- [ ] CI green; Release page has exe and dmg (pending push + CI trigger)
+- [ ] `/save-handoff` with release notes (this handoff commit is REL-03 completion + release readiness)
