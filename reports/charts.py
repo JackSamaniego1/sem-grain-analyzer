@@ -355,41 +355,53 @@ def filter_range(values: Sequence[float], vmin: Optional[float] = None,
 
 
 def build_bins(values: Sequence[float], n_bins: int = 0) -> Tuple[List[str], List[int], List[float]]:
-    """Whole-number bins starting at 0 (legacy ``_build_bins`` behaviour).
+    """THE shared histogram binner (Excel, PPTX, report preview, in-app chart).
+
+    ``n_bins`` equal-width bins spanning the data range [min, max] *in the
+    unit the values are already in*, so the edges are recomputed for whatever
+    unit is displayed (fractional edges are fine) and switching unit only
+    rescales values and edges -- which grains share a bin never changes.
+    ``n_bins`` < 1 / falsy -> square-root rule (5..25). More bins is always
+    a smaller step.
 
     Returns (labels-without-unit-suffix, counts, edges). Caller appends the
     unit string to labels so this function stays unit-agnostic. Pass
     ``values`` through :func:`filter_range` first to honour a chart's
-    min/max option — the bin grid still starts at 0 so edges stay the whole
-    numbers users already expect.
+    min/max option.
     """
     vals = np.asarray(list(values), dtype=float)
+    vals = vals[np.isfinite(vals)]
     if len(vals) < 2:
         return [], [], []
 
-    vmax = float(np.max(vals))
-    nb = n_bins if n_bins and n_bins >= 3 else min(max(int(math.sqrt(len(vals))), 5), 25)
-    bw = max(1, math.ceil(vmax / nb)) if vmax > 0 else 1
-
-    edges = []
-    e = 0.0
-    while e <= vmax + bw:
-        edges.append(e)
-        e += bw
-    edges_arr = np.array(edges, dtype=float)
+    vmin, vmax = float(np.min(vals)), float(np.max(vals))
+    nb = int(n_bins) if n_bins and int(n_bins) >= 1 else min(max(int(math.sqrt(len(vals))), 5), 25)
+    nb = min(nb, 200)
+    if vmax <= vmin:                       # all values equal: give the bins a width
+        pad = abs(vmin) * 0.05 or 0.5
+        vmin, vmax = vmin - pad, vmax + pad
+    edges_arr = np.linspace(vmin, vmax, nb + 1)
     counts, _ = np.histogram(vals, bins=edges_arr)
 
-    while len(counts) > 1 and counts[-1] == 0:
-        counts = counts[:-1]
-        edges_arr = edges_arr[: len(counts) + 1]
+    return bin_labels(edges_arr), counts.tolist(), edges_arr.tolist()
 
-    labels = [f"{int(edges_arr[i])}-{int(edges_arr[i + 1])}" for i in range(len(counts))]
-    return labels, counts.tolist(), edges_arr.tolist()
+
+def bin_labels(edges: Sequence[float]) -> List[str]:
+    """"lo-hi" labels with enough decimals for the bin step (0.0125, not 0.0)."""
+    e = [float(x) for x in edges]
+    if len(e) < 2:
+        return []
+    step = abs(e[1] - e[0])
+    dec = 0 if step <= 0 else max(0, min(8, math.ceil(-math.log10(step)) + 1))
+    if step >= 10:
+        dec = 0
+    return [f"{e[i]:.{dec}f}-{e[i + 1]:.{dec}f}" for i in range(len(e) - 1)]
 
 
 def normal_fit(values: Sequence[float], edges: Sequence[float]) -> List[float]:
     """Scaled normal-density values at each bin midpoint (matches legacy)."""
     vals = np.asarray(list(values), dtype=float)
+    vals = vals[np.isfinite(vals)]
     if len(vals) < 2 or len(edges) < 2:
         return [0.0] * max(len(edges) - 1, 0)
     mu, sigma = float(np.mean(vals)), float(np.std(vals))

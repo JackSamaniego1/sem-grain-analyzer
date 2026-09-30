@@ -1,4 +1,5 @@
-"""Themed histogram with the v2.3 binning (whole-number bins starting at 0)
+"""Themed histogram using the shared ``reports.charts.build_bins`` binning
+(equal-width bins spanning the data range in the displayed unit)
 and token colours.  ``set_binned`` accepts bins computed elsewhere (the report
 preview passes ``reports.charts.build_bins`` output so the in-app chart uses
 exactly the bins the Excel / PowerPoint export will use)."""
@@ -55,6 +56,7 @@ class HistogramBase(QWidget):
                    unit: str = "") -> None:
         """Show precomputed bins (edges has len(counts)+1 entries)."""
         self._values = np.asarray(list(values), dtype=float)
+        self._values = self._values[np.isfinite(self._values)]
         self._xlabel, self._unit = xlabel, unit
         self._has_data = len(counts) > 0 and len(self._values) >= 2
         self._counts = [int(c) for c in counts]
@@ -77,30 +79,22 @@ class HistogramBase(QWidget):
 
     def _recompute(self) -> None:
         v = self._values
+        v = v[np.isfinite(v)]
         if len(v) < 2:
             self._has_data = False
             return
         self._has_data = True
         self._mu = float(np.mean(v))
         self._sigma = float(np.std(v))
-        vmax = float(np.max(v))
-        nb = self._n_bins if self._n_bins > 0 else min(max(int(math.sqrt(len(v))), 5), 30)
-        bw = max(1, math.ceil(vmax / nb))
-        edges = []
-        e = 0
-        while e <= vmax + bw:
-            edges.append(e)
-            e += bw
-        edges = np.array(edges, dtype=float)
-        counts, _ = np.histogram(v, bins=edges)
-        while len(counts) > 1 and counts[-1] == 0:
-            counts = counts[:-1]
-            edges = edges[:len(counts) + 1]
+        from reports.charts import build_bins   # the one shared binner
+        labels, counts, edges = build_bins(v, int(self._n_bins or 0))
+        if not counts:
+            self._has_data = False
+            return
         self._actual_bins = len(counts)
-        self._counts = counts.tolist()
-        self._bins = edges.tolist()
-        self._bin_labels = [f"{int(edges[i])}-{int(edges[i + 1])}{self._unit}"
-                            for i in range(len(counts))]
+        self._counts = counts
+        self._bins = edges
+        self._bin_labels = [f"{lb}{self._unit}" for lb in labels]
 
     def clear_data(self) -> None:
         self._has_data = False
