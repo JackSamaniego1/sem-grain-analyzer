@@ -31,7 +31,22 @@ _INK_DELTA = 80
 
 
 def _gray(image):
+    """8-bit single-channel view of a gray/BGR/BGRA image of any dtype.
+    uint16 keeps its high byte (no min/max stretch: the bar's black/white
+    levels must stay where the instrument put them); other dtypes are
+    min/max scaled."""
+    image = np.asarray(image)
+    if image.dtype == np.uint16:
+        image = (image >> 8).astype(np.uint8)
+    elif image.dtype != np.uint8:
+        a = image.astype(np.float64)
+        lo, hi = float(a.min()), float(a.max())
+        image = ((a - lo) * (255.0 / (hi - lo if hi > lo else 1.0))).astype(np.uint8)
     if image.ndim == 3:
+        if image.shape[2] == 4:
+            return cv2.cvtColor(image, cv2.COLOR_BGRA2GRAY)
+        if image.shape[2] == 1:
+            return image[:, :, 0]
         return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     return image
 
@@ -101,18 +116,207 @@ def _frame_edges(ink: np.ndarray, segs) -> set:
     return out
 
 
-def _longest_line(ink: np.ndarray, max_h: int, max_w: int):
-    """Longest solid horizontal run (x, y, w, h) that is not the border of a
-    drawn rectangle around the scale bar."""
+# Faint-line pass: some exports (downscaled Thermo/FEI data bars) draw the
+# scale line and its ticks only ~35-50 grey levels above the bar background,
+# below _INK_DELTA.  A second, lower threshold finds those; its segments are
+# only used where the normal threshold found nothing (see _line_candidates).
+_INK_DELTA_FAINT = 30
+# A text glyph ("L"+"E" feet in a bold font) can form a >= 21 px horizontal
+# run.  Unlike a bar, that run is attached to strokes rising/falling from its
+# INTERIOR; a bar only has end ticks.  Interior attached ink above this many
+# px per px of run length marks a glyph.
+_GLYPH_INTERIOR_INK = 0.3
+# Split-line joining (Thermo/FEI: the label sits in a gap in the middle of
+# the line): the two halves must be on the same row (+-2 px), of similar
+# length, and the gap no longer than the longer half.
+_SPLIT_ROW_TOL = 2
+_SPLIT_HALF_RATIO = 0.5
+
+
+def _glyph_attached(ink: np.ndarray, seg, labels: np.ndarray) -> bool:
+    """True when ``seg`` is the horizontal stroke of a text glyph: its
+    connected ink component carries substantial ink above/below the run
+    away from the run's two ends (end ticks are allowed)."""
+    x, y, w, h = seg
+    comp_ids = np.unique(labels[y:y + h, x:x + w])
+    comp_ids = comp_ids[comp_ids > 0]
+    if comp_ids.size == 0:
+        return False
+    margin = max(3, int(round(0.08 * w)))
+    xa, xb = x + margin, x + w - margin
+    if xb <= xa:
+        return False
+    cols = labels[:, xa:xb]
+    mask = np.isin(cols, comp_ids)
+    mask[max(0, y - 1):y + h + 1, :] = False          # the run itself (+AA)
+    return mask.sum() > _GLYPH_INTERIOR_INK * (xb - xa)
+
+
+def _has_tick(ink: np.ndarray, x: int, y: int, h: int) -> bool:
+    """A vertical end tick at column ~x: ink above or below the line."""
+    H, W = ink.shape[:2]
+    x_lo, x_hi = max(0, x - 2), min(W, x + 3)
+    above = ink[max(0, y - 5):max(0, y - 1), x_lo:x_hi] > 0
+    below = ink[min(H, y + h + 1):min(H, y + h + 5), x_lo:x_hi] > 0
+    best = 0
+    for part in (above, below):
+        if part.size:
+            best = max(best, int(part.sum(axis=0).max()))
+    return best >= 3
+
+
+def _box_in_gap(boxes, x_lo: int, x_hi: int, y: int, h: int) -> bool:
+    """An OCR word box (region coordinates) lies inside the gap x_lo..x_hi
+    and on the line's row band (the label printed in the line's gap)."""
+    for bx, by, bw, bh in boxes:
+        if bx >= x_lo - 3 and bx + bw <= x_hi + 3                 and by <= y + h + bh and by + bh >= y - bh:
+            return True
+    return False
+
+
+def _join_split_lines(ink: np.ndarray, segs, text_boxes=None):
+    """Join a scale line that the instrument split in two to print its
+    label in the middle (Thermo/FEI data bars: "|-----100 um-----|").
+    Two segments on the same row, of similar length (shorter >= half the
+    longer), gap no longer than the longer half, with non-line ink (the
+    label) in the gap, are one bar only when there is positive evidence
+    that they are the two halves of a scale bar:
+
+    * end ticks at BOTH outer ends (the bar's own end marks), or
+    * (OCR path only, ``text_boxes`` given) an OCR word box sits in the gap.
+
+    Two plain dashes with a number between them (a dimension line, an
+    underline) have neither and stay separate.  The joined length runs from
+    the outer end of one half to the outer end of the other, which is the
+    length the label refers to.  Output keeps the input (scan) order; a
+    joined bar takes the place of its first half."""
+    order = sorted(range(len(segs)), key=lambda k: segs[k][0])
+    partner = {}
+    taken = set()
+    for pos, i in enumerate(order):
+        if i in taken:
+            continue
+        a = segs[i]
+        for j in order[pos + 1:]:
+            if j in taken:
+                continue
+            b = segs[j]
+            if abs(a[1] - b[1]) > _SPLIT_ROW_TOL                     or abs(a[3] - b[3]) > _SPLIT_ROW_TOL:
+                continue
+            gap = b[0] - (a[0] + a[2])
+            longer = max(a[2], b[2])
+            ratio = min(a[2], b[2]) / float(longer)
+            if gap <= 2 or gap > longer or ratio < _SPLIT_HALF_RATIO:
+                continue
+            y_lo = max(0, min(a[1], b[1]) - 12)
+            y_hi = max(a[1] + a[3], b[1] + b[3]) + 12
+            label_ink = int(np.count_nonzero(
+                ink[y_lo:y_hi, a[0] + a[2] + 1:b[0] - 1]))
+            if label_ink < 6:
+                continue
+            ticks = _has_tick(ink, a[0], a[1], a[3]) and                 _has_tick(ink, b[0] + b[2] - 1, b[1], b[3])
+            boxed = bool(text_boxes) and _box_in_gap(
+                text_boxes, a[0] + a[2], b[0], a[1], a[3])
+            if not (ticks or boxed):
+                continue
+            partner[i] = j
+            taken.update((i, j))
+            break
+    out = []
+    for k, a in enumerate(segs):
+        if k in partner:
+            b = segs[partner[k]]
+            y0 = min(a[1], b[1])
+            y1 = max(a[1] + a[3], b[1] + b[3])
+            out.append((a[0], y0, b[0] + b[2] - a[0], y1 - y0))
+        elif k not in taken:
+            out.append(a)
+    return out
+
+
+def _line_candidates(ink: np.ndarray, max_h: int, max_w: int,
+                     faint: Optional[np.ndarray] = None,
+                     reject_glyphs: bool = True, join_split: bool = True,
+                     text_boxes=None):
+    """Scale-bar line candidates (x, y, w, h), longest first (ties keep the
+    contour scan order, as the original "first longest" rule did):
+    horizontal runs that are not the border of a drawn frame and, with
+    ``reject_glyphs``, not a text-glyph stroke; with ``join_split`` a line
+    split around its centred label is joined.  ``faint`` (optional, a
+    lower-threshold ink mask) contributes runs that do not overlap any
+    normal-threshold run.  ``text_boxes`` are OCR word boxes in the ink's
+    coordinates (evidence for a split-line join)."""
     segs = _horizontal_segments(ink, max_h, max_w)
     frames = _frame_edges(ink, segs)
-    best, best_len = None, 0
-    for k, seg in enumerate(segs):
-        if k in frames:
-            continue
-        if seg[2] > best_len:
-            best, best_len = seg, seg[2]
-    return best
+    labels = cv2.connectedComponents(ink, connectivity=8)[1]         if reject_glyphs else None
+    keep = [s for k, s in enumerate(segs)
+            if k not in frames and not (
+                reject_glyphs and _glyph_attached(ink, s, labels))]
+    union = ink
+    if faint is not None:
+        fsegs = _horizontal_segments(faint, max_h, max_w)
+        fframes = _frame_edges(faint, fsegs)
+        flabels = cv2.connectedComponents(faint, connectivity=8)[1]             if reject_glyphs else None
+        for k, s in enumerate(fsegs):
+            if k in fframes or (reject_glyphs
+                                and _glyph_attached(faint, s, flabels)):
+                continue
+            x, y, w, h = s
+            if np.any(ink[max(0, y - 1):y + h + 1, x:x + w]):
+                continue                      # already covered by a strong run
+            keep.append(s)
+        union = faint
+    if join_split:
+        keep = _join_split_lines(union, keep, text_boxes)
+    keep.sort(key=lambda s: -s[2])            # stable: ties keep scan order
+    return keep
+
+
+def find_scale_bar_candidates(image, info_bar: Optional[InfoBarResult] = None,
+                              fallback_strip: bool = False,
+                              text_boxes=None) -> list:
+    """All plausible scale-bar lines, longest first (ties in scan order), in
+    the format of :func:`find_scale_bar_line`.
+
+    Inside a detected info bar, text-glyph strokes are rejected, a faint
+    line (>= _INK_DELTA_FAINT above the background) is accepted and a line
+    split around its label is joined.  ``text_boxes`` (full-frame OCR word
+    boxes, OCR path only) also allow the join without end ticks when a word
+    sits in the gap.  The ``fallback_strip`` search on the micrograph itself
+    is unchanged from v2 (no glyph rejection, no joining): bright grains
+    touching a real bar must not get it rejected."""
+    gray = _gray(image)
+    H, W = gray.shape[:2]
+    ib = info_bar if info_bar is not None else detect_info_bar(gray)
+    candidates = []
+    if ib is not None:
+        for bar in ib.bars:
+            x0, y0, bw, bh = bar.rect
+            region = gray[y0:y0 + bh, x0:x0 + bw].astype(np.int16)
+            diff = np.abs(region - bar.background_value)
+            ink = (diff >= _INK_DELTA).astype(np.uint8) * 255
+            faint = (diff >= _INK_DELTA_FAINT).astype(np.uint8) * 255
+            boxes = [(bx - x0, by - y0, w_, h_)
+                     for (bx, by, w_, h_) in (text_boxes or ())]
+            for (x, y, cw, ch) in _line_candidates(
+                    ink, max(10, bh // 4), int(bw * 0.9), faint,
+                    text_boxes=boxes or None):
+                candidates.append({"length_px": int(cw),
+                                   "rect": (x0 + x, y0 + y, int(cw), int(ch)),
+                                   "info_bar_rect": tuple(bar.rect),
+                                   "source": "info_bar"})
+    elif fallback_strip:
+        crop_top = int(H * 0.78)
+        _, thresh = cv2.threshold(gray[crop_top:], 180, 255, cv2.THRESH_BINARY)
+        for (x, y, cw, ch) in _line_candidates(thresh, 10, W,
+                                               reject_glyphs=False,
+                                               join_split=False):
+            candidates.append({"length_px": int(cw),
+                               "rect": (x, crop_top + y, int(cw), int(ch)),
+                               "info_bar_rect": None,
+                               "source": "bottom_strip"})
+    candidates.sort(key=lambda c: -c["length_px"])      # stable
+    return candidates
 
 
 def find_scale_bar_line(image, info_bar: Optional[InfoBarResult] = None,
@@ -134,36 +338,8 @@ def find_scale_bar_line(image, info_bar: Optional[InfoBarResult] = None,
     "info_bar_rect": (x, y, w, h) | None, "source": "info_bar" |
     "bottom_strip"}``.
     """
-    gray = _gray(np.asarray(image))
-    H, W = gray.shape[:2]
-    ib = info_bar if info_bar is not None else detect_info_bar(gray)
-    candidates = []
-    if ib is not None:
-        for bar in ib.bars:
-            x0, y0, bw, bh = bar.rect
-            region = gray[y0:y0 + bh, x0:x0 + bw].astype(np.int16)
-            ink = (np.abs(region - bar.background_value) >= _INK_DELTA
-                   ).astype(np.uint8) * 255
-            found = _longest_line(ink, max(10, bh // 4), int(bw * 0.9))
-            if found is not None:
-                x, y, cw, ch = found
-                candidates.append({"length_px": int(cw),
-                                   "rect": (x0 + x, y0 + y, int(cw), int(ch)),
-                                   "info_bar_rect": tuple(bar.rect),
-                                   "source": "info_bar"})
-    elif fallback_strip:
-        crop_top = int(H * 0.78)
-        _, thresh = cv2.threshold(gray[crop_top:], 180, 255, cv2.THRESH_BINARY)
-        found = _longest_line(thresh, 10, W)
-        if found is not None:
-            x, y, cw, ch = found
-            candidates.append({"length_px": int(cw),
-                               "rect": (x, crop_top + y, int(cw), int(ch)),
-                               "info_bar_rect": None,
-                               "source": "bottom_strip"})
-    if not candidates:
-        return None
-    return max(candidates, key=lambda c: c["length_px"])
+    candidates = find_scale_bar_candidates(image, info_bar, fallback_strip)
+    return candidates[0] if candidates else None
 
 
 def auto_detect_scale_bar(image_bgr: np.ndarray) -> Tuple[Optional[float], Optional[np.ndarray]]:

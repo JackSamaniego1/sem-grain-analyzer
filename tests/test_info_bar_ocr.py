@@ -20,7 +20,8 @@ if ROOT not in sys.path:
 
 from core import info_bar_ocr as ibo                       # noqa: E402
 from core.info_bar_ocr import OcrToken, parse_tokens, read_info_bar  # noqa: E402
-from tests.sem_infobar_fixtures import render_jeol, render_thermo  # noqa: E402
+from tests.sem_infobar_fixtures import (render_jeol, render_thermo,  # noqa: E402
+                                        render_thermo_databar)
 
 
 def _has_rapidocr():
@@ -70,12 +71,109 @@ def test_parse_jeol_layout():
     assert r.vendor.value == "JEOL"
     assert r.detector.value == "LEI"
     assert r.checks.get("magnification") is True
-    # JEOL bars carry no FW: the magnification window alone (60-800 mm,
-    # ~13x wide) cannot rule out a decade misread, so the value is flagged
-    assert r.needs_confirmation
-    assert r.scale.confidence < ibo._CONFIRM_BELOW
-    assert "no independent check" in r.scale.note
+    # JEOL bars carry no FW, but with the vendor READ from the bar the
+    # JEOL reference width applies: 100 nm * 1280 / 30 px * 30,000 = 128 mm
+    # (within 110-135 mm) -> independently confirmed
+    assert r.checks.get("magnification_reference") is True
+    assert not r.needs_confirmation
+    assert r.scale.confidence >= ibo._CONFIRM_BELOW
     assert r.px_per_um == pytest.approx(300.0)
+
+
+def test_jeol_reference_needs_vendor_read_from_text():
+    # no "JEOL" word: only the loose 60-800 mm window applies -> flagged
+    toks = [T("100nm", 718, 966, 60)] + JEOL_TOKENS[1:]
+    r = parse_tokens(toks, 1280, JEOL_BAR)
+    assert r.vendor is None and "magnification_reference" not in r.checks
+    assert r.checks.get("magnification") is True
+    assert r.needs_confirmation
+    assert "no independent check" in r.scale.note
+
+
+# the user's real JEOL export (1A-1-GS-BM1.jpg): solid 32x15 bar, label
+# ~140 px to its right on the same line, 1280 px wide, x30,000
+REAL_JEOL_TOKENS = [T("100nm JEOL", 850, 964, 171, 22), T("9/14/2026", 1106, 962, 152, 24),
+                    T("X 30,000", 322, 995, 135, 22), T("7.0kV", 546, 995, 86, 21),
+                    T("LEI", 661, 996, 54, 21), T("SEM", 816, 996, 55, 21),
+                    T("WD", 967, 996, 39, 21), T("9.7mm", 1017, 995, 91, 22),
+                    T("13:42:09", 1140, 995, 134, 22)]
+REAL_JEOL_BAR = (678, 963, 32, 15)
+
+
+def test_jeol_label_on_bar_line_is_paired_across_gap():
+    r = parse_tokens(REAL_JEOL_TOKENS, 1280, REAL_JEOL_BAR)
+    assert (r.scale.value, r.scale.unit) == (100.0, "nm")
+    assert "label on the bar's text line" in r.scale.note
+    assert "far" not in r.scale.note
+    assert r.checks == {"magnification": True, "magnification_reference": True}
+    assert not r.needs_confirmation
+    # the old mis-pick (a glyph stroke under "LEI") is no longer paired and
+    # the magnification reference rejects it anyway -> flagged
+    r = parse_tokens(REAL_JEOL_TOKENS, 1280, (664, 1011, 16, 3))
+    assert r.needs_confirmation
+
+
+def test_jeol_word_between_bar_and_label_is_not_paired():
+    toks = list(REAL_JEOL_TOKENS) + [T("ABC", 760, 964, 50, 22)]
+    r = parse_tokens(toks, 1280, REAL_JEOL_BAR)
+    assert "label far from the scale bar" in r.scale.note
+    assert r.needs_confirmation
+
+
+# the user's real Thermo data bar (thermo_databar_logo_100um.png), 768 px
+DATABAR_TOKENS = [T("HV", 63, 513, 21, 14), T("curr", 139, 515, 27, 12),
+                  T("det", 200, 512, 24, 16), T("HFW", 246, 513, 32, 14),
+                  T("100μm", 513, 512, 48, 18), T("15.00kV", 65, 531, 56, 12),
+                  T("1.1nA", 140, 530, 43, 14), T("CBS", 201, 530, 28, 14),
+                  T("276μm", 246, 530, 51, 16)]
+DATABAR_BAR = (397, 520, 279, 1)
+
+
+def test_hfw_validates_joined_split_line():
+    r = parse_tokens(DATABAR_TOKENS, 768, DATABAR_BAR)
+    assert (r.scale.value, r.scale.unit) == (100.0, "µm")
+    assert (r.field_width.value, r.field_width.unit) == (276.0, "µm")
+    # 276 um * 279 / 768 = 100.3 um
+    assert r.checks["field_width"] is True
+    assert not r.needs_confirmation
+    # only one half of the line (the pre-fix measurement) disagrees with HFW
+    r = parse_tokens(DATABAR_TOKENS, 768, (397, 520, 114, 1))
+    assert r.checks["field_width"] is False and r.needs_confirmation
+
+
+@pytest.mark.parametrize("toks,want_na,flagged", [
+    (DATABAR_TOKENS, 1.1, False),                                     # column
+    ([T("curr", 139, 515, 27, 12), T("250 pA", 140, 530, 43, 14)], 0.25, False),
+    ([T("Curr: 2.5 µA", 10, 10, 90)], 2500.0, False),                 # inline
+    ([T("HV 5 kV 80pA", 10, 10, 90)], 0.08, False),                    # bare unit
+    ([T("curr", 139, 515, 27, 12), T("40", 140, 530, 20, 14)], 40.0, True),
+])
+def test_beam_current_parsing(toks, want_na, flagged):
+    r = parse_tokens(toks, 768, None)
+    assert r.beam_current is not None
+    assert r.beam_current_na == pytest.approx(want_na)
+    assert r.beam_current.needs_confirmation is flagged
+    assert r.to_dict()["beam_current_na"] == pytest.approx(want_na)
+    # a current is never taken as a scale, a magnification or a vacuum
+    # ("pA" is not "Pa")
+    assert r.magnification is None and r.vacuum is None
+    assert r.scale is None or r.scale.text == "100µm"
+
+
+def test_logo_names_vendor_layout_guess_stays_flagged():
+    from core.vendor_logo import LogoMatch
+    r = parse_tokens(DATABAR_TOKENS, 768, DATABAR_BAR)
+    assert r.vendor.value == "Thermo Fisher" and r.vendor.needs_confirmation
+    assert "layout" in r.vendor.note
+    logo = LogoMatch("Thermo Fisher", (11, 514, 33, 30), 0.92, 0.57)
+    r = parse_tokens(DATABAR_TOKENS, 768, DATABAR_BAR, logo=logo)
+    assert r.vendor.value == "Thermo Fisher" and not r.vendor.needs_confirmation
+    assert r.vendor.note == "identified from the logo"
+    assert r.vendor.bbox == (11, 514, 33, 30)
+    # vendor text on the bar wins over the logo
+    r = parse_tokens(DATABAR_TOKENS + [T("FEI", 600, 530, 30, 14)], 768,
+                     DATABAR_BAR, logo=logo)
+    assert r.vendor.value == "FEI/Thermo Fisher" and r.vendor.note == ""
 
 
 @pytest.mark.parametrize("label,mag", [
@@ -235,6 +333,234 @@ def test_empty_tokens():
 
 
 # ---------------------------------------------------------------------------
+# Scale-bar locator and logo (image only, no OCR package needed)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("kw", [dict(), dict(bar_px=300, bar_x0=380,
+                                             scale_text="50 µm"),
+                                dict(line_level=200), dict(line_level=110)])
+def test_split_scale_line_is_joined(kw):
+    from core.scale_bar import find_scale_bar_line
+    img, info = render_thermo_databar(**kw)
+    found = find_scale_bar_line(img)
+    assert found is not None
+    x, y, w, h = found["rect"]
+    bx, by, bw, _ = info["bar_rect"]
+    assert w == pytest.approx(bw, abs=1) and x == pytest.approx(bx, abs=1)
+    assert abs(y - by) <= 1
+
+
+def _ink(w=400, h=30):
+    return np.zeros((h, w), np.uint8)
+
+
+def test_split_join_needs_label_and_similar_halves():
+    from core.scale_bar import _line_candidates
+    ink = _ink()
+    ink[10, 20:140] = 255
+    ink[10, 200:320] = 255
+    ink[4:17, 20] = 255                              # end ticks
+    ink[4:17, 319] = 255
+    # no label in the gap -> two separate lines
+    assert [s[2] for s in _line_candidates(ink, 8, 380)] == [120, 120]
+    ink[5:16, 150:190:4] = 255                       # label-like ink in the gap
+    assert [s[2] for s in _line_candidates(ink, 8, 380)] == [300]
+    # very unequal halves (label not centred) are not one bar
+    ink2 = _ink()
+    ink2[10, 20:44] = 255
+    ink2[10, 80:300] = 255
+    ink2[4:17, 20] = 255
+    ink2[4:17, 299] = 255
+    ink2[5:16, 50:75:4] = 255
+    assert [s[2] for s in _line_candidates(ink2, 8, 380)][0] == 220
+
+
+def test_dashes_with_digit_between_are_not_joined():
+    """A dimension line / underline "------ 5 ------" without end ticks is
+    not a split scale bar; an OCR word box in the gap (OCR path only) is
+    evidence enough."""
+    from core.scale_bar import _line_candidates
+    ink = _ink()
+    ink[10:12, 20:140] = 255
+    ink[10:12, 200:320] = 255
+    ink[4:18, 165:170] = 255                         # the digit
+    ink[4:6, 162:173] = 255
+    assert [s[2] for s in _line_candidates(ink, 8, 380)] == [120, 120]
+    assert [s[2] for s in _line_candidates(ink, 8, 380, join_split=False)] \
+        == [120, 120]
+    box = [(160, 3, 15, 16)]
+    assert [s[2] for s in _line_candidates(ink, 8, 380, text_boxes=box)] == [300]
+
+
+def _bright_strip_with_bar(tick):
+    """Bar-less micrograph with bright grains: a white 200 px bar drawn over
+    the bottom strip, grains touching it (the fallback-strip path)."""
+    import cv2
+    rng = np.random.default_rng(11)
+    img = cv2.resize(rng.integers(40, 170, (40, 50)).astype(np.uint8),
+                     (1000, 800), interpolation=cv2.INTER_NEAREST)
+    for cx in range(110, 300, 22):                  # bright grains on the bar
+        cv2.circle(img, (cx, 752 if cx % 44 else 734), 9, 235, -1)
+    for cx in range(420, 900, 60):
+        cv2.circle(img, (cx, 700), 12, 230, -1)
+    if tick:
+        img[740:748, 100:300] = 255
+        img[728:748, 100:103] = 255
+        rect = (100, 740, 200, 8)
+    else:
+        img[740:743, 100:300] = 255
+        rect = (100, 740, 200, 3)
+    return img, rect
+
+
+@pytest.mark.parametrize("tick", [False, True])
+def test_fallback_strip_bar_with_touching_grains_still_found(tick):
+    from core.infobar import detect_info_bar
+    from core.scale_bar import find_scale_bar_line
+    img, rect = _bright_strip_with_bar(tick)
+    assert detect_info_bar(img) is None
+    found = find_scale_bar_line(img, fallback_strip=True)
+    assert found is not None and found["source"] == "bottom_strip"
+    assert found["rect"] == rect
+
+
+def test_equal_length_tie_keeps_scan_order():
+    from core.scale_bar import _horizontal_segments, _line_candidates
+    ink = _ink(200, 40)
+    ink[5:7, 20:60] = 255                            # 40 x 2
+    ink[25:33, 120:160] = 255                        # 40 x 8
+    first = _horizontal_segments(ink, 10, 190)[0]
+    assert _line_candidates(ink, 10, 190)[0] == first
+    assert _line_candidates(ink, 10, 190, reject_glyphs=False,
+                            join_split=False)[0] == first
+
+
+@pytest.mark.parametrize("kind", ["uint16", "gray16", "rgba", "float"])
+def test_scale_bar_locator_accepts_16bit_and_rgba(kind):
+    import cv2
+    from core.scale_bar import find_scale_bar_line
+    img, info = render_jeol()
+    if kind == "uint16":
+        img = img.astype(np.uint16) * 257
+    elif kind == "gray16":
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.uint16) * 257
+    elif kind == "rgba":
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
+    else:
+        img = img.astype(np.float32) / 255.0
+    found = find_scale_bar_line(img)
+    assert found is not None and found["rect"] == info["bar_rect"]
+    img2, rect = _bright_strip_with_bar(False)
+    found = find_scale_bar_line(img2.astype(np.uint16) * 257,
+                                fallback_strip=True)
+    assert found is not None and found["rect"] == rect
+
+
+def test_glyph_stroke_is_not_a_bar():
+    """A bold "LE" whose feet form a run as long as the bar (the real JEOL
+    mis-pick) is rejected; the solid bar above it is found."""
+    from core.scale_bar import find_scale_bar_line
+    img, info = render_jeol(bar_px=32, bar_thick=15, label_gap=140,
+                            decoy_under_det=True)
+    found = find_scale_bar_line(img)
+    assert found is not None and found["rect"] == info["bar_rect"]
+    from core.scale_bar import _line_candidates
+    ink = _ink(120, 40)
+    ink[20:23, 10:42] = 255                          # 32 px foot
+    ink[2:20, 10:13] = 255                           # L stem (end)
+    ink[2:20, 24:27] = 255                           # E stem (interior)
+    ink[2:5, 24:40] = 255
+    ink[11:14, 24:38] = 255
+    ink[5:12, 70:102] = 255                          # solid bar
+    assert _line_candidates(ink, 10, 110) == [(70, 5, 32, 7)]
+
+
+def test_bar_candidate_inside_a_word_is_skipped(monkeypatch):
+    import core.scale_bar as sb
+    decoy = {"length_px": 40, "rect": (664, 1011, 40, 3)}
+    bar = {"length_px": 32, "rect": (678, 963, 32, 15)}
+    monkeypatch.setattr(sb, "find_scale_bar_candidates",
+                        lambda img, ib=None, fb=False, text_boxes=None:
+                        [decoy, bar])
+    boxes = [t.bbox for t in REAL_JEOL_TOKENS]
+    assert ibo._pick_scale_bar(None, object(), boxes) == (678, 963, 32, 15)
+    # a split line whose label box covers its middle is NOT "inside a word"
+    assert not ibo._inside_word(DATABAR_BAR, [t.bbox for t in DATABAR_TOKENS])
+
+
+def _gray_bar(img, bar_h):
+    import cv2
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    H, W = g.shape
+    return g, (0, H - bar_h, W, bar_h)
+
+
+def test_logo_detected_on_thermo_databar():
+    from core.vendor_logo import detect_vendor_logo
+    img, info = render_thermo_databar()
+    g, rect = _gray_bar(img, info["bar_h"])
+    m = detect_vendor_logo(g, rect, 46)
+    assert m is not None and m.vendor == "Thermo Fisher"
+    cx, cy = info["logo_center"]
+    x, y, w, h = m.bbox
+    assert x <= cx <= x + w and y <= cy <= y + h
+    # a word box over the mark suppresses it
+    assert detect_vendor_logo(g, rect, 46, [m.bbox]) is None
+
+
+@pytest.mark.parametrize("case", ["jeol", "thermo", "databar_no_logo",
+                                  "glyphs", "symbols"])
+def test_no_false_logo(case):
+    from core.infobar import detect_info_bar
+    from core.vendor_logo import detect_vendor_logo
+    if case == "jeol":
+        img, _ = render_jeol()
+    elif case == "thermo":
+        img, _ = render_thermo()
+    elif case == "databar_no_logo":
+        img, _ = render_thermo_databar(logo=False)
+    elif case == "glyphs":
+        img, _ = render_thermo_databar(logo=False, left_glyphs="@8#&B")
+    else:
+        img, _ = render_thermo_databar(logo=False,
+                                       left_glyphs="✱⊕☸")
+    import cv2
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    ib = detect_info_bar(g)
+    assert ib is not None and ib.bars
+    for b in ib.bars:
+        assert detect_vendor_logo(g, b.rect, b.background_value) is None
+
+
+def test_atom_shape_scores_separate_logo_from_symbols():
+    """Gate values on isolated blobs: the drawn mark passes, radial / ring
+    symbols with many holes fail on strokes or on the enclosed cells."""
+    import cv2
+    from PIL import Image, ImageDraw
+    from core.vendor_logo import is_atom_logo
+    from tests.sem_infobar_fixtures import _draw_atom_mark, _font
+
+    def blob(gray):
+        ink = (gray > 120).astype(np.uint8) * 255
+        n, lab, st, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
+        if n < 2:                     # glyph missing from the fallback font
+            return None
+        i = 1 + int(np.argmax(st[1:, 4]))
+        x, y, w, h = st[i][:4]
+        return (lab[y:y + h, x:x + w] == i).astype(np.uint8) * 255
+
+    g = np.full((60, 60), 46, np.uint8)
+    _draw_atom_mark(g, 30, 30, 31)
+    assert is_atom_logo(blob(g))[0]
+    for ch in ("@", "8", "#", "&", "✱", "⊕", "⊗"):
+        im = Image.new("L", (70, 70), 0)
+        ImageDraw.Draw(im).text((6, 6), ch, fill=255, font=_font(
+            ["seguisym.ttf", "arialbd.ttf"], 34))
+        b = blob(np.asarray(im))
+        assert b is None or not is_atom_logo(b)[0], ch
+
+
+# ---------------------------------------------------------------------------
 # Engine-missing / robustness (no OCR package needed)
 # ---------------------------------------------------------------------------
 
@@ -369,9 +695,65 @@ def test_ocr_jeol_layout(kw):
     assert r.vendor.value == "JEOL" and r.detector.value == "LEI"
     # the scale label is never WD / magnification text
     assert r.scale.bbox != r.wd.bbox and r.scale.bbox != r.magnification.bbox
-    # consistent with magnification, but JEOL has no FW -> still flagged
+    # consistent with the loose magnification window; auto-accepted only
+    # when the implied reference width FW * M is JEOL's (110-135 mm)
     assert r.checks.get("magnification") is True
-    assert r.needs_confirmation
+    fw_mm = num * ibo._LEN_TO_UM[unit] * 1280 / r.scale_bar_px / 1000.0
+    ref_ok = 110 <= fw_mm * r.magnification.value <= 135
+    assert r.checks.get("magnification_reference") is ref_ok
+    assert r.needs_confirmation is (not ref_ok)
+
+
+@needs_ocr
+def test_ocr_jeol_far_label_and_glyph_decoy():
+    """The real-image mis-pick: a solid 32x15 bar ~140 px left of its label
+    on line 1, and a 32 px horizontal glyph run under "LEI" on line 2."""
+    img, info = render_jeol(bar_px=32, bar_thick=15, label_gap=140,
+                            decoy_under_det=True)
+    r = read_info_bar(img)
+    assert r.scale_bar_rect == info["bar_rect"]
+    assert (r.scale.value, r.scale.unit) == (100.0, "nm")
+    assert r.vendor.value == "JEOL" and r.detector.value == "LEI"
+    assert r.checks.get("magnification_reference") is True
+    assert not r.needs_confirmation, r.scale.note
+
+
+DATABAR_CASES = [
+    dict(),
+    dict(scale_text="50 µm", bar_px=300, hfw_value="128 µm",
+         curr_value="250 pA", bar_x0=380),
+    dict(scale_text="10 µm", bar_px=256, hfw_value="30.0 µm",
+         curr_value="0.40 nA", bar_x0=420, line_level=200),   # bright line
+]
+
+
+@needs_ocr
+@pytest.mark.parametrize("kw", DATABAR_CASES)
+def test_ocr_thermo_databar_layout(kw):
+    img, info = render_thermo_databar(**kw)
+    r = read_info_bar(img)
+    num, unit = kw.get("scale_text", "100 µm").split()
+    assert r.status == "ok", r.message
+    assert (r.scale.value, r.scale.unit) == (float(num), unit)
+    assert r.scale_bar_px == pytest.approx(info["bar_rect"][2], abs=1)
+    assert r.checks.get("field_width") is True
+    assert not r.needs_confirmation, r.scale.note
+    assert r.hv.value == 15.0 and r.detector.value == "CBS"
+    cv, cu = kw.get("curr_value", "1.1 nA").split()
+    assert r.beam_current_na == pytest.approx(
+        float(cv) * {"pA": 1e-3, "nA": 1.0}[cu])
+    assert r.vendor.value == "Thermo Fisher"
+    assert not r.vendor.needs_confirmation
+    assert r.vendor.note == "identified from the logo"
+
+
+@needs_ocr
+def test_ocr_thermo_databar_without_logo_vendor_flagged():
+    img, _ = render_thermo_databar(logo=False)
+    r = read_info_bar(img)
+    assert r.vendor.value == "Thermo Fisher" and r.vendor.needs_confirmation
+    assert "layout" in r.vendor.note
+    assert r.scale.value == 100.0 and not r.needs_confirmation
 
 
 THERMO_CASES = [
@@ -474,9 +856,24 @@ def _real_cases():
 def test_real_sem_images(name, exp):
     """``scratch/real_sem/expected.json`` maps file name -> any of
     ``scale_value, scale_unit, magnification, hv_kv, wd_mm, vendor,
-    detector``; only the keys present are checked."""
+    detector, beam_current_na, scale_bar_px, scale_bar_rect,
+    needs_confirmation`` (the scale's flag); ``scale_bar_px_tol`` (px,
+    default 2) applies to ``scale_bar_px`` and to every value of
+    ``scale_bar_rect``.  Only the keys present are checked."""
     r = read_info_bar(os.path.join(REAL_DIR, name))
     assert r.status == "ok", r.message
+    tol = float(exp.get("scale_bar_px_tol", 2))
+    if "scale_bar_px" in exp:
+        assert r.scale_bar_px is not None, "scale bar not located"
+        assert abs(r.scale_bar_px - exp["scale_bar_px"]) <= tol, \
+            (r.scale_bar_px, exp["scale_bar_px"], tol)
+    if "scale_bar_rect" in exp:
+        assert r.scale_bar_rect is not None, "scale bar not located"
+        for have, want in zip(r.scale_bar_rect, exp["scale_bar_rect"]):
+            assert abs(have - want) <= tol, (r.scale_bar_rect, exp["scale_bar_rect"])
+    if "needs_confirmation" in exp:
+        assert r.needs_confirmation is bool(exp["needs_confirmation"]), \
+            r.scale and r.scale.note
     got = {
         "scale_value": r.scale and r.scale.value,
         "scale_unit": r.scale and r.scale.unit.replace("µ", "u"),
@@ -485,10 +882,12 @@ def test_real_sem_images(name, exp):
         "wd_mm": r.wd and r.wd.value,
         "vendor": r.vendor and r.vendor.value,
         "detector": r.detector and r.detector.value,
+        "beam_current_na": r.beam_current_na,
     }
     for key, want in exp.items():
         if key not in got:
             continue
+        assert got[key] is not None, (key, "not read")
         have = got[key]
         if key == "scale_unit":
             want = str(want).replace("µ", "u").replace("μ", "u")

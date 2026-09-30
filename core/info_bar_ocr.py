@@ -49,8 +49,23 @@ of the whole frame).  Taking "the first length in the bar" would calibrate a
      (Polaroid 4x5 / JEOL) up to ≈ 0.5 m (Phenom/Thermo monitor mag), so
      ``D = FW_implied · M`` must lie in 60–800 mm; a decade misread of
      the label (100 nm vs 1 µm) lands outside that window.
+   * **Magnification, vendor reference** (JEOL only): see
+     :data:`_VENDOR_DISPLAY_MM`.  With the vendor read from the bar's text,
+     ``FW_implied * M`` must match that vendor's fixed reference width
+     within ~10 %; this is an independent length check (bar px, label and
+     magnification all have to agree) and may clear the flag.
    * **Metadata** (``core.sem_metadata``), when supplied: bar_px / scale must
      match the stored pixel size within 5 %.
+
+4. Scale bar: :func:`core.scale_bar.find_scale_bar_candidates`; after OCR,
+   a candidate lying inside a word box is skipped (a bold glyph stroke is
+   not a bar).  A label on the SAME text line as a solid bar, with nothing
+   between them (JEOL: "[bar]   100nm"), is paired with it even across a
+   wide gap.
+5. Vendor: from the text ("JEOL", "Thermo", ...), else from the Thermo
+   Fisher atom mark at the left end of the bar (:mod:`core.vendor_logo`,
+   shape analysis, no stored image), else guessed from the column layout
+   (flagged).
 
 No Qt, no I/O except optional image loading from a path.
 """
@@ -82,8 +97,27 @@ _FW_TOL = 0.08               # FW cross-check relative tolerance
 _META_TOL = 0.05             # metadata pixel-size cross-check tolerance
 _DISPLAY_MM = (60.0, 800.0)  # plausible reference display width for mag check
 _SCALE_UM = (0.001, 5000.0)  # sane scale-bar label range (1 nm .. 5 mm)
+_CURR_NA = (1e-4, 1e4)       # sane beam current range (0.1 pA .. 10 uA)
+_PAIR_MAX_LINES = 10.0       # max bar-label gap (text-line heights) on one line
+_IN_WORD = 0.5               # bar-candidate area inside one OCR box -> glyph
+
+# Vendor-specific reference display width for the magnification check.
+# SEM magnification is M = D / FW, with D a fixed reference image width
+# (FW = the horizontal field width, i.e. the specimen length across the
+# whole frame; it does not depend on how many pixels the file has).
+# JEOL defines M against its standard photo width: 120 mm (120 x 90 mm
+# photo format) or 128 mm (128 x 96 mm) depending on the model.  The user's
+# real JEOL export gives D = 4.0 um (32 px of 100 nm on 1280 px) x 30,000 =
+# 120 mm.  The window 110-135 mm covers both references plus bar
+# quantisation (+-0.5 px on a 30 px bar = +-1.7 %) and the rounding of the
+# printed magnification.  Scale labels follow the 1-2-5 series, so a
+# misread label (or a wrong bar) is off by >= 2x and falls outside it.
+# Thermo/Zeiss/Hitachi use display- or monitor-dependent references, so no
+# window is claimed for them (only the loose _DISPLAY_MM check applies).
+_VENDOR_DISPLAY_MM = {"JEOL": (110.0, 135.0)}
 
 _LEN_TO_UM = {"nm": 1e-3, "\u00b5m": 1.0, "mm": 1e3}
+_CURR_TO_NA = {"pA": 1e-3, "nA": 1.0, "\u00b5A": 1e3}
 
 
 # =============================================================================
@@ -125,6 +159,7 @@ class InfoBarReading:
     wd: Optional[ReadingField] = None               # working distance
     field_width: Optional[ReadingField] = None      # FW / HFW
     vacuum: Optional[ReadingField] = None
+    beam_current: Optional[ReadingField] = None     # "curr": value in pA/nA/µA
     detector: Optional[ReadingField] = None
     vendor: Optional[ReadingField] = None
     instrument: Optional[ReadingField] = None
@@ -153,11 +188,19 @@ class InfoBarReading:
         return self.scale_bar_px / s
 
     @property
+    def beam_current_na(self) -> Optional[float]:
+        if self.beam_current is None:
+            return None
+        return float(self.beam_current.value) * _CURR_TO_NA.get(
+            self.beam_current.unit, 1.0)
+
+    @property
     def needs_confirmation(self) -> bool:
         return self.scale is None or bool(self.scale.needs_confirmation)
 
     FIELDS = ("scale", "magnification", "hv", "wd", "field_width", "vacuum",
-              "detector", "vendor", "instrument", "date", "time")
+              "beam_current", "detector", "vendor", "instrument", "date",
+              "time")
 
     def to_dict(self) -> dict:
         d = {k: (getattr(self, k).to_dict() if getattr(self, k) else None)
@@ -168,6 +211,7 @@ class InfoBarReading:
                  info_bar_rect=self.info_bar_rect,
                  image_width_px=self.image_width_px, checks=dict(self.checks),
                  scale_um=self.scale_um, px_per_um=self.px_per_um,
+                 beam_current_na=self.beam_current_na,
                  needs_confirmation=self.needs_confirmation,
                  engine=self.engine, elapsed_s=self.elapsed_s,
                  tokens=[asdict(t) for t in self.tokens])
@@ -251,12 +295,16 @@ _RE_FW = re.compile(r"\b(?:H?FW|FOV|Width)\s*[:=]?\s*(" + _NUM + r")\s*("
 _RE_HV = re.compile(r"(?:\b(?:HV|EHT|Acc\.?\s*V(?:olt(?:age)?)?)\s*[:=]?\s*)?"
                     r"(" + _NUM + r")\s*(kV)(?![A-Za-z])", re.I)
 _RE_VAC = re.compile(r"(?:\bVac\.?\s*[:=]?\s*)?(" + _NUM
-                     + r"(?:[eE][-+]?\d+)?)\s*(Pa|mbar|Torr)\b", re.I)
+                     + r"(?:[eE][-+]?\d+)?)\s*((?-i:Pa|mbar|Torr))\b", re.I)
+# (unit case-sensitive: "pA" is picoamps of beam current, not pascals)
 _RE_MAG_PRE = re.compile(r"(?:\bMag\.?\s*[:=]?\s*|(?<![A-Za-z0-9.,])[xX\u00d7]\s*)("
                          + _MAGNUM + r")\s*([kK](?![A-Za-z]))?\s*[xX\u00d7]?"
                          r"(?![A-Za-z0-9])")
 _RE_MAG_SUF = re.compile(r"(?<![A-Za-z0-9.,])(" + _MAGNUM + r")\s*([kK])?\s*"
                          r"[xX\u00d7](?![A-Za-z0-9])")
+_RE_CURR = re.compile(r"(?:\b(?:Curr(?:ent)?|(?:Beam|Probe)\s*current|"
+                      r"I\s*beam)\.?\s*[:=]?\s*)?(" + _NUM
+                      + r")\s*(pA|nA|[uµ]A)(?![A-Za-z])", re.I)
 _RE_DET_INLINE = re.compile(r"\b(?:Det(?:ector)?|Signal\s*A?)\.?\s*[:=]\s*"
                             r"([A-Za-z0-9+\-]+(?:\s[A-Za-z][A-Za-z0-9+\-]*)?)",
                             re.I)
@@ -295,8 +343,9 @@ _LABELS = {"wd": "wd", "fw": "fw", "hfw": "fw", "fov": "fw", "mag": "mag",
            "detector": "det", "signal": "det", "vac": "vac", "vacuum": "vac",
            "pressure": "vac", "date": "date", "time": "time", "int": "other",
            "spot": "other", "dwell": "other", "tilt": "other", "mode": "other",
-           "pixel": "other", "scan": "other", "curr": "other",
-           "current": "other", "hfov": "fw", "vfw": "other", "pv": "other"}
+           "pixel": "other", "scan": "other",
+           "curr": "curr", "current": "curr", "beamcurrent": "curr",
+           "probecurrent": "curr", "hfov": "fw", "vfw": "other", "pv": "other"}
 
 
 # OCR confuses O/o with 0 and I/l/| with 1 inside numbers ("1O0nm",
@@ -306,7 +355,7 @@ _LABELS = {"wd": "wd", "fw": "fw", "hfw": "fw", "fov": "fw", "mag": "mag",
 # so words like "LEI", "Image", "Vol2" are never touched.
 _RE_CONFUSED_NUM = re.compile(
     r"(?<![A-WYZa-wyz])[0-9OoIl|][0-9OoIl|.,]*"
-    r"(?=\s*(?:nm|nrn|[u\u00b5p]m|urn|mm|kV|Pa|[xX\u00d7](?![A-Za-z])|"
+    r"(?=\s*(?:nm|nrn|[u\u00b5p]m|urn|mm|kV|Pa|[pnu\u00b5]A|[xX\u00d7](?![A-Za-z])|"
     r"[^A-Za-z]|$))")
 _CONFUSION = str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1", "|": "1"})
 
@@ -487,12 +536,28 @@ def _parse_kind(kind: str, tok: _Tok, labelled: bool):
                 return f, m
     elif kind == "vac":
         rx = _RE_VAC if not labelled else re.compile(
-            r"(" + _NUM + r"(?:[eE][-+]?\d+)?)\s*(Pa|mbar|Torr)?", re.I)
+            r"(" + _NUM + r"(?:[eE][-+]?\d+)?)\s*((?-i:Pa|mbar|Torr))?", re.I)
         for m in t.finditer(rx):
             v = _to_float(m.group(1))
             if v is None:
                 continue
             return _field(v, m.group(2) or "Pa", t, m), m
+    elif kind == "curr":
+        rx = _RE_CURR if not labelled else re.compile(
+            r"(" + _NUM + r")\s*(pA|nA|[uµ]A)?(?![A-Za-z])", re.I)
+        for m in t.finditer(rx):
+            v = _to_float(m.group(1))
+            if v is None:
+                continue
+            raw = (m.group(2) or "").lower()
+            unit = {"pa": "pA", "na": "nA", "ua": "µA",
+                    "µa": "µA"}.get(raw, "nA")
+            f = _field(v, unit, t, m)
+            if not raw:
+                f.needs_confirmation, f.note = True, "unit missing (nA assumed)"
+            elif not _CURR_NA[0] <= v * _CURR_TO_NA[unit] <= _CURR_NA[1]:
+                f.needs_confirmation, f.note = True, "implausible beam current"
+            return f, m
     elif kind == "det":
         if labelled:
             name = _DET_BY_KEY.get(_det_key(t.text), t.text)
@@ -550,10 +615,43 @@ def _better(cur: Optional[ReadingField], new: Optional[ReadingField]):
 # Core parsing (engine-independent; unit-tested with synthetic tokens)
 # =============================================================================
 
+def _same_line_pair(bar: Rect, label: Rect, toks: Sequence["_Tok"],
+                    line_h: float) -> bool:
+    """True when ``label`` is on the same text line as the bar (the bar's
+    centre row lies inside the label box), within _PAIR_MAX_LINES line
+    heights, and no other OCR box sits between them on that line.  This is
+    the JEOL layout ("[bar]    100nm JEOL"): the gap is wide but the
+    pairing is unambiguous."""
+    bx, by, bw, bh = bar
+    lx, ly, lw, lh = label
+    cy = by + bh / 2.0
+    if not ly - 0.2 * lh <= cy <= ly + 1.2 * lh:
+        return False
+    if lx >= bx + bw:
+        g0, g1 = bx + bw, lx
+    elif lx + lw <= bx:
+        g0, g1 = lx + lw, bx
+    else:
+        return True
+    if g1 - g0 > _PAIR_MAX_LINES * line_h:
+        return False
+    for t in toks:
+        tx, ty, tw, th = t.bbox
+        if (tx, ty, tw, th) == tuple(label) or ty > cy or ty + th < cy:
+            continue
+        if tx < g1 - 1 and tx + tw > g0 + 1 and not (
+                tx <= lx and tx + tw >= lx + lw):       # not the label's token
+            return False
+    return True
+
+
 def parse_tokens(tokens: Sequence[OcrToken], image_width: int,
                  scale_bar_rect: Optional[Rect] = None,
-                 metadata=None) -> InfoBarReading:
-    """Classify OCR tokens into fields and pick the scale label."""
+                 metadata=None, logo=None) -> InfoBarReading:
+    """Classify OCR tokens into fields and pick the scale label.
+
+    ``logo`` is an optional :class:`core.vendor_logo.LogoMatch` found in the
+    bar; it names the vendor when the text does not."""
     r = InfoBarReading(status="ok", image_width_px=int(image_width),
                        tokens=list(tokens), scale_bar_rect=scale_bar_rect,
                        scale_bar_px=int(scale_bar_rect[2]) if scale_bar_rect
@@ -580,7 +678,7 @@ def parse_tokens(tokens: Sequence[OcrToken], image_width: int,
         _assign(r, lab.label, f)
 
     # 2. inline labelled patterns, in priority order
-    for kind in ("date", "time", "wd", "fw", "hv", "vac", "mag", "det"):
+    for kind in ("date", "time", "wd", "fw", "hv", "curr", "vac", "mag", "det"):
         for t in toks:
             while True:
                 f, m = _parse_kind(kind, t, labelled=False)
@@ -605,6 +703,10 @@ def parse_tokens(tokens: Sequence[OcrToken], image_width: int,
             if name and m.group(0).upper() not in ("SEM",) and len(m.group(0)) >= 2:
                 t.claim(m.start(), m.end())
                 r.detector = _better(r.detector, _field(name, "", t, m))
+    if r.vendor is None and logo is not None:
+        c = float(getattr(logo, "stroke", 0.9))
+        r.vendor = ReadingField(logo.vendor, "", c, c < _CONFIRM_BELOW, "",
+                                tuple(logo.bbox), "identified from the logo")
     if r.vendor is None and {"fw", "det"} <= label_kinds and \
             label_kinds & {"vac", "hv", "mag"}:
         r.vendor = ReadingField("Thermo Fisher", "", 0.5, True, "", None,
@@ -641,7 +743,10 @@ def parse_tokens(tokens: Sequence[OcrToken], image_width: int,
             f = cands[0][0]
             d0 = _gap(scale_bar_rect, f.bbox)
             c = f.confidence
-            if d0 > 4 * line_h:
+            if d0 > 4 * line_h and _same_line_pair(scale_bar_rect, f.bbox,
+                                                   toks, line_h):
+                f.note = _join(f.note, "label on the bar's text line")
+            elif d0 > 4 * line_h:
                 c *= 0.6
                 ambiguous = True
                 f.note = _join(f.note, "label far from the scale bar")
@@ -680,7 +785,7 @@ def _join(a: str, b: str) -> str:
 def _assign(r: InfoBarReading, kind: str, f: Optional[ReadingField]):
     attr = {"wd": "wd", "fw": "field_width", "hv": "hv", "vac": "vacuum",
             "mag": "magnification", "det": "detector", "date": "date",
-            "time": "time"}.get(kind)
+            "time": "time", "curr": "beam_current"}.get(kind)
     if attr and f is not None:
         setattr(r, attr, _better(getattr(r, attr), f))
 
@@ -695,8 +800,9 @@ def _cross_check(r: InfoBarReading, metadata, ambiguous: bool = False) -> None:
 
     * any failing check -> confidence cut, ``needs_confirmation``;
     * the scale is only auto-accepted (``needs_confirmation`` False) when an
-      INDEPENDENT length check agrees: FW (with an unambiguous pick) or the
-      file-metadata pixel size;
+      INDEPENDENT length check agrees: FW (with an unambiguous pick), the
+      vendor magnification reference (JEOL, unambiguous pick; see
+      :data:`_VENDOR_DISPLAY_MM`) or the file-metadata pixel size;
     * the magnification window alone never clears the flag: 60-800 mm spans
       ~13x, so a decade misread can still land inside it;
     * an ambiguous pick (no bar, several labels near the bar, far label,
@@ -710,7 +816,7 @@ def _cross_check(r: InfoBarReading, metadata, ambiguous: bool = False) -> None:
         return
     s_um = r.scale_um
     failed = False
-    fw_ok = meta_ok = False
+    fw_ok = meta_ok = mag_ref_ok = False
     # FW: the field width spans the full image width -> scale = FW*bar/W
     if r.field_width is not None and bar and W:
         fw_um = float(r.field_width.value) * _LEN_TO_UM.get(r.field_width.unit, 1.0)
@@ -730,6 +836,16 @@ def _cross_check(r: InfoBarReading, metadata, ambiguous: bool = False) -> None:
             failed = True
             s.confidence *= 0.6
             s.note = _join(s.note, "inconsistent with magnification")
+        # vendor reference width (see _VENDOR_DISPLAY_MM): only with the
+        # vendor READ from the text and an unflagged magnification.  A miss
+        # is recorded but not penalised (the reference is model-dependent).
+        v = r.vendor
+        ref = _VENDOR_DISPLAY_MM.get(v.value) if (
+            v is not None and v.bbox is not None and not v.needs_confirmation
+            and v.note == "") else None
+        if ref is not None and not r.magnification.needs_confirmation:
+            mag_ref_ok = ref[0] <= disp_mm <= ref[1]
+            r.checks["magnification_reference"] = mag_ref_ok
     # metadata pixel size
     ppu = getattr(metadata, "px_per_um", None) if metadata is not None else None
     if ppu and bar:
@@ -773,11 +889,19 @@ def _cross_check(r: InfoBarReading, metadata, ambiguous: bool = False) -> None:
         s.confidence = max(s.confidence, 0.97)
         s.needs_confirmation = s.confidence < _CONFIRM_BELOW
         return
-    if fw_ok:
+    if mag_ref_ok and not ambiguous:
+        # bar px, label and magnification reproduce the vendor's fixed
+        # reference width: an independent length check (a 1-2-5 misread
+        # or a wrong bar misses by >= 2x)
+        s.confidence = max(s.confidence, 0.9)
+        s.needs_confirmation = False
+        return
+    if fw_ok or mag_ref_ok:
         s.confidence = min(s.confidence + 0.1, _FLAGGED_MAX)
     else:
         s.confidence = min(s.confidence, _FLAGGED_MAX)
-        s.note = _join(s.note, "no independent check (FW or file metadata)")
+        s.note = _join(s.note, "no independent check (FW, magnification "
+                               "reference or file metadata)")
     s.needs_confirmation = True
 
 
@@ -820,9 +944,9 @@ def read_info_bar(image: Union[np.ndarray, str], scale_bar_bbox: Optional[Rect] 
     ----------
     image : BGR/gray/BGRA array (full frame) or a file path.
     scale_bar_bbox : full-frame (x, y, w, h) of the scale bar if the caller
-        already knows it (e.g. user-snapped); otherwise it is detected with
-        :func:`core.scale_bar.find_scale_bar_line`.  ``w`` is taken as the bar
-        length in px.
+        already knows it (e.g. user-snapped); otherwise the longest
+        :func:`core.scale_bar.find_scale_bar_candidates` entry that is not
+        inside an OCR word.  ``w`` is taken as the bar length in px.
     info_bar : precomputed :func:`core.infobar.detect_info_bar` result.
     metadata : optional :class:`core.sem_metadata.SemMetadata` for
         cross-checking.
@@ -835,7 +959,8 @@ def read_info_bar(image: Union[np.ndarray, str], scale_bar_bbox: Optional[Rect] 
 
     Never raises; problems are reported through ``status``/``message``.
     ``needs_confirmation`` is True unless the scale was independently
-    confirmed (FW or file metadata); the UI should then ask the user to
+    confirmed (FW, JEOL magnification reference or file metadata); the UI
+    should then ask the user to
     confirm the pre-filled value."""
     t0 = time.perf_counter()
     try:
@@ -848,7 +973,33 @@ def read_info_bar(image: Union[np.ndarray, str], scale_bar_bbox: Optional[Rect] 
     return r
 
 
+def _inside_word(rect: Rect, boxes: Sequence[Rect]) -> bool:
+    """More than _IN_WORD of the bar candidate's area lies inside ONE OCR
+    word box: it is a glyph stroke (e.g. the feet of a bold "LE"), not a
+    bar.  A centred label inside a split line covers only a small part of
+    the joined line, so a real bar is kept."""
+    x, y, w, h = rect
+    area = float(max(1, w * h))
+    for bx, by, bw, bh in boxes:
+        ix = min(x + w, bx + bw) - max(x, bx)
+        iy = min(y + h, by + bh) - max(y, by)
+        if ix > 0 and iy > 0 and ix * iy / area > _IN_WORD:
+            return True
+    return False
+
+
+def _pick_scale_bar(bgr, ib, boxes) -> Optional[Rect]:
+    """Longest scale-bar candidate (>= 8 px) that is not inside a word."""
+    from core.scale_bar import find_scale_bar_candidates
+    for c in find_scale_bar_candidates(bgr, ib, text_boxes=boxes):
+        rect = tuple(int(v) for v in c["rect"])
+        if c["length_px"] >= 8 and not _inside_word(rect, boxes):
+            return rect
+    return None
+
+
 def _read(image, scale_bar_bbox, info_bar, metadata) -> InfoBarReading:
+    import cv2
     img = _load_image(image)
     if img is None or img.size == 0 or img.ndim not in (2, 3):
         return InfoBarReading(status="error", message="Image could not be read.")
@@ -866,11 +1017,6 @@ def _read(image, scale_bar_bbox, info_bar, metadata) -> InfoBarReading:
         h = min(H, max(40, int(round(0.10 * H))))
         rects = [(0, H - h, W, h)]
         fallback = True
-    if scale_bar_bbox is None:
-        from core.scale_bar import find_scale_bar_line
-        found = find_scale_bar_line(bgr, ib) if ib is not None else None
-        if found is not None and found["length_px"] >= 8:
-            scale_bar_bbox = tuple(int(v) for v in found["rect"])
     tokens: List[OcrToken] = []
     for (x0, y0, bw, bh) in rects:
         strip = np.ascontiguousarray(bgr[y0:y0 + bh, x0:x0 + bw])
@@ -883,7 +1029,18 @@ def _read(image, scale_bar_bbox, info_bar, metadata) -> InfoBarReading:
                 x0 + bx, y0 + by, max(1, int(np.ceil(xs.max())) - bx),
                 max(1, int(np.ceil(ys.max())) - by))))
     tokens.sort(key=lambda t: (t.bbox[1] // 8, t.bbox[0]))
-    r = parse_tokens(tokens, W, scale_bar_bbox, metadata)
+    boxes = [t.bbox for t in tokens]
+    if scale_bar_bbox is None and ib is not None:
+        scale_bar_bbox = _pick_scale_bar(bgr, ib, boxes)
+    logo = None
+    if ib is not None and ib.bars:
+        from core.vendor_logo import detect_vendor_logo
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        for b in ib.bars:
+            logo = detect_vendor_logo(gray, b.rect, b.background_value, boxes)
+            if logo is not None:
+                break
+    r = parse_tokens(tokens, W, scale_bar_bbox, metadata, logo=logo)
     r.info_bar_rect = None if fallback else rects[0]
     if fallback:
         r.message = _join(r.message, "No data bar detected; read the bottom "
