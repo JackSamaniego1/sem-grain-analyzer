@@ -69,7 +69,8 @@ def _state_with_images(tmp_path, monkeypatch, n=N_IMAGES):
     from data.models import SessionMeta
     from ui.app_state import AppState, ImageDoc, SessionDoc
     st = AppState(settings_path=tmp_path / "settings.json")
-    doc = SessionDoc(path=tmp_path / "sess", meta=SessionMeta())
+    doc = SessionDoc(path=tmp_path / "sess", meta=SessionMeta(),
+                     px_per_um=2.0)      # the scale the results were measured with
     st.session = doc
     bgr, base = _raw()
     for i in range(n):

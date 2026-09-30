@@ -67,6 +67,8 @@ def image_status(im) -> tuple:
     if getattr(im, "loading", False):
         return "neutral", "Loading…"
     s = im.status
+    if s == "done" and im.result is not None and getattr(im, "stale", ""):
+        return "warning", "Needs re-analysis"
     if s == "done" and im.result is not None:
         return "success", f"{fmt_int(im.result.grain_count)} grains"
     if s == "running":
@@ -593,7 +595,8 @@ class ImageTree(ThemeAware, QWidget):
         ims = self._images_under(g)
         return dict(
             n=len(ims),
-            done=sum(1 for im in ims if im.result is not None),
+            done=sum(1 for im in ims if im.result is not None
+                     and not getattr(im, "stale", "")),
             err=sum(1 for im in ims if im.status == "error"),
             running=any(im.status in ("running", "queued") and not im.loading for im in ims),
             loading=sum(1 for im in ims if im.loading),

@@ -89,7 +89,7 @@ def results_fingerprint(state, images=None) -> str:
     h = hashlib.sha1()
     for im in (state.images() if images is None else images):
         r = im.result
-        if r is None:
+        if r is None or not reportable(state, im):
             continue
         ids = sorted(int(g.grain_id) for g in r.grains)
         area = round(float(sum(g.area_px for g in r.grains)), 3)
@@ -240,8 +240,34 @@ def apply_calibration(model: ReportModel, cal: Optional[dict]) -> None:
         model.calibration = dict(cal)
 
 
+def reportable(state, im) -> bool:
+    """An image whose result goes into reports / exports: analysed and not
+    out of date (``AppState.stale_reason``: its scale or scan area changed
+    after the analysis -- it must be analysed again first)."""
+    if im.result is None:
+        return False
+    f = getattr(state, "stale_reason", None)
+    return not (f is not None and f(im))
+
+
+def stale_note(state, images=None) -> str:
+    """'' or a sentence naming the analysed images left out of a report /
+    export because they need re-analysis."""
+    f = getattr(state, "stale_reason", None)
+    if f is None:
+        return ""
+    names = [im.display_name for im in (state.images() if images is None else images)
+             if im.result is not None and f(im)]
+    if not names:
+        return ""
+    shown = ", ".join(names[:6]) + (f" and {len(names) - 6} more" if len(names) > 6 else "")
+    n = len(names)
+    return (f"{n} image{'s' if n != 1 else ''} left out — the scale or scan area changed "
+            f"after analysis, so {'they need' if n != 1 else 'it needs'} re-analysis: {shown}.")
+
+
 def analysed_count(state) -> int:
-    return sum(1 for im in state.images() if im.result is not None)
+    return sum(1 for im in state.images() if reportable(state, im))
 
 
 def _filters_text(opts) -> str:
@@ -306,7 +332,7 @@ def collect_inputs(state, images=None) -> List[ReportImageInput]:
     sample, lot = _session_ids(state)
     out: List[ReportImageInput] = []
     for im in (state.images() if images is None else images):
-        if im.result is None:
+        if not reportable(state, im):
             continue
         res = light_snapshot(im.result)
         path = str(im.path) if im.path else im.filename
@@ -349,7 +375,7 @@ def _distinct_level_values(state, key: str) -> List[str]:
         return []
     out: List[str] = []
     for im in state.images():
-        if im.result is None:
+        if not reportable(state, im):
             continue
         v = image_levels(state, im).get(key, "")
         if v and v not in out:
@@ -510,7 +536,7 @@ def lots_loaded(state, analysed_only: bool = True) -> List[str]:
     """Lot keys of the analyzer's images, in list order."""
     out: List[str] = []
     for k, im in _keyed_images(state):
-        if (im.result is not None or not analysed_only) and k not in out:
+        if (reportable(state, im) or not analysed_only) and k not in out:
             out.append(k)
     return out
 
@@ -555,7 +581,7 @@ def lot_groups(state, scope: Optional[Sequence[str]] = None):
     by_key: Dict[str, list] = {}
     meta: Dict[str, tuple] = {}
     for k, im in _keyed_images(state, scope_images(state, scope)):
-        if im.result is None:
+        if not reportable(state, im):
             continue
         if k not in by_key:
             by_key[k] = []

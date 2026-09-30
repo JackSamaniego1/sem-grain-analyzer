@@ -1032,8 +1032,10 @@ class ReportsPage(QWidget):
         basename = model.export_basename or ""
         if only_uid is not None:
             im = self.state.session.image(only_uid)
-            if im is None or im.result is None:
-                self._toast("No results for this image", "Analyse it first.", "info")
+            if im is None or not rb.reportable(self.state, im):
+                self._toast("No results for this image",
+                            (rb.stale_note(self.state, [im]) if im is not None else "")
+                            or "Analyse it first.", "info")
                 return
             model = rb.only_image_model(model, str(im.path) if im.path else im.filename)
             stem_title = Path(im.filename).stem
@@ -1054,6 +1056,10 @@ class ReportsPage(QWidget):
                 self.state.save_settings()
                 p = Path(chosen)
             jobs.append((k, str(p)))
+        if only_uid is None:
+            note = rb.stale_note(self.state)
+            if note:                    # named, never silently dropped
+                self._toast("Some images are not in this export", note, "warning")
         self.save_now()
         extras = rb.report_extras_arg(self.state, [])
         if extras is not None:

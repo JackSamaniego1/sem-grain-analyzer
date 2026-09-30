@@ -229,6 +229,11 @@ class ImageDoc:
     # UPDATE 4 item 5: Resolution Profile applied to this image
     # (ResolutionProfile.snapshot(); None = none).  Saved in the manifest.
     profile: Optional[dict] = None
+    # UPDATE 4 item 5 follow-up: the scan area (x, y, w, h; None = unknown)
+    # the result was measured on, and why the result is out of date ("" = it
+    # is not; kept by AppState.refresh_stale, see AppState.stale_reason).
+    result_scan: Optional[tuple] = None
+    stale: str = ""
     # pixel cache: ``image_bgr`` is None while evicted; ``readable`` /
     # ``shape`` (h, w) stay known without holding the pixels
     shape: Optional[tuple] = None
@@ -249,9 +254,13 @@ class ImageDoc:
 
     def tooltip(self) -> str:
         orig = self.original_name
+        tip = self.filename
         if orig and orig != self.filename:
-            return f"{self.filename}\nOriginal file: {orig}"
-        return self.filename
+            tip = f"{self.filename}\nOriginal file: {orig}"
+        if self.stale and self.result is not None:
+            tip += (f"\nNeeds re-analysis — {self.stale} changed since it was analysed. "
+                    "The old result is kept but left out of reports and exports.")
+        return tip
 
 
 @dataclass(eq=False)
@@ -1055,6 +1064,10 @@ class AppState(QObject):
         self.session: Optional[SessionDoc] = None
         self.current_uid = None
         self.undo_stack = QUndoStack(self)
+        # out-of-date results follow every scale / scan-area / status change;
+        # connected first, so every page reads the fresh flag
+        self.calibration_changed.connect(self.refresh_stale)
+        self.image_updated.connect(self._refresh_stale_one)
         self._dirty: set = set()
         self._meta_dirty = False
         self._saving = False
@@ -1417,8 +1430,6 @@ class AppState(QObject):
         im.original_name = d.get("original_name") or ""
         prof = d.get("profile")
         im.profile = dict(prof) if isinstance(prof, dict) else None
-        if im.profile:                          # UPDATE 4 item 5
-            im.scale_source = im.scan_source = "profile"
         im.status = "done" if res is not None else "pending"
         im.progress, im.message = 0, ""
         im.record = rec
@@ -1427,6 +1438,16 @@ class AppState(QObject):
             im.status, im.message = "error", "Image file is missing or unreadable"
         if im.scan_rect is not None and im.scan_rect == doc.scan_rect:
             im.scan_rect = None
+        if im.profile:                          # UPDATE 4 item 5
+            if self.profile_matches(im):
+                im.scale_source = im.scan_source = "profile"
+            else:                               # changed by hand since: no label
+                im.profile = None
+        # the manifest does not keep the scan area a saved result was measured
+        # on: taken as the current one (a changed SCALE is still caught -- the
+        # result keeps its own px_per_um)
+        im.result_scan = self._norm_scan(im, self.scan_for(im)) if res is not None else None
+        im.stale = self.stale_reason(im)
         return im
 
     # ------------------------------------------------------------------ UX-09 several records
@@ -1999,11 +2020,12 @@ class AppState(QObject):
         if not self._guard("Setting the scale", [o.uid for o in targets],
                            resync="calibration"):
             return []
-        snap = [(o.uid, o.px_override, o.scale_source, o.bar_um) for o in targets]
+        snap = [self._scale_item(o) for o in targets]
         for o in targets:
             o.bar_um = float(length_um)
             o.px_override = o.bar_px / float(length_um)
             o.scale_source = "manual" if o is im else "auto"
+            o.profile = None                 # a scale by hand: no profile label
         self._push_snapshot(ScaleCommand, snap, "Set scale")
         self._meta_dirty = True
         self.calibration_changed.emit()
@@ -2030,6 +2052,8 @@ class AppState(QObject):
                 o.px_override, o.scale_source = float(item[1]), item[2]
                 if len(item) > 3:
                     o.bar_um = float(item[3])
+                if len(item) > 4:
+                    o.profile = dict(item[4]) if item[4] else None
         self._meta_dirty = True
         self.calibration_changed.emit()
         self.setup_changed.emit()
@@ -2044,12 +2068,12 @@ class AppState(QObject):
         if not self._guard("Setting the scale", [o.uid for o in doc.images],
                            resync="calibration"):
             return []
-        snap = [("session", doc.px_per_um)] + [
-            (o.uid, o.px_override, o.scale_source, o.bar_um) for o in doc.images]
+        snap = [("session", doc.px_per_um)] + [self._scale_item(o) for o in doc.images]
         doc.px_per_um = float(px_per_um)
         for o in doc.images:
             o.px_override = 0.0
             o.scale_source = "manual"
+            o.profile = None
         self._push_snapshot(ScaleCommand, snap, "Set scale for all images")
         self._meta_dirty = True
         self.calibration_changed.emit()
@@ -2067,8 +2091,7 @@ class AppState(QObject):
         if not self._guard("Changing the scan area", [o.uid for o in doc.images],
                            resync="calibration"):
             return []
-        snap = [("session", doc.scan_rect)] + [(o.uid, o.scan_rect, o.scan_source)
-                                               for o in doc.images]
+        snap = [("session", doc.scan_rect)] + [self._scan_item(o) for o in doc.images]
         rect = tuple(int(v) for v in rect) if rect else None
         for o in doc.images:
             if rect is None and o.shape:
@@ -2077,6 +2100,7 @@ class AppState(QObject):
             else:
                 o.scan_rect = None
             o.scan_source = "manual"
+            o.profile = None
         self.set_scan_rect(rect, None)
         self._push_snapshot(ScanAreaCommand, snap, "Set scan area for all images")
         self.setup_changed.emit()
@@ -2097,6 +2121,8 @@ class AppState(QObject):
             o = doc.image(item[0])
             if o is not None:
                 o.scan_rect, o.scan_source = item[1], item[2]
+                if len(item) > 3:
+                    o.profile = dict(item[3]) if item[3] else None
         self._meta_dirty = True
         self.calibration_changed.emit()
         self.setup_changed.emit()
@@ -2180,6 +2206,102 @@ class AppState(QObject):
             return im.scan_rect
         return self.session.scan_rect if self.session else None
 
+    # ------------------------------------------------------------------ out-of-date results
+    @staticmethod
+    def _scale_item(o: ImageDoc) -> tuple:
+        """Scale undo snapshot of one image (the profile label travels too)."""
+        return (o.uid, o.px_override, o.scale_source, o.bar_um,
+                dict(o.profile) if o.profile else None)
+
+    @staticmethod
+    def _scan_item(o: ImageDoc) -> tuple:
+        return (o.uid, o.scan_rect, o.scan_source, dict(o.profile) if o.profile else None)
+
+    @staticmethod
+    def _norm_scan(im: ImageDoc, rect) -> Optional[tuple]:
+        """A scan area as (x, y, w, h); no area = the full frame (None when
+        the image size is unknown)."""
+        if rect:
+            return tuple(int(v) for v in rect)
+        if im.shape:
+            h, w = im.shape[:2]
+            return (0, 0, int(w), int(h))
+        return None
+
+    def stale_reason(self, im: Optional[ImageDoc]) -> str:
+        """Why the result of ``im`` is out of date: "scale", "scan area",
+        "scale and scan area", or "" (up to date / no result / being
+        analysed).
+
+        THE rule (profile and by-hand changes alike): a result is out of date
+        while the image's scale differs from the one the result was measured
+        with (``result.px_per_um``), or its scan area differs from the one
+        it was measured on.  Nothing is deleted or re-labelled: undoing the
+        change makes the result current again, exactly as before.  Out-of-date
+        results are flagged in the image list / results table and left out
+        of reports and exports until the image is analysed again."""
+        res = im.result if im is not None else None
+        if res is None or self.session is None or im.status in ("queued", "running"):
+            return ""
+        parts = []
+        old, cur = float(res.px_per_um or 0.0), float(self.px_for(im) or 0.0)
+        # Relative tolerance: a scale that survived a save / reload or a
+        # unit conversion must never count as "changed".
+        if abs(old - cur) > 1e-6 * max(1.0, abs(old), abs(cur)):
+            parts.append("scale")
+        if im.result_scan is not None:
+            now = self._norm_scan(im, self.scan_for(im))
+            if now is not None and tuple(now) != tuple(im.result_scan):
+                parts.append("scan area")
+        return " and ".join(parts)
+
+    def stale_images(self) -> List[ImageDoc]:
+        return [im for im in self.images() if self.stale_reason(im)]
+
+    def refresh_stale(self) -> None:
+        changed = []
+        for im in self.images():
+            s = self.stale_reason(im)
+            if s != im.stale:
+                im.stale = s
+                changed.append(im.uid)
+        for uid in changed:                 # image list / filmstrip rows repaint
+            self.image_updated.emit(uid)
+
+    def _refresh_stale_one(self, uid) -> None:
+        im = self.session.image(uid) if self.session is not None else None
+        if im is not None:
+            im.stale = self.stale_reason(im)
+
+    def profile_matches(self, im: ImageDoc) -> bool:
+        """The image's scale and scan area are still the ones its profile
+        snapshot set (the label is shown only then)."""
+        p = im.profile if isinstance(im.profile, dict) else None
+        if not p:
+            return False
+        try:
+            npp = float(p.get("nm_per_px") or 0.0)
+        except (TypeError, ValueError):
+            return False
+        if npp <= 0:
+            return False
+        want, cur = 1000.0 / npp, float(self.px_for(im) or 0.0)
+        if abs(want - cur) > 1e-9 * max(1.0, want, abs(cur)):
+            return False
+        rect = p.get("scan_rect")
+        return self._norm_scan(im, rect) == self._norm_scan(im, self.scan_for(im))
+
+    def _drop_mismatched_profiles(self) -> None:
+        if self.session is None:
+            return
+        for o in self.session.images:
+            if o.profile and not self.profile_matches(o):
+                o.profile = None
+                if o.scale_source == "profile":
+                    o.scale_source = "manual"
+                if o.scan_source == "profile":
+                    o.scan_source = "manual"
+
     def set_calibration(self, px_per_um: float, uid=None) -> None:
         """Global calibration, or a per-image override when ``uid`` is given."""
         if self.session is None:
@@ -2197,7 +2319,9 @@ class AppState(QObject):
                 return
             im.px_override = float(px_per_um)
             im.scale_source = "manual" if px_per_um > 0 else ""
+            im.profile = None              # a scale by hand: no profile label
             self._meta_dirty = True        # per-image fields travel with every save
+        self._drop_mismatched_profiles()
         self.calibration_changed.emit()
         self.setup_changed.emit()
         self.schedule_save()
@@ -2218,7 +2342,9 @@ class AppState(QObject):
             return
         im.scan_rect = None
         im.scan_source = ""
+        im.profile = None
         self._meta_dirty = True
+        self._drop_mismatched_profiles()
         self.calibration_changed.emit()
         self.setup_changed.emit()
         self.schedule_save()
@@ -2244,7 +2370,9 @@ class AppState(QObject):
             if im is not None:
                 im.scan_rect = rect
                 im.scan_source = "manual" if rect else ""
+                im.profile = None          # a scan area by hand: no profile label
                 self._meta_dirty = True
+        self._drop_mismatched_profiles()
         self.calibration_changed.emit()
         self.setup_changed.emit()
         self.schedule_save()
@@ -2272,6 +2400,8 @@ class AppState(QObject):
         if im is None:
             return
         im.raw = raw
+        # measured on this scan area (it cannot change while analysing)
+        im.result_scan = self._norm_scan(im, self.scan_for(im))
         im.manual = set()
         im.edits, im.detector_labels = [], None     # a new detection: hand edits start over
         # UPDATE 4 item 7: undo must never bring back the old detection's edits
@@ -2374,6 +2504,7 @@ class AppState(QObject):
             im.counts = out["counts"]
             if first or im.status != "done":
                 im.status, im.progress, im.message = "done", 100, ""
+            im.stale = self.stale_reason(im)
             if im.result is not None and im.result.overlay_image is not None:
                 im.thumb = thumb_qimage(im.result.overlay_image)
             self.overlays.discard_uid(uid)
@@ -2476,8 +2607,7 @@ class AppState(QObject):
             o = doc.image(item[0])
             if o is None:
                 continue
-            out.append((o.uid, o.px_override, o.scale_source, o.bar_um)
-                       if cls is ScaleCommand else (o.uid, o.scan_rect, o.scan_source))
+            out.append(self._scale_item(o) if cls is ScaleCommand else self._scan_item(o))
         return out
 
     def _push_snapshot(self, cls, before: List, text: str) -> None:

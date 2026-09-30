@@ -331,9 +331,15 @@ class ResolutionProfilesCard(CollapsibleSection):
                         "warning")
         if done:
             k = len(done)
-            self._toast("Profile applied",
-                        f"'{p.name}' on {k} image{'s' if k != 1 else ''} — ready to analyse.",
-                        "success")
+            doc = self.state.session
+            stale = [u for u in done if doc is not None
+                     and self.state.stale_reason(doc.image(u))]
+            body = f"'{p.name}' on {k} image{'s' if k != 1 else ''} — ready to analyse."
+            if stale:
+                body += (f" {len(stale)} already analysed image"
+                         f"{'s need' if len(stale) != 1 else ' needs'} re-analysis; "
+                         "the old result is left out of reports until then.")
+            self._toast("Profile applied", body, "success")
             self.applied.emit(done)
         return done
 

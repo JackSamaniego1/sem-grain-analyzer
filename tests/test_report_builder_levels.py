@@ -48,7 +48,8 @@ def _two_lot_state(tmp_path, monkeypatch):
     st = AppState(settings_path=tmp_path / "settings.json")
     doc = SessionDoc(path=tmp_path / "sess",
                      meta=SessionMeta(project="24-117", sample_id="7718-A",
-                                      lot_number="L-1", operator="Tester"))
+                                      lot_number="L-1", operator="Tester"),
+                     px_per_um=8.0)      # the scale the results were measured with
     st.session = doc
 
     root = tmp_path / "ws" / "24-117" / "7718-A"
@@ -96,7 +97,7 @@ def test_collect_inputs_falls_back_to_session_ids_for_a_plain_single_lot_session
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))
     st = AppState(settings_path=tmp_path / "settings.json")
     doc = SessionDoc(path=tmp_path / "sess",
-                     meta=SessionMeta(sample_id="S-9", lot_number="L-9"))
+                     meta=SessionMeta(sample_id="S-9", lot_number="L-9"), px_per_um=8.0)
     st.session = doc
     for i in range(2):
         p, bgr, res = _result(tmp_path, seed=i + 1, name=f"plain_{i}.png")

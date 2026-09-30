@@ -7,8 +7,10 @@ of a given size.  Applying it to an image:
   image changes NOTHING on that image (the caller shows the message);
 * goes through the analysis lock (``AppState._guard``) like every scale /
   scan-area change, so images being analysed are never touched;
-* sets the image's own scale + scan area, stores the profile snapshot on the
-  image (saved in the manifest) and puts the image back to "Not analysed";
+* sets the image's own scale + scan area and stores the profile snapshot on
+  the image (saved in the manifest); an existing result is kept but becomes
+  "Needs re-analysis" while its scale / scan area differ
+  (``AppState.stale_reason``);
 * is ONE step on the undo stack (:class:`ProfileCommand`).
 """
 from __future__ import annotations
@@ -104,8 +106,9 @@ def apply_profile(state, profile: ResolutionProfile,
             else (0, 0, int(w), int(h))
         im.scan_source = PROFILE_SOURCE
         im.profile = dict(snap)
-        if im.status not in ("queued", "running"):
-            im.status, im.progress, im.message = "pending", 0, ""   # "Not analysed"
+        # an analysed image keeps its result, now out of date when the scale
+        # or scan area changed (AppState.stale_reason -- the one rule for
+        # profile and by-hand changes); nothing is deleted
     after = [_snap(im) for im, _f in ok]
     state.undo_stack.push(ProfileCommand(state, before, after,
                                          f"Apply profile '{profile.name}'"))

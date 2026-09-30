@@ -252,10 +252,16 @@ class ResultsTable(QWidget):
             r = im.result
             px = st.px_for(im)
             scan = st.scan_for(im)
+            stale = st.stale_reason(im)
+            if stale:
+                status = f"Needs re-analysis — {stale} changed"
+            elif im.result is not None and im.status == "done":
+                status = "Analysed"
+            else:
+                status = image_status(im)[1]
             out.append(dict(uid=im.uid, image=im.display_name, project=ids.get("project", ""),
                             sample=ids.get("sample", ""), lot=ids.get("lot", ""),
-                            status=("Analysed" if im.result is not None and
-                                    im.status == "done" else image_status(im)[1]),
+                            status=status, stale=stale,
                             scan=(f"{scan[2]} × {scan[3]} px" if scan else "Not set"),
                             scale=(1.0 / px if px > 0 else None),
                             grains=(r.grain_count if r is not None else None),
@@ -368,9 +374,12 @@ class ResultsTable(QWidget):
         self._apply_hidden(rows)
         self.tree.setSortingEnabled(True)
         self.tree.sortItems(sort_col if sort_col >= 0 else COL_IMAGE, order)
-        done = sum(1 for r in rows if r["grains"] is not None)
+        done = sum(1 for r in rows if r["grains"] is not None and not r.get("stale"))
+        stale = sum(1 for r in rows if r.get("stale"))
         lots = len({(r["project"], r["sample"], r["lot"]) for r in rows})
-        self.summary.setText(f"{len(rows)} images · {done} analysed · {lots} "
+        self.summary.setText(f"{len(rows)} images · {done} analysed · "
+                             + (f"{stale} need re-analysis · " if stale else "")
+                             + f"{lots} "
                              f"{hui.kind_label(self.state.profile, 'lot').lower()}"
                              f"{'s' if lots != 1 else ''}")
 
@@ -390,11 +399,20 @@ class ResultsTable(QWidget):
             it.setData(c, SORT_ROLE, v)
             it.setTextAlignment(c, Qt.AlignRight | Qt.AlignVCenter)
         it.setToolTip(COL_IMAGE, "Double-click to open this image")
+        if row.get("stale"):
+            from PySide6.QtGui import QBrush, QColor
+            from ui.design.theme import current_tokens
+            it.setForeground(COL_STATUS, QBrush(QColor(current_tokens().warning.fg)))
+            tip = (f"The {row['stale']} changed after this image was analysed: the "
+                   "numbers shown are from the old analysis and are left out of reports "
+                   "and exports. Analyse the image again (or undo the change).")
+            for c in (COL_STATUS, COL_SCALE, COL_SCAN, COL_GRAINS, COL_DIAM, COL_G):
+                it.setToolTip(c, tip)
         return it
 
     def _fill_group(self, g: QTreeWidgetItem, title: str, rows: List[dict], level: str) -> None:
         n = len(rows)
-        done = [r for r in rows if r["grains"] is not None]
+        done = [r for r in rows if r["grains"] is not None and not r.get("stale")]
         grains = sum(r["grains"] for r in done)
         gs = [r["g"] for r in done if r["g"] is not None]
         ds = [r["diam"] for r in done if r["diam"]]

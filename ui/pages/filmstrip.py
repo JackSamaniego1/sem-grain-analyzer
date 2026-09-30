@@ -29,7 +29,9 @@ _STATUS = {
 
 def status_text(im) -> tuple:
     kind, text = _STATUS.get(im.status, ("neutral", im.status))
-    if im.status == "done" and im.result is not None:
+    if im.status == "done" and im.result is not None and getattr(im, "stale", ""):
+        kind, text = "warning", "Needs re-analysis"
+    elif im.status == "done" and im.result is not None:
         text = f"{fmt_int(im.result.grain_count)} grains"
     elif im.status == "running":
         text = f"Analysing {im.progress} %"

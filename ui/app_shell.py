@@ -774,8 +774,9 @@ class AppShell(QMainWindow):
         toast when the files are written."""
         from ui.pages import report_builder as rb
         st, r = self.state, self.reports
-        if st.session is None or not any(im.result is not None for im in st.images()):
-            self.toasts.show_toast("No results to report", "Analyse images first.", "info")
+        if st.session is None or not rb.analysed_count(st):
+            self.toasts.show_toast("No results to report",
+                                   rb.stale_note(st) or "Analyse images first.", "info")
             return
         # several lots loaded: always the multi-lot report (a selection of one
         # lot of them gives that lot only, still with Job / Part / Lot columns)
@@ -810,9 +811,16 @@ class AppShell(QMainWindow):
             return
         self.analyze.table.set_report_busy(False)
 
+    def _has_reportable(self) -> bool:
+        from ui.pages import report_builder as rb
+        if rb.analysed_count(self.state):
+            return True
+        self.toasts.show_toast("No results to export",
+                               rb.stale_note(self.state) or "Analyse images first.", "info")
+        return False
+
     def export_all_excel(self, only_current: bool = False) -> None:
-        if not any(im.result is not None for im in self.state.images()):
-            self.toasts.show_toast("No results to export", "Analyse images first.", "info")
+        if not self._has_reportable():
             return
         self.reports.quick_export("xlsx", only_current=only_current)
 
@@ -820,8 +828,7 @@ class AppShell(QMainWindow):
         self.export_all_excel(only_current=True)
 
     def export_pptx(self) -> None:
-        if not any(im.result is not None for im in self.state.images()):
-            self.toasts.show_toast("No results to export", "Analyse images first.", "info")
+        if not self._has_reportable():
             return
         self.reports.quick_export("pptx")
 
