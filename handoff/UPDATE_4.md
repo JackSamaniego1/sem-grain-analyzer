@@ -51,3 +51,24 @@ The user numbered two items "8"; they are renumbered 1–12 here.
 - Q4. #2: should dropped images be **copied** into the lot folder (suggested) or only linked?
 - Q5. #7: lock during analysis **always**, or only on low-spec PCs (auto-detected cores/RAM)? Suggest: always lock grain editing during analysis, with "Continue anyway" + "don't warn again".
 - Q6. #5: is a profile tied to instrument + magnification (auto-suggest a matching profile), or chosen purely by hand?
+
+## Execution checklist (coordinator keeps this current; user gets a copy after every finished item)
+Rules: Fable coordinates only and implements nothing except #12 (one-time exception, last). Every item = agent on its pinned model → tests → code-reviewer → commit → `/save-handoff` → checklist to user.
+
+- [ ] 1  New Lot/Part: multiple boxes, stay on page, keep data
+- [ ] 2  Drag images from a folder into a lot (copied into the job folder)
+- [ ] 3  Image checkboxes + "Analyze selected"
+- [ ] 6  Unit dropdown for scale length + highlight the length box after auto-find
+- [ ] 9  Overlay opacity slider (top-right of image, Analyze + Review)
+- [ ] 13 Review image list grouped Job › Part › Lot like Analyze
+- [ ] 14 Display mode (Original/Overlay) persists across images
+- [ ] 16 Units & bins bug (nm² → µm² rescales; more bins = narrower bins)
+- [ ] 10a Remove the "AI runs on CPU" tile
+- [ ] 11 Auto-fill magnification / instrument / kV / WD from JEOL + Thermo metadata
+- [ ] 4  Read scale-bar label (value + unit) with bundled offline OCR — needs user's test images
+- [ ] 5  Resolution Profiles sidebar card (manual selection)
+- [ ] 15 Lot Summary page: fix blank preview; mock-ups → bar+trendline lot charts + job summary
+- [ ] 7  Stability during analysis on weak CPUs; lock with "Continue anyway"
+- [ ] 8  Review: "Add grain" tool (split-tool drawing style)
+- [ ] 10b AI-Assisted (GPU) / (CPU) modes + CUDA installer
+- [ ] 12 Fable: speed & usability optimisation, faster detection without accuracy loss — LAST
