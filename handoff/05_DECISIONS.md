@@ -103,6 +103,18 @@ Context: UPDATE 4 item 10b depends on GPU confirmation. User feedback 2026-09-29
 ### D-33 · 2026-09-29 · accepted (user) — Item 4 sample images supplied; copy to scratch/real_sem/
 Context: UPDATE 4 item 4 (OCR of scale-bar label) requires real SEM images for tuning RapidOCR. User supplied two images 2026-09-29: (1) JEOL 1280×1024 with black bar bottom ~64 px, "100nm JEOL" label, small solid scale rectangle; (2) Thermo Phenom-style 1080×717 with tick-marked scale "15 µm". Decision: **Copy both files to C:\Users\saman\GRAIN ANALYSIS TOOL\scratch\real_sem\.** detection-engineer tunes RapidOCR on these images for item 4 implementation. Consequences: item 4 (OCR) unblocked; real-image validation test data in place.
 
+### D-34 · 2026-09-30 · accepted (user) — Keep BOTH opacity controls
+Context: UPDATE 4 item 9 (overlay opacity slider in top-right pill) overlaps with existing Analyze settings opacity control. User decision 2026-09-30: keep both (pill for quick adjustment, side-panel slider for detailed). Decision: **Retain both opacity controls.** Pill and slider share the same value (persisted). Consequences: users have UI option for fast or detailed opacity adjustment; no feature removal; new pill is Overlay view only (Analyze + Review tabs).
+
+### D-35 · 2026-09-30 · accepted (user) — GPU option ships as SEPARATE installer file
+Context: UPDATE 4 item 10b (GPU/CUDA support). CUDA torch 2.5 GB wheel adds ~2.5 GB to the installer (total ~3.2 GB). User decision 2026-09-30: ship GPU as optional extra. Decision: **GrainAnalyzer_GPU_Pack.exe is a separate file on GitHub Release** (alongside main GrainAnalyzer_Setup.exe). Main installer: asks "Install GPU acceleration?" → auto-detects pack file in $EXEDIR (same folder as setup exe); if not found, offers Browse button to locate the file. Base installer shows notice when replacing a prior GPU-pack install. Consequences: users choose GPU support at install time; 644 MB base installer stays lean; larger pack is opt-in for work PCs with NVIDIA GPUs.
+
+### D-36 · 2026-09-30 · accepted (user) — App is "universal": GPU if available, CPU otherwise
+Context: UPDATE 4 item 10b design for flexibility. User decision 2026-09-30: one app works everywhere. Decision: **Single GrainAnalyzer executable runs on any PC.** Uses NVIDIA GPU when available and working (via `core/ai_device.py ai_devices()` + resolve_device). On GPU unavailable, GPU OOM, or GPU fault → falls back to CPU automatically (no user intervention). DetectionParams.sam_device="auto" (default). Results record ai_device / ai_device_fallback / ai_device_note for audit. Consequences: installer choice (GPU pack present/absent) determines whether GPU is available; app auto-adapts at runtime; no CPU-only vs GPU-only build distinction.
+
+### D-37 · 2026-09-30 · accepted (user) — JEOL 110–135 mm check stays as is
+Context: UPDATE 4 item 4 (OCR) performs scale-bar text reading + cross-checks against metadata (when both exist). User supplied JEOL image at 100 nm; no images at other magnifications. User decision 2026-09-30: no multi-magnification testing needed. Decision: **JEOL 110–135 mm dynamic range check stays as is** in core/scale_bar.py find_scale_bar_candidates. On mismatch with metadata, app asks user to confirm (never silently wrong). Consequences: no additional validation code; JEOL images keep existing safeguard; real-world testing can refine if more magnifications are supplied later.
+
 
 
 

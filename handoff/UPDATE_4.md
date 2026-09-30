@@ -70,15 +70,15 @@ Rules: Fable coordinates only and implements nothing except #12 (one-time except
 - [x] 16 Units & bins bug (nm² → µm² rescales; more bins = narrower bins) (e09677f)
 - [x] 18 PPTX percentile slide: D10 / D50 (median) / D90 per part and lot (fa6c95f)
 
-**Batch 2 in progress (2026-09-30):**
+**Batch 2 complete (2026-09-30):**
 - [x] 6  Unit dropdown for scale length + highlight the length box after auto-find (7a70d74)
 - [x] 14 Display mode (Original/Overlay) persists across images (7a70d74)
 - [x] 10a Remove the "AI runs on CPU" tile (7a70d74)
 - [x] 17 PPTX distribution slides: per-lot area + diameter bars with trendline; lot-to-lot comparison (83a864e)
-- [x] 4  Read scale-bar label (value + unit) with bundled offline OCR (core 8a059e0 reviewed: JEOL 100 nm, Thermo 100 µm, vendor logo + beam current; UI wiring queued after 9/13)
-- [ ] 9  Overlay opacity slider (top-right of image, Analyze + Review) — in progress
-- [ ] 13 Review image list grouped Job › Part › Lot like Analyze — in progress
-- [ ] 19 PPTX contents page as slide 2 with links — in progress
+- [~] 4  Read scale-bar label (value + unit) with bundled offline OCR — core 8a059e0 reviewed (JEOL 100 nm, Thermo 100 µm, vendor logo + beam current); **UI wiring in Automatic mode pending**
+- [x] 9  Overlay opacity slider (top-right of image, Analyze + Review) (4127728)
+- [x] 13 Review image list grouped Job › Part › Lot like Analyze (4127728)
+- [x] 19 PPTX contents page as slide 2 with links (1c3eec9)
 
 **Batch 2 onwards / batch 3:**
 - [ ] 11 Auto-fill magnification / instrument / kV / WD from JEOL + Thermo metadata (after item 4 UI wiring)
@@ -86,5 +86,5 @@ Rules: Fable coordinates only and implements nothing except #12 (one-time except
 - [ ] 15 Lot Summary page: fix blank preview; bar+trendline lot charts + job summary (unblocked D-31: build now, user reviews when testing)
 - [ ] 7  Stability during analysis on weak CPUs; lock with "Continue anyway"
 - [ ] 8  Review: "Add grain" tool (split-tool drawing style)
-- [ ] 10b AI-Assisted (GPU) / (CPU) modes + CUDA installer (unblocked D-32: NVIDIA confirmed)
+- [~] 10b AI-Assisted (GPU) / (CPU) modes + CUDA installer — core 822bfb3 + packaging fcf57cc done (GPU device resolution, scaffolding); **UI modes + installer GPU-pack page + trial build pending** (unblocked D-32: NVIDIA confirmed)
 - [ ] 12 Fable: speed & usability optimisation, faster detection without accuracy loss — LAST

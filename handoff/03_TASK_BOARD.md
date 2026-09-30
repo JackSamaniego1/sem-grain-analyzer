@@ -152,17 +152,17 @@ See handoff/UPDATE_4.md: 19 items, 3 batches, execution checklist.
 | 16 | Units & bins bug (nm²↔µm² rescale) | report-engineer | done | e09677f |
 | 18 | PPTX percentile slide (D10/D50/D90) | report-engineer | done | fa6c95f + 2ce1e24 |
 
-**Batch 2 (in progress / done 2026-09-30):**
+**Batch 2 (complete 2026-09-30):**
 | # | Item | Owner | Status | Notes |
 |---|------|-------|--------|-------|
 | 6 | Scale length units dropdown + highlight | ui-designer | done | 7a70d74; nm/µm/mm dropdown, accent pulse, focus after auto-find |
 | 14 | Display mode persists across images | ui-designer | done | 7a70d74 |
 | 10a | Remove CPU tile from Analyze | detection-engineer | done | 7a70d74 |
 | 17 | PPTX distribution slides per lot + lot-to-lot | report-engineer | done | 83a864e; area+diameter bars+KDE; comparison slide stacked |
-| 4 | Scale-bar label OCR (JEOL + Thermo) | detection-engineer | done | 8a059e0 core reviewed; JEOL 100 nm (32 px, 0.94 conf), Thermo 100 µm (279 px, 0.97 conf), vendor logo + beam current parsed; UI wiring queued after 9/13 |
-| 9 | Overlay opacity slider (top-right image) | ui-designer | doing | Analyze + Review tabs |
-| 13 | Review image list grouped Job › Part › Lot | ui-designer | doing | Reuse ImageTree component |
-| 19 | PPTX contents page as slide 2 with links | report-engineer | doing | Page numbers/ranges, clickable links; do after 17+18 |
+| 4 | Scale-bar label OCR (JEOL + Thermo) | detection-engineer | review | 8a059e0 core reviewed; JEOL 100 nm (32 px, 0.94 conf), Thermo 100 µm (279 px, 0.97 conf), vendor logo + beam current parsed; **UI wiring in Automatic mode pending** |
+| 9 | Overlay opacity slider (top-right image) | ui-designer | done | 4127728; Analyze + Review tabs, shared persisted value, Overlay view only |
+| 13 | Review image list grouped Job › Part › Lot | ui-designer | done | 4127728; reused ImageTree component, folder nesting, image stepping |
+| 19 | PPTX contents page as slide 2 with links | report-engineer | done | 1c3eec9; page numbers, collapsed ranges, clickable links, Grain Size Summary now slide 3 |
 
 **Batch 3 (parallel: reports + core):**
 | # | Item | Owner | Status | Notes |
@@ -170,7 +170,7 @@ See handoff/UPDATE_4.md: 19 items, 3 batches, execution checklist.
 | 15 | Lot summary charts (bar+trendline) | report-engineer | todo | **Unblocked (D-31)**: build now, user reviews when testing |
 | 11 | Auto-fill mag/instrument/kV/WD from metadata | detection-engineer | todo | Parallel track after item 4 |
 | 5 | Resolution Profiles sidebar card | ui-designer + data-architect | todo | Batch 3 |
-| 10b | GPU/CUDA torch build + AI-Assisted modes | detection-engineer + build-engineer | todo | **Unblocked (D-32)**: NVIDIA GPU confirmed |
+| 10b | GPU/CUDA torch build + AI-Assisted modes | detection-engineer + build-engineer | review | 822bfb3 core + fcf57cc packaging done (device resolution, scaffolding OFF by default); **UI modes + installer GPU-pack page + trial build pending** (D-35, D-36) |
 | 7 | Stability on weak CPUs during analysis | opus | todo |  |
 | 8 | Review: "Add grain" tool | ui-designer + detection-engineer | todo |  |
 | 12 | Fable: speed & usability optimisation | fable | todo | LAST item |
