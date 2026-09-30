@@ -151,6 +151,53 @@ if not errorlevel 1 (
     echo [OK] Package created: GrainAnalyzer_Windows.zip
 )
 
+:: ------------------------------------------------------------
+:: OPTIONAL: GPU pack (decision D-32).  Run as:  BUILD_WINDOWS.bat gpu
+:: Builds a second bundle with the NVIDIA CUDA torch wheel (~2.6 GB
+:: download, build machine only), then packages only the files that differ
+:: from the CPU bundle into GrainAnalyzer_GPU_Pack.exe (must stay < 2 GB).
+:: The installed app stays fully offline; the pack is a second file on the
+:: flash drive that the user runs after GrainAnalyzer_Setup.exe.
+:: ------------------------------------------------------------
+if /I not "%~1"=="gpu" goto :gpu_done
+echo.
+echo [GPU] Installing CUDA torch (cu126) into the build environment...
+pip install --force-reinstall --no-deps -r requirements-gpu.txt
+if errorlevel 1 (
+    echo ERROR: Failed to install the CUDA torch wheels.
+    pause
+    exit /b 1
+)
+set "GA_TORCH_FLAVOR=cuda"
+echo [GPU] Building CUDA bundle into dist_gpu\ ...
+pyinstaller grain_analyzer.spec --clean --noconfirm --distpath dist_gpu --workpath build_gpu
+if errorlevel 1 (
+    echo ERROR: CUDA PyInstaller build failed.
+    pause
+    exit /b 1
+)
+set "GA_TORCH_FLAVOR="
+python make_gpu_pack.py dist\GrainAnalyzer dist_gpu\GrainAnalyzer dist_gpu_pack
+if errorlevel 1 (
+    echo ERROR: Could not assemble the GPU pack.
+    pause
+    exit /b 1
+)
+where makensis >nul 2>&1
+if errorlevel 1 (
+    echo NSIS not found - GPU pack files are in dist_gpu_pack\ but no installer was built.
+    goto :gpu_done
+)
+python create_gpu_pack_nsis.py dist_gpu_pack
+makensis installer_gpu_pack.nsi
+for %%F in (GrainAnalyzer_GPU_Pack.exe) do if %%~zF GEQ 2000000000 (
+    echo ERROR: GrainAnalyzer_GPU_Pack.exe is about 2 GB or larger - cannot be a single release asset.
+    pause
+    exit /b 1
+)
+echo [OK] GPU pack created: GrainAnalyzer_GPU_Pack.exe
+:gpu_done
+
 echo.
 echo ============================================================
 echo  BUILD COMPLETE!

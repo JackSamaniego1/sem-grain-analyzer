@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      build_gpu_pack:
+        description: "Also build the optional NVIDIA GPU pack (GrainAnalyzer_GPU_Pack.exe)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -72,18 +77,57 @@ jobs:
         run: |
           & "C:\Program Files (x86)\NSIS\makensis.exe" installer.nsi
 
+      - name: Check installer size (2 GB release-asset limit)
+        run: |
+          $n = (Get-Item GrainAnalyzer_Setup.exe).Length
+          Write-Host "GrainAnalyzer_Setup.exe = $([math]::Round($n/1MB)) MB"
+          if ($n -ge 2000000000) { Write-Error "Installer >= 2 GB: cannot be a GitHub release asset."; exit 1 }
+
+      # ---- Optional GPU pack (decision D-32). OFF by default: enable by
+      # setting the repository variable BUILD_GPU_PACK=true, or via the
+      # "Run workflow" button with build_gpu_pack ticked. Build-time only;
+      # the installed app never downloads anything.
+      - name: GPU pack - install CUDA torch (cu126)
+        if: ${{ inputs.build_gpu_pack == true || vars.BUILD_GPU_PACK == 'true' }}
+        run: pip install --force-reinstall --no-deps -r requirements-gpu.txt
+
+      - name: GPU pack - build CUDA bundle
+        if: ${{ inputs.build_gpu_pack == true || vars.BUILD_GPU_PACK == 'true' }}
+        env:
+          GA_TORCH_FLAVOR: cuda
+        run: pyinstaller grain_analyzer.spec --clean --noconfirm --distpath dist_gpu --workpath build_gpu
+
+      - name: GPU pack - diff against CPU bundle and create installer
+        if: ${{ inputs.build_gpu_pack == true || vars.BUILD_GPU_PACK == 'true' }}
+        run: |
+          python make_gpu_pack.py dist\GrainAnalyzer dist_gpu\GrainAnalyzer dist_gpu_pack
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python create_gpu_pack_nsis.py dist_gpu_pack
+          & "C:\Program Files (x86)\NSIS\makensis.exe" installer_gpu_pack.nsi
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $n = (Get-Item GrainAnalyzer_GPU_Pack.exe).Length
+          Write-Host "GrainAnalyzer_GPU_Pack.exe = $([math]::Round($n/1MB)) MB"
+          if ($n -ge 2000000000) { Write-Error "GPU pack >= 2 GB: cannot be a GitHub release asset."; exit 1 }
+
       - name: Upload to Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: GrainAnalyzer_Setup.exe
+          # The GPU pack is only present when the optional steps above ran.
+          # Keep fail_on_unmatched_files at its default (false) so a run
+          # without the pack still publishes GrainAnalyzer_Setup.exe.
+          files: |
+            GrainAnalyzer_Setup.exe
+            GrainAnalyzer_GPU_Pack.exe
 
       - name: Upload artifact (manual runs)
         if: "!startsWith(github.ref, 'refs/tags/')"
         uses: actions/upload-artifact@v4
         with:
           name: GrainAnalyzer-Windows-Setup
-          path: GrainAnalyzer_Setup.exe
+          path: |
+            GrainAnalyzer_Setup.exe
+            GrainAnalyzer_GPU_Pack.exe
           retention-days: 7
 
   build-macos:

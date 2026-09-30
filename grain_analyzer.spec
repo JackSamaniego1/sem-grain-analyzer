@@ -11,6 +11,11 @@ from version import __version__
 
 block_cipher = None
 
+# GPU edition switch (see the CUDA block below). UPX must never touch CUDA
+# DLLs (slow, and can corrupt their fat binaries).
+_IS_CUDA = os.environ.get('GA_TORCH_FLAVOR', 'cpu').lower() == 'cuda'
+_USE_UPX = not _IS_CUDA
+
 # Collect torch dynamic libs and data
 torch_datas = collect_data_files('torch', include_py_files=True)
 torch_hidden = collect_submodules('torch')
@@ -84,20 +89,54 @@ a = Analysis(
     cipher=block_cipher,
 )
 
+# ---------------------------------------------------------------------------
+# GPU (CUDA) edition support -- opt-in, the default build is unchanged.
+#   set GA_TORCH_FLAVOR=cuda   (only when the build venv has a +cuXXX torch)
+# Removes torch files that inference never needs. Verified on torch 2.14.0+cu126
+# (RTX 4080 SUPER, SAM vit_b AutomaticMaskGenerator + conv/convT/SDPA/inv):
+# these can go (~0.5 GB); everything else in torch/lib is a hard import of
+# torch_cuda.dll / torch_cpu.dll or lazily loaded by cuDNN and MUST stay
+# (cudnn_heuristic, cudnn_engines_runtime_compiled, cudnn_graph/ops/cnn,
+# cublas/cublasLt, cusparse, cusolver, cufft, curand, nvrtc, nvJitLink, cupti,
+# cudart). Do not trim further without re-running a GPU inference test.
+# ---------------------------------------------------------------------------
+if _IS_CUDA:
+    _TRIM_DLLS = {
+        'cusolvermg64_11.dll', 'cusolvermg64_12.dll',   # multi-GPU solver
+        'cufftw64_11.dll', 'cufftw64_12.dll',           # FFTW-compat shim
+        'nvperf_host.dll',                              # profiler backend
+        'nvtoolsext64_1.dll',                           # NVTX profiling
+        'cudnn_adv64_9.dll',                            # cuDNN RNN/attention, unused
+        'libiompstubs5md.dll',
+    }
+
+    def _keep_cuda(entry):
+        dest = entry[0].replace('\\', '/').lower()
+        base = dest.rsplit('/', 1)[-1]
+        if base in _TRIM_DLLS or base.endswith('.alt.dll'):
+            return False
+        if dest.startswith('torch/') and (base.endswith('.lib') or
+                                          dest.startswith('torch/include/')):
+            return False
+        return True
+
+    a.binaries = [e for e in a.binaries if _keep_cuda(e)]
+    a.datas = [e for e in a.datas if _keep_cuda(e)]
+
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
     pyz, a.scripts, [],
     exclude_binaries=True,
     name='GrainAnalyzer',
-    debug=False, strip=False, upx=True,
+    debug=False, strip=False, upx=_USE_UPX,
     console=False,
     icon='resources/icon.ico',
 )
 
 coll = COLLECT(
     exe, a.binaries, a.zipfiles, a.datas,
-    strip=False, upx=True, name='GrainAnalyzer',
+    strip=False, upx=_USE_UPX, name='GrainAnalyzer',
 )
 
 if sys.platform == 'darwin':

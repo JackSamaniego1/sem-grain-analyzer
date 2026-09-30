@@ -63,9 +63,28 @@ tifffile (installed as a scikit-image dependency)
 Licence: BSD 3-Clause
 Upstream: https://github.com/cgohlke/tifffile
 --------------------------------------------------------------------------
-PyTorch (torch, torchvision) — CPU-only build
+PyTorch (torch, torchvision) — CPU-only build in GrainAnalyzer_Setup.exe
 Licence: BSD 3-Clause
 Upstream: https://pytorch.org/
+--------------------------------------------------------------------------
+NVIDIA CUDA runtime + cuDNN (ONLY in the optional GrainAnalyzer_GPU_Pack.exe)
+Licence: NVIDIA proprietary -- NOT an open-source / permissive licence.
+  The GPU pack overlays the official PyTorch "+cu126" Windows wheels, which
+  bundle these NVIDIA redistributable runtime libraries unmodified (subset
+  trimmed, never altered): cudart, cuBLAS/cuBLASLt, cuFFT, cuRAND, cuSOLVER,
+  cuSPARSE, NVRTC, nvJitLink, CUPTI (CUDA Toolkit) and cuDNN 9.
+  Terms: NVIDIA CUDA Toolkit End User License Agreement, Attachment A
+  ("Redistributable Software"), and the NVIDIA cuDNN Software License
+  Agreement. In summary they permit redistributing the listed runtime files
+  unmodified, inside an application with added functionality, provided the
+  recipient is bound to terms at least as protective of NVIDIA (no reverse
+  engineering / no standalone redistribution). This is the same basis on
+  which PyTorch itself ships them. Status: believed permitted but it is a
+  proprietary licence and needs the project owner's explicit sign-off
+  (decision D-32) before the pack is published; the full EULA texts
+  (https://docs.nvidia.com/cuda/eula/ , cuDNN SLA on developer.nvidia.com)
+  must be reviewed and attached to the pack before release.
+  The base installer contains none of these files.
 --------------------------------------------------------------------------
 segment-anything
 Licence: Apache License 2.0

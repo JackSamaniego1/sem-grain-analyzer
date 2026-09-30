@@ -1,0 +1,17 @@
+# GPU (NVIDIA CUDA) edition of torch -- BUILD MACHINES / CI ONLY.
+# The installed app never downloads anything; these wheels (and the CUDA/cuDNN
+# runtime DLLs inside them) are bundled into the "GPU pack" at build time.
+#
+# Install AFTER requirements.txt, instead of the CPU wheel:
+#   pip install --force-reinstall --no-deps -r requirements-gpu.txt
+# then build with  set GA_TORCH_FLAVOR=cuda  (see BUILD_WINDOWS.bat gpu).
+#
+# cu126 chosen (torch 2.14.0 is published for cu126 and cu130 only):
+#   - Windows driver >= 560.76 (>= 528.33 works through CUDA 12 minor-version
+#     compatibility); covers Maxwell/Pascal/Volta/Turing/Ampere/Ada/Hopper.
+#   - NOT included: Blackwell (RTX 50xx, sm_120) -> the app must fall back to CPU.
+#   - cu130 is ~25% smaller but needs driver >= 580 and drops pre-Turing cards.
+# Keep the torch/torchvision versions identical to the CPU build.
+--extra-index-url https://download.pytorch.org/whl/cu126
+torch==2.14.0+cu126
+torchvision==0.29.0+cu126

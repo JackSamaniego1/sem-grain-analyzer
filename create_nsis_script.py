@@ -46,9 +46,18 @@ RequestExecutionLevel admin
 !insertmacro MUI_LANGUAGE "English"
 
 Section "Main Application" SecMain
+  ; GPU pack (optional second installer) present from an earlier install?
+  ; Re-installing overwrites its CPU-named files with CPU ones and leaves a
+  ; mixed folder until the pack is run again (nothing is deleted here).
+  ReadRegStr $R0 HKLM "${INSTALL_REG_KEY}" "GpuPack"
+
   SetOutPath "$INSTDIR"
   File /r "dist\${APP_DIR}\*.*"
   File "THIRD_PARTY_LICENSES.txt"
+  DeleteRegValue HKLM "${INSTALL_REG_KEY}" "GpuPack"
+  StrCmp $R0 "" nogpupack
+  MessageBox MB_OK|MB_ICONINFORMATION "The earlier GPU pack was replaced by this standard install. To use the NVIDIA GPU again, run GrainAnalyzer_GPU_Pack.exe once more after this setup finishes." /SD IDOK
+nogpupack:
 
   ; Write registry for Add/Remove Programs
   WriteRegStr HKLM "${INSTALL_REG_KEY}" "DisplayName" "${APP_NAME}"
