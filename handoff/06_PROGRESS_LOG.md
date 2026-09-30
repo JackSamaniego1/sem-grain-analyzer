@@ -198,3 +198,12 @@
   - Per-image data tables: restyled in same table format as summary, max 14 rows per slide with "(continued n/m)" and repeated header, all existing columns + Median area + ASTM G added, no red rows.
 - **Still open**: User's Excel complaints (asked which sheet/column issues matter most; no answer yet).
 - **Next**: (1) User approves mockup v2 → (2) implement via report-engineer with tests (v3.0.1) → (3) address Excel priorities in follow-up batch.
+
+## 2026-09-29 — REP-DESIGN-01 implemented; UPDATE 4 handoff ready
+- **REP-DESIGN-01 DONE (8c5b728, 169f762)**: PPTX slide 2 summary table one-row-per-part + three bar charts (G/diameter/area) + per-image table pagination (14 rows max, "(continued n/m)" header) implemented; Excel auto-width Lot column; 862 tests passing; code-reviewer approved.
+- **Excel export fix (3a7c6e2)**: Duplicate sheet names (case-insensitive) no longer crash; backwards-compatible.
+- **v3.0.1 released to production**: user tested on lab PC, offline, no network egress.
+- **UPDATE 4 checklist locked**: 16 items with user answers; batch 1 (items 1,2,3,6,9,13,14,16,10a) ready for team dispatch; items 4 (OCR), 15 (mockups), 10b (GPU) await user; items 5,7,8,11,12,15 batched separately.
+- **Handoff prepared**: SESSION_STATE.md refreshed; UPDATE_4.md execution checklist armed; team roster ready; next action on resume: read UPDATE_4.md and delegate batch 1.
+- **Full suite**: 862 tests pass / 0 fail. Offline guard clean. Windows installer builds locally.
+- **Next**: Coordinator resumes → reads UPDATE_4.md → dispatches batch 1 agents → after each item: tests → review → commit → save-handoff → tick box.
