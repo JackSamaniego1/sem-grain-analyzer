@@ -26,6 +26,27 @@ MODES = [
 MODE_KEYS = tuple(m[0] for m in MODES)
 SAM_CHECKPOINT = "sam_vit_b_01ec64.pth"
 
+# UPDATE 4 item 10b: the AI-assisted entry is shown as two choices, one per
+# compute device.  The detection mode stays AI_MODE ("sam_astm", so saved
+# sessions load unchanged); the device goes to DetectionParams.sam_device.
+AI_DEVICES = ("gpu", "cpu")
+AI_DEVICE_TITLES = {"gpu": "AI-Assisted (GPU)", "cpu": "AI-Assisted (CPU)"}
+AI_DEVICE_DESC = {
+    "gpu": "Segment-Anything model + ASTM E112 refinement on the NVIDIA graphics card. "
+           "Most accurate; fast",
+    "cpu": "Segment-Anything model + ASTM E112 refinement on the processor. "
+           "Most accurate; slowest",
+}
+
+
+def normalize_ai_device(choice) -> str:
+    """"gpu" | "cpu" | "" (no preference) from a saved value ("cuda", "GPU",
+    "auto", None ...)."""
+    c = str(choice or "").strip().lower()
+    if c in ("gpu", "cuda", "nvidia"):
+        return "gpu"
+    return "cpu" if c == "cpu" else ""
+
 
 def sam_model_available() -> bool:
     """The bundled AI model file is present (never downloaded)."""
@@ -52,4 +73,5 @@ def normalize_mode(mode: str) -> str:
 
 
 __all__ = ["MODES", "MODE_KEYS", "AI_MODE", "FALLBACK_MODE", "sam_model_available",
-           "default_mode", "normalize_mode"]
+           "default_mode", "normalize_mode", "AI_DEVICES", "AI_DEVICE_TITLES",
+           "AI_DEVICE_DESC", "normalize_ai_device"]

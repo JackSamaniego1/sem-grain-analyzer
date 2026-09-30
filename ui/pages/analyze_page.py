@@ -39,8 +39,9 @@ from ui.canvas import GrainCanvas
 from ui.canvas.edit_actions import GrainEditController
 from ui.design import icons
 from ui.design.tokens import SPACE
-from ui.detection_modes import AI_MODE, MODES, default_mode, normalize_mode, \
-    sam_model_available
+from ui.ai_probe import device_probe, gpu_tooltip
+from ui.detection_modes import AI_DEVICE_DESC, AI_DEVICE_TITLES, AI_DEVICES, AI_MODE, \
+    FALLBACK_MODE, MODES, default_mode, normalize_ai_device, normalize_mode, sam_model_available
 from ui.format import astm_g, fmt_int, fmt_px_per_um
 from ui.pages.common import CardGrid, MetricCard, Panel, SelectableCard, scroll
 from ui.pages.filter_card import FilterCard, Reveal
@@ -69,13 +70,21 @@ __all__ = ["AnalyzePage", "ParamPanel", "SetupTile", "ModeCard", "GATE_TEXT", "M
 
 #: UX-09: coalescing delay for per-image summary refreshes.
 SUMMARY_DEBOUNCE_MS = 100
+#: UPDATE 4 item 10b: the (slow) AI device probe starts after the window shows
+DEVICE_PROBE_DELAY_MS = 1500
+
+AI_MISSING_TIP = ("The AI model file is missing from this installation. "
+                  "Reinstall or repair the application to enable it.")
+
 
 class ModeCard(SelectableCard):
     def __init__(self, key: str, title: str, icon: str, desc: str, available: bool = True,
-                 parent=None) -> None:
+                 parent=None, device: str = "") -> None:
         super().__init__(parent=parent)
         self.key = key
+        self.device = device                 # "gpu" | "cpu" for the AI-assisted entries
         self.available = available
+        self.setAccessibleName(title)
         self.body_layout().setSpacing(SPACE.xs)
         top = QHBoxLayout()
         top.setSpacing(SPACE.sm)
@@ -83,20 +92,64 @@ class ModeCard(SelectableCard):
         ic.setPixmap(icons.pixmap(icon, 18))
         top.addWidget(ic)
         top.addWidget(label(title, "body_strong"), 1)
+        self.badge = Badge("", "neutral")
+        self.badge.hide()
+        top.addWidget(self.badge)
         if not available:
-            top.addWidget(Badge("Not installed", "warning"))
-        elif key == AI_MODE:
-            top.addWidget(Badge("Default", "accent"))
+            self.set_badge("Not installed", "warning")
+        elif key == AI_MODE and not device:
+            self.set_badge("Default", "accent")
         self.body_layout().addLayout(top)
         d = label(desc, "caption")
         d.setWordWrap(True)
         self.body_layout().addWidget(d)
         self.body_layout().setContentsMargins(0, 0, 0, 0)
         self.layout().setContentsMargins(SPACE.md + 2, SPACE.sm + 2, SPACE.md, SPACE.sm + 2)
-        tip = desc if available else ("The AI model file is missing from this installation. "
-                                      "Reinstall or repair the application to enable it.")
-        self.setToolTip(tip)
+        self.setToolTip(desc if available else AI_MISSING_TIP)
         self.setEnabled(available)
+
+    def set_badge(self, text: str, kind: str = "neutral") -> None:
+        self.badge.set_text(text)
+        self.badge.set_kind(kind)
+        self.badge.setVisible(bool(text))
+
+
+class AiModeGroup(QWidget):
+    """UPDATE 4 item 10b: the AI-assisted entry as two cards, "AI-Assisted
+    (GPU)" and "AI-Assisted (CPU)".  Behaves like one ModeCard for the panel
+    (``available`` / ``set_selected``); the chosen device is highlighted."""
+
+    def __init__(self, available: bool, parent=None) -> None:
+        super().__init__(parent)
+        self.key = AI_MODE
+        self.available = available
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(SPACE.sm)
+        self.cards: Dict[str, ModeCard] = {}
+        for dev in AI_DEVICES:
+            c = ModeCard(AI_MODE, AI_DEVICE_TITLES[dev], f"device_{dev}", AI_DEVICE_DESC[dev],
+                         available=available, device=dev)
+            c.setObjectName(f"aiMode_{dev}")
+            self.cards[dev] = c
+            v.addWidget(c)
+        self._device = "cpu"
+        self._selected = False
+        if not available:
+            self.setToolTip(AI_MISSING_TIP)
+        self.setEnabled(available)
+
+    def set_device(self, device: str) -> None:
+        self._device = device if device in self.cards else "cpu"
+        self.set_selected(self._selected)
+
+    def set_selected(self, on: bool) -> None:
+        self._selected = bool(on)
+        for dev, c in self.cards.items():
+            c.set_selected(self._selected and dev == self._device)
+
+    def is_selected(self) -> bool:
+        return self._selected
 
 
 class ParamPanel(QWidget):
@@ -105,24 +158,34 @@ class ParamPanel(QWidget):
 
     changed = Signal()
     mode_changed = Signal(str)
+    device_changed = Signal(str)          # UPDATE 4 item 10b: "gpu" | "cpu" picked by the user
     show_excluded_regions = Signal(bool)
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, probe=None) -> None:
         super().__init__(parent)
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(SPACE.md)
         self._mode = default_mode()
+        self._device_pref = ""            # "gpu" | "cpu" | "" (fresh install)
+        self._probe = probe if probe is not None else device_probe()
 
         self.sec_mode = CollapsibleSection("Detection mode", expanded=True)
         grid = QVBoxLayout()
         grid.setSpacing(SPACE.sm)
         grid.setContentsMargins(0, 0, 0, 0)
-        self.mode_cards: Dict[str, ModeCard] = {}
+        self.mode_cards: Dict[str, QWidget] = {}
+        self.device_cards: Dict[str, ModeCard] = {}
         sam_ok = sam_model_available()
         for key, title, ic, desc in MODES:
-            c = ModeCard(key, title, ic, desc, available=(key != AI_MODE or sam_ok))
-            c.clicked.connect(lambda k=key: self.set_mode(k, emit=True))
+            if key == AI_MODE:
+                c = AiModeGroup(available=sam_ok)
+                for dev, card in c.cards.items():
+                    card.clicked.connect(lambda d=dev: self.choose_device(d))
+                self.device_cards = c.cards
+            else:
+                c = ModeCard(key, title, ic, desc, available=True)
+                c.clicked.connect(lambda k=key: self.set_mode(k, emit=True))
             self.mode_cards[key] = c
             grid.addWidget(c)
         host = QWidget()
@@ -221,6 +284,94 @@ class ParamPanel(QWidget):
             cb.toggled.connect(self._changed)
         self._loading = False
         self.set_params(DetectionParams(detection_mode=default_mode()))
+        # UPDATE 4 item 10b: which device can run the AI model is probed in
+        # the background (PyTorch loads slowly); the GPU entry updates when
+        # the answer arrives.  Started after the window has painted.
+        self._probe.ready.connect(self._on_device_info)
+        self._apply_device_state()
+        if sam_ok and self._probe.info() is None:
+            QTimer.singleShot(DEVICE_PROBE_DELAY_MS, self._probe.start)
+
+    # ------------------------------------------------------------ AI device (item 10b)
+    def _device_info(self):
+        return self._probe.info()
+
+    def device(self) -> str:
+        """The highlighted AI device: "gpu" | "cpu".  A saved "gpu" on a PC
+        whose graphics card cannot be used shows (and runs) "cpu"."""
+        info, pref = self._device_info(), self._device_pref
+        if info is None:                          # still checking
+            return "gpu" if pref == "gpu" else "cpu"
+        if not getattr(info, "gpu_available", False):
+            return "cpu"
+        return pref or "gpu"                      # fresh install: GPU when usable
+
+    def sam_device(self) -> str:
+        """Device handed to the detector (DetectionParams.sam_device).  While
+        the probe is still running a GPU choice is sent as "auto" so the
+        detector falls back to the CPU instead of failing."""
+        if self._device_info() is None and self._device_pref == "gpu":
+            return "auto"
+        return self.device()
+
+    def device_preference(self) -> str:
+        return self._device_pref
+
+    def set_device_preference(self, pref) -> None:
+        """Saved choice from the settings ("gpu" / "cpu" / "" = none yet)."""
+        self._device_pref = normalize_ai_device(pref)
+        self._apply_device_state()
+
+    def choose_device(self, dev: str) -> None:
+        """The user clicked "AI-Assisted (GPU)" or "(CPU)"."""
+        dev = normalize_ai_device(dev) or "cpu"
+        card = self.device_cards.get(dev)
+        if card is None or not card.isEnabled():
+            return
+        self._device_pref = dev
+        self._apply_device_state()
+        self.device_changed.emit(dev)
+        self.set_mode(AI_MODE, emit=True)
+
+    def recheck_device(self) -> None:
+        """Re-read the (cached) device answer in the background, e.g. after
+        the graphics card reported an error during a run."""
+        if sam_model_available():
+            self._probe.start(again=True)
+
+    def _on_device_info(self, _info) -> None:
+        self._apply_device_state()
+
+    def _apply_device_state(self) -> None:
+        grp = self.mode_cards.get(AI_MODE)
+        if not isinstance(grp, AiModeGroup) or not sam_model_available():
+            return
+        info = self._device_info()
+        gpu, cpu = self.device_cards["gpu"], self.device_cards["cpu"]
+        if info is not None and not getattr(info, "torch_available", True):
+            # the AI component itself is missing: both entries unavailable
+            reason = getattr(info, "gpu_reason", "") or AI_MISSING_TIP
+            for c in (gpu, cpu):
+                c.set_badge("Not installed", "warning")
+                c.setToolTip(reason)
+                c.setEnabled(False)
+            grp.available = False
+            grp.setToolTip(reason)
+            if self._mode == AI_MODE:
+                self.set_mode(FALLBACK_MODE, emit=True)
+            return
+        gpu_ok = info is not None and bool(getattr(info, "gpu_available", False))
+        gpu.setEnabled(info is None or gpu_ok)
+        gpu.setToolTip(gpu_tooltip(info))
+        if info is None:
+            gpu.set_badge("Checking…", "neutral")
+        elif gpu_ok:
+            gpu.set_badge("Default", "accent")
+        else:
+            gpu.set_badge("Not available", "neutral")
+        cpu.set_badge("Default" if info is not None and not gpu_ok else "", "accent")
+        cpu.setToolTip(AI_DEVICE_DESC["cpu"] + ". Works on every PC.")
+        grp.set_device(self.device())
 
     def _dspin(self, lo, hi, dec, step, tip) -> QDoubleSpinBox:
         s = QDoubleSpinBox()
@@ -239,6 +390,8 @@ class ParamPanel(QWidget):
         key = normalize_mode(key)
         if key not in self.mode_cards or not self.mode_cards[key].available:
             key = normalize_mode("")
+            if key not in self.mode_cards or not self.mode_cards[key].available:
+                key = FALLBACK_MODE
         self._mode = key
         for k, c in self.mode_cards.items():
             c.set_selected(k == key)
@@ -282,6 +435,8 @@ class ParamPanel(QWidget):
             use_watershed=self.watershed.isChecked(), edge_sensitivity=self.edge.value(),
             use_adaptive=self.adaptive.isChecked(), use_clahe=self.clahe.isChecked(),
             clahe_clip_limit=self.clahe_clip.value(), detection_mode=self._mode)
+        if hasattr(p, "sam_device"):                 # UPDATE 4 item 10b
+            p.sam_device = self.sam_device()
         for name, w in (("invalid_intensity_threshold", self.inv_thr),
                         ("invalid_min_width_px", self.inv_w), ("invalid_min_area_px", self.inv_a)):
             if hasattr(p, name):
@@ -351,9 +506,13 @@ class SetupTile(Card):
         b.addLayout(row)
 
         self.bar_row = QWidget()
-        br = QHBoxLayout(self.bar_row)
+        bcol = QVBoxLayout(self.bar_row)
+        bcol.setContentsMargins(0, 0, 0, 0)
+        bcol.setSpacing(SPACE.xs)
+        br = QHBoxLayout()
         br.setContentsMargins(0, 0, 0, 0)
         br.setSpacing(SPACE.sm)
+        bcol.addLayout(br)
         self.bar_lbl = label("", "caption")
         br.addWidget(self.bar_lbl)
         # UPDATE 4 item 6: the number and its unit are separate controls
@@ -386,8 +545,29 @@ class SetupTile(Card):
         self.btn_bar.clicked.connect(self._apply_bar_length)
         self.bar_len.lineEdit().returnPressed.connect(self._apply_bar_length)
         br.addWidget(self.btn_bar)
+        # UPDATE 4 item 4: what was read from the label, and whether it needs a look
+        hl = QHBoxLayout()
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(SPACE.sm)
+        self.bar_check = Badge("Please check", "warning", dot=True)
+        self.bar_check.setToolTip("The length was read from the image automatically. "
+                                  "Compare it with the label next to the scale bar.")
+        self.bar_check.hide()
+        hl.addWidget(self.bar_check, 0, Qt.AlignTop)
+        self.bar_hint = label("", "caption")
+        self.bar_hint.setObjectName("barReadHint")
+        self.bar_hint.setWordWrap(True)
+        self.bar_hint.hide()
+        hl.addWidget(self.bar_hint, 1)
+        bcol.addLayout(hl)
         self.bar_row.hide()
         b.addWidget(self.bar_row)
+        # a length the operator is typing is never replaced by a refresh or a
+        # label read for the same image (UPDATE 4 item 4)
+        self._uid = None
+        self._typed_uid = None
+        self.bar_len.valueChanged.connect(self._on_typed)
+        self.bar_unit.currentIndexChanged.connect(self._on_typed)
         self._attention_pending = False       # follow-up b: pulse once the row shows
         self._attention_timer = QTimer(self)
         self._attention_timer.setSingleShot(True)
@@ -432,7 +612,79 @@ class SetupTile(Card):
     def _apply_bar_length(self) -> None:
         um = self.bar_length_um()
         if um > 0:
+            self._typed_uid = None                 # now it is the image's value
             self.bar_length_entered.emit(um, self.bar_same.isChecked())
+
+    def _on_typed(self, *_a) -> None:
+        # programmatic fills block signals, so this is the operator
+        self._typed_uid = self._uid
+
+    def is_typing(self) -> bool:
+        """The operator has typed a length for the shown image that is not
+        applied yet."""
+        return self._typed_uid is not None and self._typed_uid == self._uid
+
+    def set_bar_length(self, value: float, unit: str) -> None:
+        """Fill number + unit exactly as printed on the label ("100 nm")."""
+        if unit not in LENGTH_UNITS or value <= 0:
+            self.set_bar_length_um(_to_um(value, unit) if unit in LENGTH_UNITS else 0.0)
+            return
+        self.bar_len.blockSignals(True)
+        self.bar_unit.blockSignals(True)
+        self.bar_unit.setCurrentText(unit)
+        set_length_value(self.bar_len, value)
+        self.bar_len.blockSignals(False)
+        self.bar_unit.blockSignals(False)
+
+    def _show_reading(self, im, px: float) -> None:
+        """UPDATE 4 item 4: fill the length from the label read off the image
+        (unless the operator is typing) and say plainly when it needs a
+        look.  Returns nothing; sets the hint, the badge and the box."""
+        rd = getattr(im, "bar_read", None) or {}
+        read_um = float(rd.get("um") or 0.0)
+        shown = f"{float(rd.get('value') or 0):g} {rd.get('unit', '')}".strip()
+        typing = self.is_typing()
+        if not typing:
+            if im.bar_um > 0:
+                if read_um > 0 and abs(im.bar_um - read_um) <= 0.01 * read_um:
+                    self.set_bar_length(float(rd.get("value") or 0), str(rd.get("unit", "")))
+                else:
+                    self.set_bar_length_um(im.bar_um)
+            elif read_um > 0:
+                self.set_bar_length(float(rd.get("value") or 0), str(rd.get("unit", "")))
+            else:
+                self.set_bar_length_um(0.0)
+        hint, check = "", False
+        if rd.get("status") == "engine_missing":
+            hint = ("The label could not be read: the text-reading part of the program is "
+                    "missing. Please reinstall SEM Grain Analyzer. Type the length instead.")
+        elif read_um > 0 and im.scale_source == "metadata" and rd.get("meta_ok") is False:
+            check = True
+            hint = (f"The label reads {shown}, but the scale stored in the image file "
+                    "differs. The file's scale is in use; press Apply to use the label.")
+        elif read_um > 0 and im.bar_um > 0 and abs(im.bar_um - read_um) > 0.01 * read_um:
+            check = True
+            hint = (f"The label reads {shown}, but a different length is in use for this "
+                    "image. Correct it if needed, then press Apply.")
+        elif read_um > 0 and im.bar_um <= 0 and px <= 0:
+            check = True
+            hint = (f"Read “{shown}” from the label; it could not be double-checked. "
+                    "Compare it with the image, then press Apply.")
+        elif read_um > 0 and im.bar_um > 0 and im.scale_source == "auto":
+            hint = f"Read from the scale-bar label ({shown})."
+        self.bar_check.setVisible(check)
+        self.bar_hint.setText(hint)
+        self.bar_hint.setProperty("tone", "warning" if (check or rd.get("status") ==
+                                                        "engine_missing") else None)
+        self.bar_hint.style().unpolish(self.bar_hint)
+        self.bar_hint.style().polish(self.bar_hint)
+        self.bar_hint.setVisible(bool(hint))
+
+    def reading_conflict(self, im) -> bool:
+        """The label disagrees with the scale from the file's metadata."""
+        rd = getattr(im, "bar_read", None) or {}
+        return (float(rd.get("um") or 0) > 0 and im.scale_source == "metadata"
+                and rd.get("meta_ok") is False)
 
     def draw_attention_to_length(self) -> bool:
         """Pulse the length box and focus it (after Auto-find) when the
@@ -519,6 +771,10 @@ class SetupTile(Card):
             self.status.set_kind("warning" if n else "neutral")
         self.btn_auto.setEnabled(bool(n) and not state.is_setting_up())
         doc = state.session
+        uid = getattr(im, "uid", None)
+        if uid != self._uid:                       # another image: typing is not carried over
+            self._uid = uid
+            self._typed_uid = None
         if im is None or doc is None:
             self.scan_val.setText("—")
             self.scale_val.setText("—")
@@ -568,10 +824,11 @@ class SetupTile(Card):
         for w in (self.scan_val, self.scale_val):
             w.style().unpolish(w)
             w.style().polish(w)
-        show_bar = im.bar_px > 0 and (px <= 0 or im.scale_source == "auto")
+        show_bar = im.bar_px > 0 and (px <= 0 or im.scale_source == "auto"
+                                      or self.reading_conflict(im))
         if show_bar:
             self.bar_lbl.setText(f"Scale bar found: {im.bar_px:.0f} px. Its length:")
-            self.set_bar_length_um(im.bar_um if im.bar_um > 0 else 0.0)
+            self._show_reading(im, px)
         self.bar_row.setVisible(show_bar)
 
     def set_progress(self, done: int, total: int) -> None:
@@ -602,6 +859,7 @@ class AnalyzePage(QWidget):
         self.queue = AnalysisQueue(self)
         self._batch_total = 0
         self._batch_uids: List = []
+        self._device_notes: List = []        # UPDATE 4 item 10b: (uid, note)
         self._run_btn: Optional[AnimatedButton] = None
         self._view_pref = "overlay"      # UPDATE 4 item 14: user's display mode
         self._rec = "session"           # HIER-01: "lot" when images live in the lot
@@ -933,6 +1191,9 @@ class AnalyzePage(QWidget):
         st.profile_changed.connect(self._relabel)
         st.profile_changed.connect(self.table.relabel)
         self.params.changed.connect(lambda: st.set_params(self.params.get_params()))
+        # UPDATE 4 item 10b: the AI device is remembered per PC, not per session
+        self.params.set_device_preference(st.ai_device_preference)
+        self.params.device_changed.connect(st.set_ai_device_preference)
         self.params.show_excluded_regions.connect(self.canvas.set_show_excluded_regions)
         self.filters.options_changed.connect(self._on_filter_options)
         self.filters.apply_all_requested.connect(self._apply_filters_all)
@@ -1373,6 +1634,11 @@ class AnalyzePage(QWidget):
             parts.append(f"scale from metadata on {st['scale_meta']}")
         if st.get("scale_bar"):
             parts.append(f"scale from the scale bar on {st['scale_bar']}")
+        if st.get("label_read"):                    # UPDATE 4 item 4
+            parts.append(f"scale-bar label read on {st['label_read']}")
+        if st.get("label_check"):
+            k = int(st["label_check"])
+            parts.append(f"{k} scale-bar reading{'s' if k != 1 else ''} to check")
         body = (("; ".join(parts) + ". ") if parts else "") + (
             f"{len(need)} image{'s' if len(need) != 1 else ''} still need a scale — enter the "
             "scale-bar length under the image or use Edit." if need else
@@ -1517,6 +1783,7 @@ class AnalyzePage(QWidget):
             self.state.set_image_status(im.uid, "queued")
         self._batch_total = len(jobs)
         self._batch_uids = [j.uid for j in jobs]
+        self._device_notes = []
         # UX-08: only the button that was clicked shows the spinner
         self._run_btn = button or self.btn_all
         self._run_btn.set_loading(True)
@@ -1554,6 +1821,12 @@ class AnalyzePage(QWidget):
         self.run_sub.setText(f"{i} of {self._batch_total} · {name}\n{msg}")
 
     def _on_job_finished(self, uid, raw) -> None:
+        # UPDATE 4 item 10b: e.g. "The graphics card ran out of memory on this
+        # image, so it was processed on the CPU instead. ..."
+        note = str(getattr(raw, "ai_device_note", "") or "")
+        if note:
+            self._device_notes.append((uid, note))
+            self.run_sub.setText(f"{self.run_sub.text().split(chr(10))[0]}\n{note}")
         self.state.set_result(uid, raw)
 
     def _on_job_failed(self, uid, msg: str) -> None:
@@ -1597,6 +1870,7 @@ class AnalyzePage(QWidget):
         self.run_title.setText("Analysis complete")
         self.run_sub.setText(f"{len(ok)} image{'s' if len(ok) != 1 else ''} · "
                              f"{fmt_int(grains)} grains · saved automatically")
+        self._report_device_notes()
         if self.toasts is not None:
             self.toasts.show_toast("Analysis complete",
                                    f"{len(ok)} image{'s' if len(ok) != 1 else ''} · "
@@ -1604,6 +1878,22 @@ class AnalyzePage(QWidget):
                                    + (f" · {len(failed)} failed" if failed else ""),
                                    "warning" if failed else "success", "Review results",
                                    lambda: self.review_requested.emit())
+
+    def _report_device_notes(self) -> None:
+        """UPDATE 4 item 10b: images that could not stay on the graphics card
+        (out of memory / GPU error) were finished on the CPU -- say so under
+        the run card and in a toast; results are unaffected."""
+        notes = self._device_notes
+        if not notes:
+            return
+        n = len(notes)
+        first = notes[0][1]
+        self.run_sub.setText(f"{self.run_sub.text()}\n"
+                             f"{n} image{'s' if n != 1 else ''} finished on the CPU: {first}")
+        self._toast(f"{n} image{'s were' if n != 1 else ' was'} processed on the CPU",
+                    first, "warning")
+        # a GPU error marks the card unusable for this session: grey it out
+        self.params.recheck_device()
 
     def _set_idle(self) -> None:
         if self.queue.is_running() or self.state.is_loading():

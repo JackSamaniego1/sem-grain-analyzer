@@ -206,6 +206,10 @@ class ImageDoc:
     scale_source: str = ""
     bar_px: float = 0.0
     bar_um: float = 0.0
+    # UPDATE 4 item 4: the scale-bar label read by OCR during Auto-find
+    # (app_state._scale_reading_summary dict; None = not read).  In memory
+    # only -- the applied scale itself is saved as before.
+    bar_read: Optional[dict] = None
     # pixel cache: ``image_bgr`` is None while evicted; ``readable`` /
     # ``shape`` (h, w) stay known without holding the pixels
     shape: Optional[tuple] = None
@@ -562,11 +566,57 @@ def records_under(root: Path, paths) -> List[Path]:
     return out
 
 
-def setup_probe(image_bgr, path=None, want_meta: bool = True) -> dict:
+def _scale_reading_summary(r) -> dict:
+    """Plain dict of a core.info_bar_ocr.InfoBarReading for the GUI thread
+    (UPDATE 4 item 4): the scale-bar label as printed and whether it needs
+    the operator's check."""
+    s = getattr(r, "scale", None)
+    um = float(r.scale_um or 0.0) if s is not None else 0.0
+    return {
+        "status": str(getattr(r, "status", "") or ""),
+        "available": bool(getattr(r, "available", True)),
+        "message": str(getattr(r, "message", "") or ""),
+        "value": float(s.value) if s is not None else 0.0,
+        "unit": str(s.unit) if s is not None else "",
+        "um": um if um > 0 else 0.0,
+        "confirm": bool(getattr(r, "needs_confirmation", True)),
+        "meta_ok": (r.checks or {}).get("metadata"),
+        "bar_px": float(getattr(r, "scale_bar_px", 0) or 0),
+        "note": str(getattr(s, "note", "") or "") if s is not None else "",
+    }
+
+
+def read_scale_label(image_bgr, info_bar=None, bar_rect=None, meta_px_per_um: float = 0.0):
+    """Worker thread (UPDATE 4 item 4): read the scale-bar label ("100 nm",
+    "15 µm") off the SEM data bar with the bundled offline OCR.  Returns the
+    summary dict of :func:`_scale_reading_summary`; never raises.  With the
+    file's own pixel size (``meta_px_per_um``) the reading is cross-checked
+    against it."""
+    try:
+        from types import SimpleNamespace
+
+        from core import info_bar_ocr
+        meta = SimpleNamespace(px_per_um=float(meta_px_per_um)) if meta_px_per_um > 0 else None
+        r = info_bar_ocr.read_info_bar(
+            image_bgr, tuple(int(v) for v in bar_rect) if bar_rect else None,
+            info_bar=info_bar, metadata=meta)
+        return _scale_reading_summary(r)
+    except Exception as exc:                      # never take Auto-find down
+        return {"status": "error", "available": True, "um": 0.0, "value": 0.0, "unit": "",
+                "confirm": True, "meta_ok": None, "bar_px": 0.0, "note": "",
+                "message": f"Could not read the scale-bar label ({type(exc).__name__})."}
+
+
+def setup_probe(image_bgr, path=None, want_meta: bool = True, want_ocr: bool = False,
+                known_cal=None) -> dict:
     """Worker-thread (UX-02): everything "Auto-find scan area & scale bar"
     needs for one image -- the SEM info bar (-> scan area), the scale-bar
     line inside it (length in px) and the pixel size stored in the file by
-    the microscope (-> scale).  Local only; nothing leaves the PC."""
+    the microscope (-> scale).  ``want_ocr`` (UPDATE 4 item 4) also reads
+    the scale-bar label when a data bar was found (``out["ocr"]``, see
+    :func:`read_scale_label`); ``known_cal`` is the file's calibration from
+    an earlier metadata read, used for the cross-check.  Local only; nothing
+    leaves the PC."""
     out: Dict[str, Any] = {"info": {}, "bar_px": 0.0, "cal": None, "meta": None,
                            "shape": None}
     if image_bgr is None:
@@ -574,6 +624,7 @@ def setup_probe(image_bgr, path=None, want_meta: bool = True) -> dict:
     if image_bgr is None:
         return out
     out["shape"] = tuple(image_bgr.shape[:2])
+    ib, bar = None, None
     try:
         from core.infobar import detect_info_bar
         from core.scale_bar import find_scale_bar_line
@@ -583,8 +634,10 @@ def setup_probe(image_bgr, path=None, want_meta: bool = True) -> dict:
             bar = find_scale_bar_line(image_bgr, info_bar=ib)
             if bar and bar.get("length_px", 0) >= 10:
                 out["bar_px"] = float(bar["length_px"])
+            else:
+                bar = None
     except Exception:
-        pass
+        ib, bar = None, None
     if want_meta and path:
         try:
             info = probe_sem_metadata(str(path))
@@ -593,6 +646,20 @@ def setup_probe(image_bgr, path=None, want_meta: bool = True) -> dict:
         if info:
             out["meta"] = info.get("meta") or {}
             out["cal"] = tuple(info["cal"]) if info.get("cal") else None
+    from ui.workers import is_shutting_down
+    if want_ocr and ib is not None and ib.bars and not is_shutting_down():
+        cal = out["cal"] if out["cal"] is not None else known_cal
+        meta_px = 0.0
+        try:
+            if cal and str(cal[2]) in ("high", "medium"):
+                meta_px = float(cal[0])
+        except (TypeError, ValueError, IndexError):
+            meta_px = 0.0
+        rd = read_scale_label(image_bgr, ib, bar["rect"] if bar else None, meta_px)
+        out["ocr"] = rd
+        # the OCR's text-aware bar search may find a bar the line finder missed
+        if not out["bar_px"] and rd.get("um") and rd.get("bar_px", 0) >= 10:
+            out["bar_px"] = float(rd["bar_px"])
     return out
 
 
@@ -964,6 +1031,23 @@ class AppState(QObject):
         if persist:
             self.persist_ui_state()
         self.overlay_opacity_changed.emit(v)
+
+    # ------------------------------------------------------------------ UPDATE 4 item 10b
+    @property
+    def ai_device_preference(self) -> str:
+        """The operator's AI-assisted device on this PC: "gpu" | "cpu" | ""
+        (never chosen: GPU when usable, else CPU).  Stored locally in
+        ui_state (key ``ai_device``); a device is a property of the PC, so
+        it is not taken from saved sessions."""
+        from ui.detection_modes import normalize_ai_device
+        return normalize_ai_device(self.ui_state.get("ai_device", ""))
+
+    def set_ai_device_preference(self, device: str) -> None:
+        from ui.detection_modes import normalize_ai_device
+        dev = normalize_ai_device(device)
+        if dev and dev != self.ui_state.get("ai_device"):
+            self.ui_state["ai_device"] = dev
+            self.persist_ui_state()
 
     # ------------------------------------------------------------------ nodes
     def set_node(self, node: Optional[NodeRef]) -> None:
@@ -1475,14 +1559,18 @@ class AppState(QObject):
         if not self._setup_pending:
             self._setup_stats = dict(total=0, done=0, info_bar=0, full_frame=0, kept_scan=0,
                                      scale_meta=0, scale_bar=0, kept_scale=0,
-                                     needs_length=0, no_scale=0)
+                                     needs_length=0, no_scale=0, label_read=0,
+                                     label_check=0, ocr_missing=0)
         self._setup_stats["total"] += len(targets)
         for im in targets:
             self._setup_pending.add(im.uid)
         self.setup_progress.emit(self._setup_stats["done"], self._setup_stats["total"])
         for im in targets:
+            # UPDATE 4 item 4: read the scale-bar label unless the operator
+            # already set this image's scale by hand
             run_task(setup_probe, im.image_bgr, str(im.path) if im.path else None,
-                     im.cal_suggestion is None,
+                     im.cal_suggestion is None, im.scale_source != "manual",
+                     im.cal_suggestion,
                      on_done=lambda out, im=im: self._apply_setup(doc, im, out),
                      on_error=lambda _m, im=im: self._apply_setup(doc, im, {}))
         return len(targets)
@@ -1534,22 +1622,45 @@ class AppState(QObject):
             bar = float(out.get("bar_px") or 0.0)
             if bar > 0:
                 im.bar_px = bar
+            # UPDATE 4 item 4: scale-bar label read by OCR
+            rd = out.get("ocr")
+            if rd is not None:
+                im.bar_read = dict(rd)
+                if rd.get("status") == "engine_missing":
+                    st["ocr_missing"] += 1
+            read_um = float(rd.get("um") or 0.0) if rd else 0.0
+            sure = read_um > 0 and not rd.get("confirm", True)
+            agrees = im.bar_um <= 0 or abs(im.bar_um - read_um) <= 0.01 * read_um
             cal = im.cal_suggestion
             if im.scale_source == "manual":
-                st["kept_scale"] += 1
+                st["kept_scale"] += 1          # never overwrite what the operator set
             elif cal and str(cal[2]) in ("high", "medium") and float(cal[0]) > 0:
                 im.px_override = float(cal[0])
                 im.scale_source = "metadata"
                 st["scale_meta"] += 1
+                if read_um > 0 and rd.get("meta_ok") is False:
+                    st["label_check"] += 1     # label and file disagree: hint shown
+            elif im.bar_px > 0 and sure and agrees:
+                # label read and independently confirmed (FW / magnification
+                # reference / file metadata): use it
+                im.bar_um = read_um
+                im.px_override = im.bar_px / im.bar_um
+                im.scale_source = "auto"
+                st["scale_bar"] += 1
+                st["label_read"] += 1
             elif im.bar_px > 0 and (im.bar_um > 0 or self._matching_bar_um(im) > 0):
                 im.bar_um = im.bar_um or self._matching_bar_um(im)
                 im.px_override = im.bar_px / im.bar_um
                 im.scale_source = "auto"
                 st["scale_bar"] += 1
+                if read_um > 0 and abs(im.bar_um - read_um) > 0.01 * read_um:
+                    st["label_check"] += 1
             elif self.px_for(im) > 0:
                 st["kept_scale"] += 1
             elif im.bar_px > 0:
                 st["needs_length"] += 1
+                if read_um > 0:
+                    st["label_check"] += 1     # pre-filled, waiting for the operator
             else:
                 st["no_scale"] += 1
             self._meta_dirty = True

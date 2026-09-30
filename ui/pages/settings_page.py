@@ -26,8 +26,8 @@ PRIVACY = ("This application works fully offline; no data leaves this computer. 
            "Images, results and reports are stored only in the workspace folder you choose. "
            "There are no update checks, no telemetry and no cloud services.")
 
-MODE_NAMES = {"auto": "AI-assisted (SAM)", "boundary": "Boundary", "threshold": "Threshold",
-              "sam_astm": "AI-assisted (SAM)"}
+MODE_NAMES = {"auto": "AI-Assisted", "boundary": "Boundary", "threshold": "Threshold",
+              "sam_astm": "AI-Assisted"}
 
 
 def licences_text() -> str:
@@ -294,8 +294,12 @@ class SettingsPage(QWidget):
 
     def _refresh_defaults(self) -> None:
         p = self.state.default_params()
+        mode = MODE_NAMES.get(p.detection_mode, p.detection_mode)
+        dev = getattr(self.state, "ai_device_preference", "")
+        if p.detection_mode in ("sam_astm", "auto") and dev:
+            mode = f"{mode} ({dev.upper()})"              # UPDATE 4 item 10b
         self.defaults_kv.set_items([
-            ("Detection mode", MODE_NAMES.get(p.detection_mode, p.detection_mode)),
+            ("Detection mode", mode),
             ("Min grain area", f"{p.min_grain_size_px} px²"),
             ("Black level (excluded)", f"≤ {getattr(p, 'invalid_intensity_threshold', 12)}"),
             ("Blur σ / edge sensitivity", f"{p.blur_sigma:g} / {p.edge_sensitivity:g}"),

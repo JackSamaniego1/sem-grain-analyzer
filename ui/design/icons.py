@@ -101,6 +101,9 @@ ICONS: Dict[str, str] = {
     "chevron_down": "mdi6.chevron-down",
     "theme_dark": "mdi6.weather-night",
     "theme_light": "mdi6.white-balance-sunny",
+    # compute device of AI-assisted detection (UPDATE 4 item 10b)
+    "device_gpu": "mdi6.expansion-card-variant",
+    "device_cpu": "mdi6.cpu-64-bit",
 }
 
 _cache: Dict[Tuple[str, str, str], QIcon] = {}

@@ -108,7 +108,9 @@ def _projects_body(shell) -> str:
 
 def _sam_body(shell) -> str:
     text = ("AI-assisted uses the Segment-Anything model with ASTM E112 refinement. It is "
-            "the most accurate on difficult micrographs, and the slowest. Minimum and "
+            "the most accurate on difficult micrographs, and the slowest. Pick "
+            "AI-Assisted (GPU) when this PC has a supported NVIDIA graphics card (much "
+            "faster), otherwise AI-Assisted (CPU); the results are the same. Minimum and "
             "maximum grain size are under Advanced parameters.")
     try:
         if not shell.analyze.params.mode_cards["sam_astm"].available:
