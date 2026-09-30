@@ -22,6 +22,8 @@ The user numbered two items "8"; they are renumbered 1–12 here.
 | 14 | Analyze & Review: the display mode (Original / Overlay / …) **persists when switching images**. Today it resets to Overlay on every new image. | ui-designer | 0.25 d | 1 |
 | 15 | **Lot Summary page is blank** in the report (known gap: the report editor has no preview widget for the `lot_summary` section; also verify the exported Excel/PPTX). Make lot-vs-lot charts really good: every summary chart = **bars per lot with an overlaid trendline** (combo bar+line), plus an **overall job summary** chart/table. Mock up first, like the PPTX slide 2 process. | report-engineer (opus for design) | 1.5–2 d | 2 |
 | 16 | **Units & bins bug:** switching area nm² → µm² (e.g. 20,000 nm²) dumps everything into one 0–1 µm² bin, and raising the bin count does nothing. Unit change must only rescale values (move the decimal); bin edges must be recomputed from the data range in the new unit; more bins = narrower bins (smaller step), never needing huge counts. Add tests for nm²↔µm² and diameter nm↔µm with bin-count changes. | report-engineer | 0.5–1 d | 1 |
+| 17 | **PPTX distribution slides:** one slide **per lot** with grain **area** distribution and grain **size (diameter)** distribution, each as bars + a smooth trendline curve; plus a **lot-to-lot comparison** slide with all lots' curves stacked on the same axes (bars + trendlines, one colour per lot). User approved the current deck style; show a sample deck after. | report-engineer | 1–1.5 d | 1 |
+| 18 | **PPTX percentile slide** (asked for by the person who requested the report; do NOT use the word "requestor"): title e.g. "Grain Size Percentiles (D10 / D50 / D90)". Table per part and lot: D10, D50 (median), D90 of grain diameter (+ median area), with a one-line plain definition on the slide (D10 = 10 % of grains are smaller than this, D90 = 90 % are smaller). Number-based percentiles by default; same table style, 14-row pagination. | report-engineer | 0.5 d | 1 |
 
 **Total ≈ 13.5–16.5 working days of agent time**, plus the user's review between batches.
 
@@ -63,6 +65,8 @@ Rules: Fable coordinates only and implements nothing except #12 (one-time except
 - [ ] 13 Review image list grouped Job › Part › Lot like Analyze
 - [ ] 14 Display mode (Original/Overlay) persists across images
 - [ ] 16 Units & bins bug (nm² → µm² rescales; more bins = narrower bins)
+- [ ] 18 PPTX percentile slide: D10 / D50 (median) / D90 per part and lot
+- [ ] 17 PPTX distribution slides: per-lot area + size bars with trendline; lot-to-lot stacked comparison
 - [ ] 10a Remove the "AI runs on CPU" tile
 - [ ] 11 Auto-fill magnification / instrument / kV / WD from JEOL + Thermo metadata
 - [ ] 4  Read scale-bar label (value + unit) with bundled offline OCR — needs user's test images
