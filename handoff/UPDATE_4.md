@@ -24,6 +24,7 @@ The user numbered two items "8"; they are renumbered 1–12 here.
 | 16 | **Units & bins bug:** switching area nm² → µm² (e.g. 20,000 nm²) dumps everything into one 0–1 µm² bin, and raising the bin count does nothing. Unit change must only rescale values (move the decimal); bin edges must be recomputed from the data range in the new unit; more bins = narrower bins (smaller step), never needing huge counts. Add tests for nm²↔µm² and diameter nm↔µm with bin-count changes. | report-engineer | 0.5–1 d | 1 |
 | 17 | **PPTX distribution slides:** one slide **per lot** with grain **area** distribution and grain **size (diameter)** distribution, each as bars + a smooth trendline curve; plus a **lot-to-lot comparison** slide with all lots' curves stacked on the same axes (bars + trendlines, one colour per lot). User approved the current deck style; show a sample deck after. | report-engineer | 1–1.5 d | 1 |
 | 18 | **PPTX percentile slide** (asked for by the person who requested the report; do NOT use the word "requestor"): title e.g. "Grain Size Percentiles (D10 / D50 / D90)". Table per part and lot: D10, D50 (median), D90 of grain diameter (+ median area), with a one-line plain definition on the slide (D10 = 10 % of grains are smaller than this, D90 = 90 % are smaller). Number-based percentiles by default; same table style, 14-row pagination. | report-engineer | 0.5 d | 1 |
+| 19 | **PPTX contents page as slide 2** (the user called it a "glossary"): lists every page/section of the deck with its page number and a **clickable link** to that slide. Runs of similar slides collapse to one line with a range and a link to the first slide, e.g. "Pages 11–30 · Image results". The Grain Size Summary moves to slide 3. Page numbers must be computed after the whole deck is laid out; paginate the contents itself if it gets long. | report-engineer | 0.5 d | 1 |
 
 **Total ≈ 13.5–16.5 working days of agent time**, plus the user's review between batches.
 
@@ -67,6 +68,7 @@ Rules: Fable coordinates only and implements nothing except #12 (one-time except
 - [ ] 16 Units & bins bug (nm² → µm² rescales; more bins = narrower bins)
 - [ ] 18 PPTX percentile slide: D10 / D50 (median) / D90 per part and lot
 - [ ] 17 PPTX distribution slides: per-lot area + size bars with trendline; lot-to-lot stacked comparison
+- [ ] 19 PPTX contents page as slide 2: every section with page numbers/ranges and links (do after 17 + 18)
 - [ ] 10a Remove the "AI runs on CPU" tile
 - [ ] 11 Auto-fill magnification / instrument / kV / WD from JEOL + Thermo metadata
 - [ ] 4  Read scale-bar label (value + unit) with bundled offline OCR — needs user's test images
