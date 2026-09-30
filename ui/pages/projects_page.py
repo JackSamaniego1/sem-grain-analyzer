@@ -15,6 +15,7 @@ All folder scans and thumbnail loads run on the thread pool.
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -55,6 +56,8 @@ from ui.widgets.layout import WrapLabel
 from ui.widgets.selection_bar import MOVE_ICON
 from ui.widgets.field_editors import editor_value, make_editor, mark_invalid
 from ui.workers import IMAGE_EXTS, load_thumb_file, run_task
+
+_log = logging.getLogger(__name__)
 
 KIND_ROLE = Qt.UserRole + 1
 PATH_ROLE = Qt.UserRole + 2
@@ -596,15 +599,20 @@ class SkeletonCard(Card):
 class NodeForm(Card):
     """Inline create form (no modal popups) — fields from the hierarchy profile."""
 
-    submitted = Signal(dict)
+    submitted = Signal(object)          # list of (row, values) pairs (blank rows already skipped)
+
+    MULTI_KINDS = ("sample", "lot")     # Part / Lot: each "New" click adds another entry
 
     def __init__(self, parent=None) -> None:
         super().__init__("New", parent=parent, elevation=2)
-        self._form = QFormLayout()
-        self._form.setHorizontalSpacing(SPACE.lg)
-        self._form.setVerticalSpacing(SPACE.sm)
-        self.body_layout().addLayout(self._form)
+        self._rows_host = QVBoxLayout()
+        self._rows_host.setSpacing(SPACE.md)
+        self.body_layout().addLayout(self._rows_host)
+        self._rows: List[dict] = []
+        self._where = ""
+        self._profile = None
         self.error = label("", tone="danger")
+        self.error.setWordWrap(True)
         self.error.hide()
         self.body_layout().addWidget(self.error)
         row = QHBoxLayout()
@@ -616,52 +624,189 @@ class NodeForm(Card):
         row.addWidget(self.cancel)
         row.addWidget(self.ok)
         self.body_layout().addLayout(row)
-        self._edits: Dict[str, QWidget] = {}
         self._fields: List[FieldDef] = []
+        self.existing_ids = lambda: []      # set by the page: names already in the parent
         self.kind = ""
         self.hide()
 
+    @property
+    def multi(self) -> bool:
+        return self.kind in self.MULTI_KINDS
+
+    @property
+    def _edits(self) -> Dict[str, QWidget]:
+        """Editors of the first entry (single-entry forms and quick access)."""
+        return self._rows[0]["edits"] if self._rows else {}
+
     def open_for(self, kind: str, where: str, profile=None) -> None:
+        """Open the form.  Re-opening the same Lot / Part form adds ANOTHER
+        entry and keeps everything already typed."""
+        if self.isVisible() and kind == self.kind and where == self._where and self.multi:
+            self.add_row()
+            return
         self.kind = kind
+        self._where = where
+        self._profile = profile
         name = hui.kind_label(profile, kind)
         self.set_title(f"New {name}", where)
-        while self._form.rowCount():
-            self._form.removeRow(0)
-        self._edits = {}
         self._fields = form_fields(profile, kind)
+        self._clear_rows()
+        self.error.hide()
+        self.show()
+        self.add_row()
+
+    def _clear_rows(self) -> None:
+        for r in self._rows:
+            self._rows_host.removeWidget(r["widget"])
+            r["widget"].hide()
+            r["widget"].deleteLater()
+        self._rows = []
+
+    def reset_rows(self) -> None:
+        """After Create: drop every entry and leave one empty box."""
+        self._clear_rows()
+        self.error.hide()
+        self.add_row()
+
+    def _retitle(self) -> None:
+        name = hui.kind_label(self._profile, self.kind)
+        n = len(self._rows)
+        for i, r in enumerate(self._rows, 1):
+            r["title"].setText(f"{name} {i}" if self.multi else name)
+            r["title"].setVisible(self.multi)
+            r["remove"].setVisible(self.multi)
+        self.ok.setText(f"Create all {n}" if self.multi and n > 1 else f"Create {name}")
+
+    def add_row(self) -> None:
+        name = hui.kind_label(self._profile, self.kind)
+        host = QWidget()
+        outer = QVBoxLayout(host)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(SPACE.xs)
+        head = QHBoxLayout()
+        title = label("", "overline")
+        remove = IconButton("close", f"Remove this {name} entry")
+        remove.setAccessibleName(f"Remove {name} entry")
+        head.addWidget(title, 1)
+        head.addWidget(remove)
+        outer.addLayout(head)
+        form = QFormLayout()
+        form.setHorizontalSpacing(SPACE.lg)
+        form.setVerticalSpacing(SPACE.sm)
+        outer.addLayout(form)
+        edits: Dict[str, QWidget] = {}
         for fd in self._fields:
             w = make_editor(fd, "")
-            self._edits[fd.key] = w
-            self._form.addRow(fd.label + ("  *" if fd.required else ""), w)
-        self.error.hide()
-        self.ok.setText(f"Create {name}")
-        self.show()
-        first = self._edits[self._fields[0].key]
-        first.setFocus()
+            edits[fd.key] = w
+            form.addRow(fd.label + ("  *" if fd.required else ""), w)
+        row = {"widget": host, "edits": edits, "title": title, "remove": remove}
+        remove.clicked.connect(lambda _=False, r=row: self.remove_row(r))
+        first = edits[self._fields[0].key]
         if hasattr(first, "returnPressed"):
             first.returnPressed.connect(self._submit)
+        self._rows.append(row)
+        self._rows_host.addWidget(host)
+        self._retitle()
+        first.setFocus()
+
+    def remove_row(self, row: dict) -> None:
+        if row not in self._rows:
+            return
+        if len(self._rows) == 1:            # never leave the form without a box
+            self.reset_rows()
+            return
+        self._rows.remove(row)
+        self._rows_host.removeWidget(row["widget"])
+        row["widget"].hide()
+        row["widget"].deleteLater()
+        self.error.hide()
+        self._retitle()
+
+    def row_count(self) -> int:
+        return len(self._rows)
 
     def values(self) -> dict:
         return {k: editor_value(w) for k, w in self._edits.items()}
 
-    def set_value(self, key: str, value: str) -> None:
+    def set_value(self, key: str, value: str, row: int = 0) -> None:
         from ui.widgets.field_editors import set_editor_value
-        w = self._edits.get(key)
+        w = self._rows[row]["edits"].get(key) if row < len(self._rows) else None
         if w is not None:
             set_editor_value(w, value)
 
-    def _submit(self) -> None:
-        v = self.values()
+    def _is_blank(self, r: dict) -> bool:
+        """Blank = nothing typed (dates always carry a default, so ignore them)."""
         for fd in self._fields:
-            w = self._edits[fd.key]
-            missing = fd.required and not v.get(fd.key)
-            mark_invalid(w, missing)
-            if missing:
-                self.error.setText(f"{fd.label} is required.")
-                self.error.show()
-                w.setFocus()
-                return
-        self.submitted.emit(v)
+            if getattr(fd, "kind", "text") == "date":
+                continue
+            if editor_value(r["edits"][fd.key]):
+                return False
+        return True
+
+    def _submit(self) -> None:
+        idk = self._fields[0].key
+        idl = self._fields[0].label
+        name = hui.kind_label(self._profile, self.kind)
+        filled = [r for r in self._rows if not (self.multi and self._is_blank(r))]
+        for r in self._rows:
+            for w in r["edits"].values():
+                mark_invalid(w, False)
+        if not filled:
+            self.error.setText(f"Type a {idl.lower()} for at least one {name} first.")
+            self.error.show()
+            self._rows[0]["edits"][idk].setFocus()
+            return
+        taken = {str(x).strip().casefold() for x in (self.existing_ids() or [])}             if self.multi else set()
+        seen: set = set()
+        problems: List[str] = []
+        first_bad = None
+        pairs: List[tuple] = []
+        for i, r in enumerate(self._rows, 1):
+            if r not in filled:
+                continue
+            v = {k: editor_value(w) for k, w in r["edits"].items()}
+            ident = v.get(idk, "")
+            msg = ""
+            bad = idk
+            if not ident:
+                msg = f"{name} {i}: {idl} is required."
+            elif self.multi and ident.casefold() in taken:
+                msg = f"{name} {i}: “{ident}” already exists here — choose a different {idl.lower()}."
+            elif self.multi and ident.casefold() in seen:
+                msg = f"{name} {i}: “{ident}” is typed twice — each {idl.lower()} must be different."
+            else:
+                seen.add(ident.casefold())
+                for fd in self._fields:
+                    if fd.required and not v.get(fd.key):
+                        msg, bad = f"{name} {i}: {fd.label} is required.", fd.key
+                        break
+            if msg:
+                mark_invalid(r["edits"][bad], True)
+                problems.append(msg)
+                first_bad = first_bad or (r, bad)
+            else:
+                pairs.append((r, v))
+        if problems:
+            # Nothing is created until every entry is valid (same as the
+            # single-entry form, which also blocks on a validation error).
+            self.error.setText("Nothing was created yet.  " + "  ".join(problems))
+            self.error.show()
+            first_bad[0]["edits"][first_bad[1]].setFocus()
+            return
+        self.error.hide()
+        self.submitted.emit(pairs)
+
+    def keep_only(self, rows: List[dict]) -> None:
+        """Rebuild the form so it holds only ``rows`` (typed data kept)."""
+        for r in list(self._rows):
+            if r not in rows:
+                self._rows.remove(r)
+                self._rows_host.removeWidget(r["widget"])
+                r["widget"].hide()
+                r["widget"].deleteLater()
+        if not self._rows:
+            self.add_row()
+        self._retitle()
 
 
 class DetailsPanel(Panel):
@@ -1913,10 +2058,28 @@ class ProjectsPage(QWidget):
             self.state.set_node(parent)
         where = "in " + (node_display_name(parent, self.profile, crumb=True)
                          if parent.kind != "workspace" else "the workspace")
-        self.form.open_for(kind, where, self.profile)
         self._create_parent = parent
+        self.form.existing_ids = lambda: self._existing_ids(parent, kind)
+        self.form.open_for(kind, where, self.profile)
 
-    def _create_node(self, vals: dict) -> None:
+    def _existing_ids(self, parent: NodeRef, kind: str) -> List[str]:
+        """Names of the Parts / Lots already in ``parent`` (for duplicate checks)."""
+        ws = self.state.workspace
+        try:
+            if kind == "sample":
+                return [s.sample_id for s in ws.list_samples(parent.path)]
+            if kind == "lot":
+                return [x.lot_number for x in ws.list_lots(parent.path.parent, parent.path)]
+        except Exception:
+            _log.exception("could not list existing %s names for the duplicate check", kind)
+        return []
+
+    def _create_node(self, vals) -> None:
+        if isinstance(vals, list) and self.form.multi:
+            self._create_many(vals)
+            return
+        if isinstance(vals, list):
+            vals = vals[0][1]
         parent = getattr(self, "_create_parent", None) or NodeRef("workspace", self.state.root)
         ws = self.state.workspace
         kind = self.form.kind
@@ -1939,6 +2102,45 @@ class ProjectsPage(QWidget):
         self._node = NodeRef(kind, newp)
         self.state.set_node(self._node)
         self.reload()
+
+    def _create_many(self, pairs: List[tuple]) -> None:
+        """Create every filled Part / Lot entry, then STAY on this page.
+        Entries were validated by the form; an unexpected failure keeps only
+        the failed entries (typed data intact) and the rest are still created."""
+        parent = getattr(self, "_create_parent", None) or NodeRef("workspace", self.state.root)
+        ws = self.state.workspace
+        kind = self.form.kind
+        idk = hui.ID_KEYS[kind]
+        made: List[Path] = []
+        failed: List[tuple] = []
+        for row, vals in pairs:
+            vals = dict(vals)
+            ident = vals.pop(idk)
+            try:
+                if kind == "sample":
+                    made.append(ws.create_sample(parent.path, ident, **vals))
+                else:
+                    made.append(ws.create_lot(parent.path.parent, parent.path, ident, **vals))
+            except Exception:
+                _log.exception("could not create %s %r", kind, ident)
+                failed.append((row, ident))
+        where = node_display_name(parent, self.profile, crumb=True)             if parent.kind != "workspace" else "the workspace"
+        if made:
+            self._toast("Created " + made[0].name if len(made) == 1
+                        else f"{len(made)} created in {where}",
+                        ", ".join(p.name for p in made[:4]) + ("…" if len(made) > 4 else ""),
+                        "success")
+        if failed:
+            self.form.keep_only([f[0] for f in failed])
+            names = ", ".join(f"“{i}”" for _, i in failed)
+            done = (" Created: " + ", ".join(p.name for p in made) + ".") if made else ""
+            self.form.error.setText(f"Couldn’t create {names}. Check the name and try again.{done}")
+            self.form.error.show()
+        else:
+            self.form.reset_rows()
+        self.reload()
+        if not self.form.isVisible():
+            self.form.show()
 
     def _prefill(self, node: NodeRef) -> dict:
         lot = node.path if node.kind == "lot" else None
