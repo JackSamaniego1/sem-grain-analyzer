@@ -1,4 +1,13 @@
-"""Tests for reports.pptx_renderer.render_pptx: slide count/titles/native charts."""
+"""Tests for reports.pptx_renderer.render_pptx: slide count/titles/native charts.
+
+D-30 / REP-DESIGN-01: slide 2 (index 1) is now a part-level summary table
+(one row per PART, averaged across its lots) + three native bar charts + the
+restyled per-image data tables (grouped by part, max 14 rows/slide) --
+replacing the old per-image "Executive Summary" table + Combined row + INN-27
+KPI tiles. Most slide lookups below search by heading text rather than a
+fixed slide index, since the new summary/chart/data-table slides shift
+everything that used to sit at a hardcoded index.
+"""
 import os
 import sys
 import tempfile
@@ -18,7 +27,11 @@ from core.grain_detector import GrainDetector, DetectionParams
 import pytest
 
 from reports.model import ReportModel, ReportImageInput, Section
-from reports.pptx_renderer import render_pptx, SLIDE_H
+from reports.pptx_renderer import (
+    render_pptx, SLIDE_H, MAX_SUMMARY_ROWS, MAX_DATA_ROWS, MAX_PARTS_COMBINED,
+    MARGIN_IN, FOOTER_MAX_CHARS, _part_summary_rows, _chunk, _plan_image_table_slides,
+    _max_chars_for_width, _DATA_IMAGE_COL_IN, _footer_text,
+)
 from reports.charts import PALETTES
 
 # Matches reports.pptx_renderer._add_footer's footer-bar geometry -- used by
@@ -27,6 +40,10 @@ FOOTER_TOP_IN = SLIDE_H.inches - 0.32
 
 
 def _build_model(tmp_path, n=3, px_per_um=8.0, seeds=None):
+    """Each image gets a distinct ``sample_id`` -- with no hierarchy set,
+    that means each image is its own PART with a single lot ("L1"). Fine for
+    slide-count/callout tests; grouping-specific tests use
+    ``_build_parts_model`` instead so "part"/"lot" mean something real."""
     det = GrainDetector()
     seeds = seeds or list(range(1, n + 1))
     items = []
@@ -47,12 +64,36 @@ def _build_model(tmp_path, n=3, px_per_um=8.0, seeds=None):
     )
 
 
-def _expected_slide_count(n_images, want_charts=True, want_methods=True):
-    return 1 + 1 + (2 if want_charts else 0) + n_images + (1 if want_methods else 0) + 1
+def _overview_slide_count(model, images):
+    """Slides contributed by the "overview_table" section -- the part
+    summary (+ 3 bar charts) slide(s), and the per-image data-table pages --
+    computed with the same helpers the renderer itself uses, so this stays
+    correct regardless of how many parts/lots a fixture has. <= 6 parts:
+    table + charts share ONE slide. > 6 parts: the (possibly paginated)
+    table stands alone, followed by one charts-only slide."""
+    if not images:
+        return 0
+    rows, _au, _du = _part_summary_rows(model, images)
+    if len(rows) <= MAX_PARTS_COMBINED:
+        n = 1
+    else:
+        n = len(_chunk(rows, MAX_SUMMARY_ROWS)) + 1
+    n += len(_plan_image_table_slides(model, images))
+    return n
+
+
+def _expected_slide_count(model, images, want_charts=True, want_methods=True):
+    n = 1  # cover
+    n += _overview_slide_count(model, images)
+    n += (2 if want_charts else 0)
+    n += len(images)  # one image (original + overlay) slide each
+    n += (1 if want_methods else 0)
+    n += 1  # appendix
+    return n
 
 
 def _build_mixed_model(tmp_path):
-    """One calibrated image + one uncalibrated image."""
+    """One calibrated image + one uncalibrated image (each its own part)."""
     det = GrainDetector()
     items = []
     for i, (seed, ppu) in enumerate([(1, 8.0), (2, 0.0)]):
@@ -66,37 +107,96 @@ def _build_mixed_model(tmp_path):
     return ReportModel.from_results(items, title="Mixed", asset_dir=str(tmp_path / "assets"))
 
 
+def _build_parts_model(tmp_path, n_parts=2, n_lots=2, n_images=2, px_per_um=8.0, seed_start=1,
+                        h=96, w=96, n_grains=15):
+    """A hierarchy-based fixture with real part/lot grouping: ``n_parts``
+    parts, each with ``n_lots`` lots, each with ``n_images`` images."""
+    det = GrainDetector()
+    hierarchy = [{"key": "sample", "label": "Part Number", "value": ""},
+                 {"key": "lot", "label": "Lot", "value": ""}]
+    items = []
+    seed = seed_start
+    for p in range(n_parts):
+        part = f"P{p + 1}"
+        for l in range(n_lots):
+            lot = f"P{p + 1}-L{l + 1}"
+            for i in range(n_images):
+                gray, _ = make_mosaic(seed=seed, h=h, w=w, n_grains=n_grains)
+                bgr = np.repeat(gray[:, :, None], 3, axis=2)
+                res = det.analyze(bgr, px_per_um=px_per_um, params=DetectionParams())
+                img_path = str(tmp_path / f"p{p}_{l}_{i}_{seed}.png")
+                cv2.imwrite(img_path, bgr)
+                items.append(ReportImageInput(image_path=img_path, result=res, image_bgr=bgr,
+                                              levels={"sample": part, "lot": lot}))
+                seed += 1
+    return ReportModel.from_results(items, title="Parts Report", hierarchy=hierarchy,
+                                    asset_dir=str(tmp_path / "assets"))
+
+
+def _all_text(slide):
+    return "\n".join(
+        run.text for shape in slide.shapes if shape.has_text_frame
+        for p in shape.text_frame.paragraphs for run in p.runs)
+
+
+def _heading(slide):
+    lines = _all_text(slide).split("\n")
+    return lines[0] if lines else ""
+
+
+def _dist_slide(prs, kind):
+    """The (fixed-heading, position-independent) combined-distribution
+    slide for ``kind`` ("area"|"diameter") -- these now sit *after* the new
+    part-summary/chart/data-table slides, not at a fixed index."""
+    label = "Grain Area" if kind == "area" else "Grain Diameter"
+    heading = f"Combined {label} Distribution"
+    return next(s for s in prs.slides if _heading(s) == heading)
+
+
+def _find_image_slide(prs, img):
+    return next(s for s in prs.slides if _heading(s).startswith(f"Image {img.order}:"))
+
+
 def _cell_value(text):
     """Extract the leading float from a 'NN.NN unit' table/callout string."""
     return float(text.split()[0])
 
 
-def test_uncalibrated_exec_summary_row_has_no_zero_size_stats(tmp_path):
+# ---------------------------------------------------------------------------
+# Per-image data-table rows (replaces the old per-image Executive Summary row
+# tests -- each image below is its own part/lot, so its data table is a
+# single-row slide titled after that part).
+# ---------------------------------------------------------------------------
+
+def test_uncalibrated_data_table_row_has_no_zero_size_stats(tmp_path):
     model = _build_model(tmp_path, n=1, px_per_um=0.0)
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    table = [sh for sh in prs.slides[1].shapes if sh.has_table][0].table
-    row = table.rows[1]
-    mean_diam_text = table.cell(1, 2).text
-    mean_area_text = table.cell(1, 4).text
+    slide = next(s for s in prs.slides if _heading(s) == "S0")
+    table = [sh for sh in slide.shapes if sh.has_table][0].table
+    mean_diam_text = table.cell(1, 4).text
+    mean_area_text = table.cell(1, 6).text
     assert _cell_value(mean_diam_text) > 0
     assert _cell_value(mean_area_text) > 0
     assert "px" in mean_diam_text and "px" in mean_area_text
 
 
-def test_mixed_calibration_exec_summary_rows_have_correct_units_and_no_zeros(tmp_path):
+def test_mixed_calibration_data_table_rows_have_correct_units_and_no_zeros(tmp_path):
     model = _build_mixed_model(tmp_path)
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    table = [sh for sh in prs.slides[1].shapes if sh.has_table][0].table
-    calibrated_row_text = [table.cell(1, c).text for c in range(len(table.columns))]
-    uncal_row_text = [table.cell(2, c).text for c in range(len(table.columns))]
-    assert _cell_value(calibrated_row_text[2]) > 0 and "µm" in calibrated_row_text[2]
-    assert _cell_value(uncal_row_text[2]) > 0 and "px" in uncal_row_text[2]
-    assert _cell_value(calibrated_row_text[4]) > 0
-    assert _cell_value(uncal_row_text[4]) > 0  # was 0.00 before the fix
+    cal_slide = next(s for s in prs.slides if _heading(s) == "S0")
+    uncal_slide = next(s for s in prs.slides if _heading(s) == "S1")
+    cal_table = [sh for sh in cal_slide.shapes if sh.has_table][0].table
+    uncal_table = [sh for sh in uncal_slide.shapes if sh.has_table][0].table
+    cal_row = [cal_table.cell(1, c).text for c in range(len(cal_table.columns))]
+    uncal_row = [uncal_table.cell(1, c).text for c in range(len(uncal_table.columns))]
+    assert _cell_value(cal_row[4]) > 0 and "µm" in cal_row[4]
+    assert _cell_value(uncal_row[4]) > 0 and "px" in uncal_row[4]
+    assert _cell_value(cal_row[6]) > 0
+    assert _cell_value(uncal_row[6]) > 0  # was 0.00 before the fix
 
 
 def test_uncalibrated_image_slide_metric_callouts_have_no_zeros(tmp_path):
@@ -104,14 +204,13 @@ def test_uncalibrated_image_slide_metric_callouts_have_no_zeros(tmp_path):
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    image_slide = prs.slides[4]  # title, exec, area-dist, diam-dist, img1
+    image_slide = _find_image_slide(prs, model.images[0])
     texts = [
         run.text for shape in image_slide.shapes if shape.has_text_frame
         for p in shape.text_frame.paragraphs for run in p.runs
     ]
     joined = " ".join(texts)
     assert "px" in joined
-    # Mean diameter / mean area callouts should not both read as 0.00.
     zero_like = [t for t in texts if t.strip() in ("0.00 px", "0.00 px²")]
     assert zero_like == []
 
@@ -121,7 +220,7 @@ def test_slide_count_for_n_images(tmp_path):
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    assert len(prs.slides) == _expected_slide_count(3)
+    assert len(prs.slides) == _expected_slide_count(model, model.ordered_images())
 
 
 def test_is_16_9(tmp_path):
@@ -138,32 +237,491 @@ def test_title_slide_has_report_title(tmp_path):
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    slide0_text = "\n".join(
-        run.text for shape in prs.slides[0].shapes if shape.has_text_frame
-        for p in shape.text_frame.paragraphs for run in p.runs
-    )
+    slide0_text = _all_text(prs.slides[0])
     assert "Test Deck" in slide0_text
 
 
-def test_executive_summary_table_has_one_row_per_image_plus_combined(tmp_path):
+# ---------------------------------------------------------------------------
+# D-30: part-level summary slide (slide index 1)
+# ---------------------------------------------------------------------------
+
+def test_summary_slide_is_index_1_with_one_row_per_part_and_correct_counts(tmp_path):
+    model = _build_parts_model(tmp_path, n_parts=3, n_lots=3, n_images=2)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    slide = prs.slides[1]
+    assert _heading(slide) == "Grain Size Summary"
+    table = next(sh for sh in slide.shapes if sh.has_table).table
+    assert len(table.rows) == 3 + 1  # header + 3 parts
+    headers = [table.cell(0, c).text for c in range(len(table.columns))]
+    assert headers == ["Part", "Lots", "Images", "ASTM G", "Mean Diameter", "Mean Area"]
+    parts_seen = set()
+    for r in range(1, 4):
+        parts_seen.add(table.cell(r, 0).text)
+        assert table.cell(r, 1).text == "3"   # lots per part
+        assert table.cell(r, 2).text == "6"   # images per part (3 lots * 2 images)
+    assert parts_seen == {"P1", "P2", "P3"}
+
+
+def test_summary_slide_has_no_grains_column_or_kpi_hint_text(tmp_path):
+    model = _build_parts_model(tmp_path, n_parts=2, n_lots=2, n_images=2)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    slide = prs.slides[1]
+    table = next(sh for sh in slide.shapes if sh.has_table).table
+    headers = [table.cell(0, c).text for c in range(len(table.columns))]
+    assert "Grains" not in headers
+    text = _all_text(slide).lower()
+    assert "higher = finer" not in text
+    assert "kpi" not in text
+
+
+def test_single_part_report_still_gets_summary_slide(tmp_path):
+    model = _build_parts_model(tmp_path, n_parts=1, n_lots=1, n_images=3)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    assert _heading(prs.slides[1]) == "Grain Size Summary"
+    table = next(sh for sh in prs.slides[1].shapes if sh.has_table).table
+    assert len(table.rows) == 2  # header + 1 part
+
+
+def test_parts_with_no_name_grouped_as_emdash(tmp_path):
+    model = _build_model(tmp_path, n=2)  # no hierarchy, no sample_id override needed
+    for img in model.images:
+        img.sample_id = ""
+        img.lot_number = ""
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    table = next(sh for sh in prs.slides[1].shapes if sh.has_table).table
+    assert table.cell(1, 0).text == "—"
+
+
+def test_part_average_equals_mean_of_lot_means(tmp_path):
+    """D-30 averaging rule: each lot's mean is computed first, then the part
+    value is the mean of the *lot* means (not a grain-weighted pool)."""
+    model = _build_parts_model(tmp_path, n_parts=2, n_lots=3, n_images=4, px_per_um=8.0)
+    images = model.ordered_images()
+    rows, au, du = _part_summary_rows(model, images)
+    assert du == "µm"  # px_per_um=8.0 -> 1000/8=125 >= 50 -> µm, multiplier 1.0
+
+    groups = {}
+    for img in images:
+        part = img.level_value("sample", "")
+        lot = img.level_value("lot", "")
+        groups.setdefault(part, {}).setdefault(lot, []).append(img)
+
+    for row in rows:
+        lot_means = [float(np.mean([im.mean_diameter_um for im in imgs]))
+                     for imgs in groups[row["part"]].values()]
+        expected = float(np.mean(lot_means))
+        assert abs(row["diam_mean"] - expected) < 1e-6
+
+        lot_area_means = [float(np.mean([im.mean_area_um2 for im in imgs]))
+                          for imgs in groups[row["part"]].values()]
+        expected_area = float(np.mean(lot_area_means))
+        assert abs(row["area_mean"] - expected_area) < 1e-6
+
+
+def test_part_summary_paginates_when_too_many_parts(tmp_path):
+    """> MAX_PARTS_COMBINED parts: the table alone (paginated) fills as many
+    "Grain Size Summary" slides as needed -- ALL of them carry the
+    "(cont'd i/N)" suffix, including the first, per the coordinator's
+    continuation-labelling fix -- followed by one charts-only slide."""
+    n = 20
+    model = _build_parts_model(tmp_path, n_parts=n, n_lots=1, n_images=1, h=64, w=64, n_grains=10)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    summary_slides = [s for s in prs.slides if _heading(s).startswith("Grain Size Summary")
+                      and not any(sh.has_chart for sh in s.shapes)]
+    assert len(summary_slides) == 2
+    total_rows = 0
+    for s in summary_slides:
+        table_shape = next(sh for sh in s.shapes if sh.has_table)
+        bottom_in = Emu(table_shape.top).inches + Emu(table_shape.height).inches
+        assert bottom_in <= SLIDE_H.inches
+        table = table_shape.table
+        total_rows += len(table.rows) - 1
+    assert total_rows == n
+    assert _heading(summary_slides[0]) == "Grain Size Summary (cont'd 1/2)"
+    assert _heading(summary_slides[1]) == "Grain Size Summary (cont'd 2/2)"
+
+    charts_slides = [s for s in prs.slides if _heading(s) == "Grain Size Summary — Charts"]
+    assert len(charts_slides) == 1
+    charts = [sh.chart for sh in charts_slides[0].shapes if sh.has_chart]
+    assert len(charts) == 3
+    assert all(len(list(c.plots[0].categories)) == n for c in charts)
+
+
+def test_part_summary_small_part_count_still_single_slide(tmp_path):
     model = _build_model(tmp_path, n=3)
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    exec_slide = prs.slides[1]
-    tables = [sh for sh in exec_slide.shapes if sh.has_table]
-    assert len(tables) == 1
-    table = tables[0].table
-    assert len(table.rows) == 3 + 2  # header + 3 images + combined
-    assert table.cell(len(table.rows) - 1, 0).text == "Combined"
+    summary_slides = [s for s in prs.slides if _heading(s).startswith("Grain Size Summary")]
+    assert len(summary_slides) == 1
 
+
+# ---------------------------------------------------------------------------
+# Coordinator layout review: table + 3 bar charts together on slide 2 (Option
+# A layout) when there are few enough parts; beyond MAX_PARTS_COMBINED parts,
+# the table alone stays on slide 2 and the charts move to slide 3.
+# ---------------------------------------------------------------------------
+
+def test_summary_slide_combines_table_and_charts_when_few_parts(tmp_path):
+    model = _build_parts_model(tmp_path, n_parts=3, n_lots=2, n_images=2)
+    assert 3 <= MAX_PARTS_COMBINED
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    slide = prs.slides[1]
+    assert _heading(slide) == "Grain Size Summary"
+    assert any(sh.has_table for sh in slide.shapes)
+    charts = [sh.chart for sh in slide.shapes if sh.has_chart]
+    assert len(charts) == 3
+    titles = [c.chart_title.text_frame.text for c in charts]
+    assert any("ASTM" in t for t in titles)
+    assert any("Diameter" in t for t in titles)
+    assert any("Area" in t for t in titles)
+    for c in charts:
+        assert len(list(c.plots[0].categories)) == 3
+        assert c.category_axis.axis_title.text_frame.text == "Part Number"
+        assert c.value_axis.axis_title.text_frame.text  # non-empty
+    # no leftover separate chart slides 3/4 for the small-part-count case
+    assert not any(sh.has_chart for sh in prs.slides[2].shapes)
+
+
+def test_summary_chart_uses_hierarchy_part_label(tmp_path):
+    model = _build_parts_model(tmp_path, n_parts=2, n_lots=1, n_images=1)
+    model.hierarchy[0]["label"] = "Casting Number"
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    chart = next(sh for sh in prs.slides[1].shapes if sh.has_chart).chart
+    assert chart.category_axis.axis_title.text_frame.text == "Casting Number"
+
+
+def test_more_than_six_parts_splits_table_and_charts_across_slides_2_and_3(tmp_path):
+    """Coordinator layout review: > ~6 parts -- table stays alone on slide 2,
+    the three charts move to their own slide 3."""
+    model = _build_parts_model(tmp_path, n_parts=8, n_lots=1, n_images=1, h=64, w=64, n_grains=10)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    table_slide, charts_slide = prs.slides[1], prs.slides[2]
+    assert any(sh.has_table for sh in table_slide.shapes)
+    assert not any(sh.has_chart for sh in table_slide.shapes)
+    table = next(sh for sh in table_slide.shapes if sh.has_table).table
+    assert len(table.rows) == 8 + 1
+
+    assert not any(sh.has_table for sh in charts_slide.shapes)
+    charts = [sh.chart for sh in charts_slide.shapes if sh.has_chart]
+    assert len(charts) == 3
+    assert all(len(list(c.plots[0].categories)) == 8 for c in charts)
+
+
+# ---------------------------------------------------------------------------
+# D-30: per-image data-table slides, grouped by part, restyled
+# ---------------------------------------------------------------------------
+
+def test_data_table_slides_grouped_by_part_with_continuation_numbering(tmp_path):
+    """Coordinator layout review: the FIRST slide of a part that continues
+    is also labelled "(continued 1/2)" (not just the later ones)."""
+    model = _build_parts_model(tmp_path, n_parts=1, n_lots=1, n_images=20, h=64, w=64, n_grains=10)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    data_slides = [s for s in prs.slides if _heading(s).startswith("P1")]
+    assert len(data_slides) == 2  # ceil(20 / 14)
+    assert _heading(data_slides[0]) == "P1 (continued 1/2)"
+    assert _heading(data_slides[1]) == "P1 (continued 2/2)"
+    total_rows = 0
+    for s in data_slides:
+        table = next(sh for sh in s.shapes if sh.has_table).table
+        headers = [table.cell(0, c).text for c in range(len(table.columns))]
+        assert headers[0] == "Part" and headers[1] == "Lot"
+        assert "Job" not in headers
+        n_data_rows = len(table.rows) - 1
+        assert n_data_rows <= MAX_DATA_ROWS
+        total_rows += n_data_rows
+    assert total_rows == 20
+
+
+def test_data_table_slide_never_mixes_parts(tmp_path):
+    model = _build_parts_model(tmp_path, n_parts=3, n_lots=3, n_images=6, h=64, w=64, n_grains=10)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    known_parts = {f"P{p + 1}" for p in range(3)}
+    checked = 0
+    for s in prs.slides:
+        base_part = _heading(s).split(" (continued")[0]
+        if base_part not in known_parts:
+            continue
+        table = next(sh for sh in s.shapes if sh.has_table).table
+        parts_in_rows = {table.cell(r, 0).text for r in range(1, len(table.rows))}
+        assert parts_in_rows == {base_part}
+        checked += 1
+    assert checked > 0
+
+
+def test_data_table_columns_and_no_job_column(tmp_path):
+    model = _build_parts_model(tmp_path, n_parts=1, n_lots=1, n_images=2)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    slide = next(s for s in prs.slides if _heading(s) == "P1")
+    table = next(sh for sh in slide.shapes if sh.has_table).table
+    headers = [table.cell(0, c).text for c in range(len(table.columns))]
+    assert headers == ["Part", "Lot", "Image", "Grains", "Mean Diam", "Std Diam",
+                       "Mean Area", "Median Area", "Coverage %", "Circularity", "ASTM G"]
+
+
+def test_data_table_truncates_long_image_name_and_notes_hold_full_name(tmp_path):
+    """Coordinator layout review: truncation is based on the (widened) Image
+    column's actual fit at the rendered font size, not a fixed character
+    count."""
+    model = _build_parts_model(tmp_path, n_parts=1, n_lots=1, n_images=1)
+    model.images[0].display_name = "A_Very_Long_Image_Display_Name_2026"
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    slide = next(s for s in prs.slides if _heading(s) == "P1")
+    table = next(sh for sh in slide.shapes if sh.has_table).table
+    shown = table.cell(1, 2).text
+    assert shown != "A_Very_Long_Image_Display_Name_2026"
+    assert shown.endswith("…")
+    assert len(shown) <= _max_chars_for_width(_DATA_IMAGE_COL_IN, 11)
+    notes_text = slide.notes_slide.notes_text_frame.text
+    assert "A_Very_Long_Image_Display_Name_2026" in notes_text
+
+
+def test_data_table_only_truncates_names_that_dont_fit(tmp_path):
+    """A normal-length display name (comfortably under the widened Image
+    column's estimated character budget) is shown in full."""
+    model = _build_parts_model(tmp_path, n_parts=1, n_lots=1, n_images=1)
+    model.images[0].display_name = "001_img_1_original.png"  # 22 chars
+    assert len(model.images[0].display_name) <= _max_chars_for_width(_DATA_IMAGE_COL_IN, 11)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    slide = next(s for s in prs.slides if _heading(s) == "P1")
+    table = next(sh for sh in slide.shapes if sh.has_table).table
+    assert table.cell(1, 2).text == "001_img_1_original.png"
+
+
+def test_data_table_no_red_fill_anywhere(tmp_path):
+    model = _build_parts_model(tmp_path, n_parts=2, n_lots=2, n_images=3)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+
+    def is_reddish(rgb):
+        return rgb[0] > 150 and rgb[1] < 100 and rgb[2] < 100
+
+    checked = 0
+    for s in prs.slides:
+        for sh in s.shapes:
+            if not sh.has_table:
+                continue
+            table = sh.table
+            for r in range(len(table.rows)):
+                for c in range(len(table.columns)):
+                    cell = table.cell(r, c)
+                    try:
+                        rgb = cell.fill.fore_color.rgb
+                    except Exception:
+                        continue
+                    checked += 1
+                    assert not is_reddish(rgb)
+    assert checked > 0
+
+
+def test_data_table_numeric_columns_right_aligned_text_left_aligned(tmp_path):
+    from pptx.enum.text import PP_ALIGN
+    model = _build_parts_model(tmp_path, n_parts=1, n_lots=1, n_images=1)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    slide = next(s for s in prs.slides if _heading(s) == "P1")
+    table = next(sh for sh in slide.shapes if sh.has_table).table
+    assert table.cell(1, 2).text_frame.paragraphs[0].alignment == PP_ALIGN.LEFT  # Image
+    assert table.cell(1, 3).text_frame.paragraphs[0].alignment == PP_ALIGN.RIGHT  # Grains
+
+
+def test_data_table_body_font_at_least_10pt(tmp_path):
+    model = _build_parts_model(tmp_path, n_parts=1, n_lots=1, n_images=2)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    slide = next(s for s in prs.slides if _heading(s) == "P1")
+    table = next(sh for sh in slide.shapes if sh.has_table).table
+    for c in range(len(table.columns)):
+        for run in table.cell(1, c).text_frame.paragraphs[0].runs:
+            assert run.font.size.pt >= 10
+
+
+def test_data_table_uses_hierarchy_part_and_lot_no_job_column(tmp_path):
+    model = _build_hierarchy_model_local(tmp_path, n=1, display_names=["L-44A_01"])
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    slide = next(s for s in prs.slides if _heading(s) == "7718-A")
+    table = next(sh for sh in slide.shapes if sh.has_table).table
+    headers = [table.cell(0, c).text for c in range(len(table.columns))]
+    assert headers[:2] == ["Part", "Lot"]
+    assert "Job" not in " ".join(headers)
+    row1 = [table.cell(1, c).text for c in range(len(table.columns))]
+    assert row1[0] == "7718-A" and row1[1] == "L-44A"
+    assert "L-44A_01" in row1
+
+
+# ---------------------------------------------------------------------------
+# Nothing may overflow the slide. Coordinator layout review: the summary
+# table's right edge ran past the slide (a column-width arithmetic bug) --
+# extend the check to all four sides, and to every content shape (table,
+# chart, picture), not just table bottoms. The header/footer/accent bars are
+# intentional full-bleed decoration (0-margin by design, unrelated to the
+# reported defect) and are excluded by their being exactly slide-width.
+# ---------------------------------------------------------------------------
+
+def _is_full_bleed_bar(shape, slide_w_in: float) -> bool:
+    return abs(Emu(shape.width).inches - slide_w_in) < 0.05
+
+
+def _content_shapes(slide, slide_w_in: float):
+    for shape in slide.shapes:
+        if not (shape.has_table or shape.has_chart or shape.shape_type == 13):
+            continue
+        if _is_full_bleed_bar(shape, slide_w_in):
+            continue
+        yield shape
+
+
+def _assert_content_within_margin(prs, margin: float = MARGIN_IN, tol: float = 0.02) -> int:
+    slide_w_in = Emu(prs.slide_width).inches
+    slide_h_in = Emu(prs.slide_height).inches
+    checked = 0
+    for s in prs.slides:
+        for shape in _content_shapes(s, slide_w_in):
+            left_in = Emu(shape.left).inches
+            top_in = Emu(shape.top).inches
+            right_in = left_in + Emu(shape.width).inches
+            bottom_in = top_in + Emu(shape.height).inches
+            assert left_in >= margin - tol, f"left {left_in} < margin {margin}"
+            assert top_in >= margin - tol, f"top {top_in} < margin {margin}"
+            assert right_in <= slide_w_in - margin + tol, f"right {right_in} > {slide_w_in - margin}"
+            assert bottom_in <= slide_h_in - margin + tol, f"bottom {bottom_in} > {slide_h_in - margin}"
+            checked += 1
+    assert checked > 0
+    return checked
+
+
+def test_content_within_margin_3_parts_3_lots_6_images(tmp_path):
+    model = _build_parts_model(tmp_path, n_parts=3, n_lots=3, n_images=6, h=64, w=64, n_grains=10)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    _assert_content_within_margin(prs)
+
+
+def test_content_within_margin_1_part_40_images(tmp_path):
+    model = _build_parts_model(tmp_path, n_parts=1, n_lots=1, n_images=40, h=64, w=64, n_grains=10)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    _assert_content_within_margin(prs)
+
+
+def test_content_within_margin_many_parts_charts_only_slide(tmp_path):
+    """Covers the > MAX_PARTS_COMBINED (table-then-charts-slide) branch."""
+    model = _build_parts_model(tmp_path, n_parts=9, n_lots=1, n_images=1, h=64, w=64, n_grains=10)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    _assert_content_within_margin(prs)
+
+
+def test_summary_table_area_column_shows_squared_unit(tmp_path):
+    """Coordinator layout review: "Mean Area" must show the calibrated
+    AREA unit (µm²), not the length unit (µm)."""
+    model = _build_parts_model(tmp_path, n_parts=2, n_lots=2, n_images=2, px_per_um=8.0)
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    table = next(sh for sh in prs.slides[1].shapes if sh.has_table).table
+    area_col = [h for h in range(len(table.columns))
+               if table.cell(0, h).text == "Mean Area"][0]
+    diam_col = [h for h in range(len(table.columns))
+               if table.cell(0, h).text == "Mean Diameter"][0]
+    for r in range(1, len(table.rows)):
+        assert table.cell(r, area_col).text.endswith("µm²")
+        assert table.cell(r, diam_col).text.endswith("µm")
+        assert not table.cell(r, diam_col).text.endswith("µm²")
+    chart = next(sh for sh in prs.slides[1].shapes if sh.has_chart
+                and "Area" in sh.chart.chart_title.text_frame.text).chart
+    assert chart.value_axis.axis_title.text_frame.text == "Mean Area (µm²)"
+    diam_chart = next(sh for sh in prs.slides[1].shapes if sh.has_chart
+                      and "Diameter" in sh.chart.chart_title.text_frame.text).chart
+    assert diam_chart.value_axis.axis_title.text_frame.text == "Mean Diameter (µm)"
+
+
+# ---------------------------------------------------------------------------
+# Coordinator layout review: the footer must always be a single line under a
+# length cap (long/many part/lot names used to wrap and get clipped).
+# ---------------------------------------------------------------------------
+
+def _footer_main_textbox(slide, slide_h_in: float):
+    cands = [sh for sh in slide.shapes if sh.has_text_frame and sh.text_frame.text.strip()
+            and abs(Emu(sh.top).inches - (slide_h_in - 0.32)) < 0.05]
+    return min(cands, key=lambda sh: Emu(sh.left).inches)
+
+
+def test_footer_collapses_to_counts_when_names_dont_fit(tmp_path):
+    model = _build_parts_model(tmp_path, n_parts=3, n_lots=3, n_images=2)
+    # a single-valued level (Job #) stays named; the multi-valued part/lot
+    # levels (3 parts, 9 distinctly-named lots) are what overflow the cap.
+    model.hierarchy.insert(0, {"key": "project", "label": "Job #", "value": "24-117"})
+    page_num = 2  # slide index 1 (summary) is the 2nd slide created, right after the cover
+    footer = _footer_text(model, page_num)
+    assert "\n" not in footer
+    assert len(footer) <= FOOTER_MAX_CHARS + 20   # + " · page N" suffix
+    assert "3 parts" in footer and "9 lots" in footer
+    assert "Job # 24-117" in footer
+
+    out = str(tmp_path / "deck.pptx")
+    render_pptx(model, out)
+    prs = Presentation(out)
+    slide_h_in = Emu(prs.slide_height).inches
+    box = _footer_main_textbox(prs.slides[1], slide_h_in)
+    assert box.text_frame.text == footer
+    assert not box.text_frame.word_wrap
+
+
+def test_footer_keeps_named_values_when_short(tmp_path):
+    model = _build_hierarchy_model_local(tmp_path, n=1)
+    footer = _footer_text(model, 1)
+    assert "Job # 24-117" in footer
+    assert "Part Number 7718-A" in footer
+    assert "Lot L-44A" in footer
+    assert len(footer) <= FOOTER_MAX_CHARS + 20
+
+
+# ---------------------------------------------------------------------------
+# Combined-distribution charts (unchanged content, now searched by heading
+# since they no longer sit at a fixed slide index).
+# ---------------------------------------------------------------------------
 
 def test_distribution_slides_have_native_charts_with_axis_titles(tmp_path):
     model = _build_model(tmp_path, n=2)
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    dist_slides = list(prs.slides)[2:4]
+    dist_slides = [_dist_slide(prs, "area"), _dist_slide(prs, "diameter")]
     units_seen = []
     for slide in dist_slides:
         charts = [sh for sh in slide.shapes if sh.has_chart]
@@ -184,9 +742,10 @@ def test_chart_options_disabling_area_removes_its_slide(tmp_path):
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    chart_slides = [s for s in prs.slides if any(sh.has_chart for sh in s.shapes)]
-    assert len(chart_slides) == 1
-    chart = next(sh for sh in chart_slides[0].shapes if sh.has_chart).chart
+    dist_chart_slides = [s for s in prs.slides
+                         if _heading(s).startswith("Combined ") and any(sh.has_chart for sh in s.shapes)]
+    assert len(dist_chart_slides) == 1
+    chart = next(sh for sh in dist_chart_slides[0].shapes if sh.has_chart).chart
     assert "Diameter" in chart.category_axis.axis_title.text_frame.text
 
 
@@ -196,8 +755,7 @@ def test_chart_options_normal_fit_off_drops_the_fit_series(tmp_path):
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    dist_slides = list(prs.slides)[2:4]
-    for slide in dist_slides:
+    for slide in (_dist_slide(prs, "area"), _dist_slide(prs, "diameter")):
         chart = next(sh for sh in slide.shapes if sh.has_chart).chart
         names = [s.name for s in chart.series]
         assert names == ["Count"]
@@ -209,10 +767,8 @@ def test_chart_options_custom_title_used_as_chart_title(tmp_path):
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    dist_slides = list(prs.slides)[2:4]
-    titles = [next(sh for sh in s.shapes if sh.has_chart).chart.chart_title.text_frame.text
-              for s in dist_slides]
-    assert any("coarse fraction" in t for t in titles)
+    chart = next(sh for sh in _dist_slide(prs, "diameter").shapes if sh.has_chart).chart
+    assert "coarse fraction" in chart.chart_title.text_frame.text
 
 
 def test_chart_options_min_max_restricts_binned_grains(tmp_path):
@@ -220,14 +776,14 @@ def test_chart_options_min_max_restricts_binned_grains(tmp_path):
     out_full = str(tmp_path / "full.pptx")
     render_pptx(model, out_full)
     prs_full = Presentation(out_full)
-    diam_full = next(sh for sh in list(prs_full.slides)[3].shapes if sh.has_chart).chart
+    diam_full = next(sh for sh in _dist_slide(prs_full, "diameter").shapes if sh.has_chart).chart
     total_full = sum(diam_full.series[0].values)
 
     model.chart_options = {"diameter": {"min": 0, "max": 7}}
     out_narrow = str(tmp_path / "narrow.pptx")
     render_pptx(model, out_narrow)
     prs_narrow = Presentation(out_narrow)
-    diam_narrow = next(sh for sh in list(prs_narrow.slides)[3].shapes if sh.has_chart).chart
+    diam_narrow = next(sh for sh in _dist_slide(prs_narrow, "diameter").shapes if sh.has_chart).chart
     total_narrow = sum(diam_narrow.series[0].values)
     assert total_narrow < total_full
 
@@ -238,7 +794,7 @@ def test_chart_options_min_max_restricts_binned_grains(tmp_path):
 
 def _diam_slide_chart_total(pptx_path: str):
     prs = Presentation(pptx_path)
-    chart = next(sh for sh in list(prs.slides)[3].shapes if sh.has_chart).chart
+    chart = next(sh for sh in _dist_slide(prs, "diameter").shapes if sh.has_chart).chart
     return sum(chart.series[0].values)
 
 
@@ -281,17 +837,18 @@ def test_chart_options_min_max_without_bound_unit_treated_as_current_render_unit
     assert _diam_slide_chart_total(out) == expected
 
 
+# ---------------------------------------------------------------------------
+# Per-image (original + overlay) slides -- unchanged content, found by title.
+# ---------------------------------------------------------------------------
+
 def test_image_slides_have_metric_callouts_and_caption(tmp_path):
     model = _build_model(tmp_path, n=2)
     model.images[0].caption = "Notably coarse grains"
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    image_slide = prs.slides[4]  # title, exec, area, diam, img1
-    text = "\n".join(
-        run.text for shape in image_slide.shapes if shape.has_text_frame
-        for p in shape.text_frame.paragraphs for run in p.runs
-    )
+    image_slide = _find_image_slide(prs, model.images[0])
+    text = _all_text(image_slide)
     assert "Grains" in text
     assert "Mean Diameter" in text
     assert "Notably coarse grains" in text
@@ -305,7 +862,7 @@ def test_overlay_opacity_zero_fades_overlay_to_plain_image(tmp_path):
     render_pptx(model, out)
     prs = Presentation(out)
     orig_arr = cv2.imread(model.images[0].image_path, cv2.IMREAD_COLOR)
-    image_slide = prs.slides[4]  # title, exec, area, diam, img1
+    image_slide = _find_image_slide(prs, model.images[0])
     pics = [sh for sh in image_slide.shapes if sh.shape_type == 13]
     overlay_pic = max(pics, key=lambda sh: sh.left)   # overlay sits on the right
     arr = cv2.imdecode(np.frombuffer(overlay_pic.image.blob, np.uint8), cv2.IMREAD_COLOR)
@@ -320,7 +877,7 @@ def test_overlay_opacity_default_keeps_overlay_colouring(tmp_path):
     render_pptx(model, out)
     prs = Presentation(out)
     orig_arr = cv2.imread(model.images[0].image_path, cv2.IMREAD_COLOR)
-    image_slide = prs.slides[4]
+    image_slide = _find_image_slide(prs, model.images[0])
     pics = [sh for sh in image_slide.shapes if sh.shape_type == 13]
     overlay_pic = max(pics, key=lambda sh: sh.left)
     arr = cv2.imdecode(np.frombuffer(overlay_pic.image.blob, np.uint8), cv2.IMREAD_COLOR)
@@ -348,7 +905,7 @@ def test_disabling_combined_distribution_removes_those_slides(tmp_path):
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    assert len(prs.slides) == _expected_slide_count(2, want_charts=False)
+    assert len(prs.slides) == _expected_slide_count(model, model.ordered_images(), want_charts=False)
 
 
 def test_excluding_image_reduces_slide_count(tmp_path):
@@ -357,7 +914,7 @@ def test_excluding_image_reduces_slide_count(tmp_path):
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    assert len(prs.slides) == _expected_slide_count(2)
+    assert len(prs.slides) == _expected_slide_count(model, model.ordered_images())
 
 
 def test_no_temp_files_leaked(tmp_path):
@@ -369,12 +926,6 @@ def test_no_temp_files_leaked(tmp_path):
     after = set(os.listdir(tmpdir))
     leaked = [n for n in (after - before) if "grain_report_pptx" in n]
     assert leaked == []
-
-
-def _all_text(slide):
-    return "\n".join(
-        run.text for shape in slide.shapes if shape.has_text_frame
-        for p in shape.text_frame.paragraphs for run in p.runs)
 
 
 def _add_custom_text(model, order, title, body):
@@ -395,7 +946,7 @@ def test_reordering_top_level_sections_reorders_slides(tmp_path):
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    titles = [_all_text(s).split("\n")[0] for s in prs.slides]
+    titles = [_heading(s) for s in prs.slides]
     methods_idx = next(i for i, t in enumerate(titles) if "Methods" in t)
     area_idx = next(i for i, t in enumerate(titles) if "Area Distribution" in t)
     assert methods_idx < area_idx
@@ -420,18 +971,20 @@ def test_disabling_cover_removes_title_slide(tmp_path):
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    assert len(prs.slides) == _expected_slide_count(1) - 1
-    assert "Executive Summary" in _all_text(prs.slides[0])
+    assert len(prs.slides) == _expected_slide_count(model, model.ordered_images()) - 1
+    assert _heading(prs.slides[0]) == "Grain Size Summary"
 
 
-def test_disabling_overview_table_removes_exec_summary_slide(tmp_path):
+def test_disabling_overview_table_removes_summary_and_data_table_slides(tmp_path):
     model = _build_model(tmp_path, n=1)
     model.get_section("overview_table").enabled = False
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    assert len(prs.slides) == _expected_slide_count(1) - 1
-    assert not any(sh.has_table for sh in prs.slides[1].shapes)
+    assert len(prs.slides) == _expected_slide_count(model, model.ordered_images()) - _overview_slide_count(
+        model, model.ordered_images())
+    joined = "\n".join(_all_text(s) for s in prs.slides)
+    assert "Grain Size Summary" not in joined
 
 
 @pytest.mark.parametrize("theme_id", list(PALETTES.keys()))
@@ -472,14 +1025,14 @@ def test_two_custom_text_sections_render_native_text_slides_in_order(tmp_path):
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    titles = [_all_text(s).split("\n")[0] for s in prs.slides]
+    titles = [_heading(s) for s in prs.slides]
     assert titles.count("") == 0
     prep_idx = titles.index("Sample Prep")
     accept_idx = titles.index("Acceptance Criteria")
-    exec_idx = titles.index("Executive Summary")
+    summary_idx = titles.index("Grain Size Summary")
     area_idx = next(i for i, t in enumerate(titles) if "Area Distribution" in t)
-    assert exec_idx < prep_idx < accept_idx < area_idx
-    assert len(prs.slides) == _expected_slide_count(1) + 2
+    assert summary_idx < prep_idx < accept_idx < area_idx
+    assert len(prs.slides) == _expected_slide_count(model, model.ordered_images()) + 2
 
 
 def test_disabled_custom_text_section_is_not_rendered(tmp_path):
@@ -489,7 +1042,7 @@ def test_disabled_custom_text_section_is_not_rendered(tmp_path):
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    assert len(prs.slides) == _expected_slide_count(1)
+    assert len(prs.slides) == _expected_slide_count(model, model.ordered_images())
     assert "Draft" not in "\n".join(_all_text(s) for s in prs.slides)
 
 
@@ -504,7 +1057,7 @@ _HIERARCHY = [
 ]
 
 
-def _build_hierarchy_model(tmp_path, n=2, display_names=None):
+def _build_hierarchy_model_local(tmp_path, n=2, display_names=None):
     det = GrainDetector()
     items = []
     for i in range(n):
@@ -518,11 +1071,11 @@ def _build_hierarchy_model(tmp_path, n=2, display_names=None):
             item.display_name = display_names[i]
         items.append(item)
     return ReportModel.from_results(items, title="Job Report", hierarchy=_HIERARCHY,
-                                     asset_dir=str(tmp_path / "assets"))
+                                    asset_dir=str(tmp_path / "assets"))
 
 
 def test_title_slide_shows_hierarchy_lines(tmp_path):
-    model = _build_hierarchy_model(tmp_path, n=1)
+    model = _build_hierarchy_model_local(tmp_path, n=1)
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
@@ -533,7 +1086,7 @@ def test_title_slide_shows_hierarchy_lines(tmp_path):
 
 
 def test_footer_shows_hierarchy_and_page_number(tmp_path):
-    model = _build_hierarchy_model(tmp_path, n=1)
+    model = _build_hierarchy_model_local(tmp_path, n=1)
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
@@ -545,27 +1098,14 @@ def test_footer_shows_hierarchy_and_page_number(tmp_path):
 
 
 def test_image_slide_title_uses_display_name(tmp_path):
-    model = _build_hierarchy_model(tmp_path, n=1, display_names=["L-44A_01"])
+    model = _build_hierarchy_model_local(tmp_path, n=1, display_names=["L-44A_01"])
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    image_slide = prs.slides[4]  # title, exec, area, diam, img1
+    image_slide = _find_image_slide(prs, model.images[0])
     text = _all_text(image_slide)
     assert "L-44A_01" in text
     assert "src_0" not in text
-
-
-def test_exec_summary_table_uses_hierarchy_column_labels(tmp_path):
-    model = _build_hierarchy_model(tmp_path, n=1, display_names=["L-44A_01"])
-    out = str(tmp_path / "deck.pptx")
-    render_pptx(model, out)
-    prs = Presentation(out)
-    table = [sh for sh in prs.slides[1].shapes if sh.has_table][0].table
-    headers = [table.cell(0, c).text for c in range(len(table.columns))]
-    assert "Job #" in headers and "Part Number" in headers and "Lot" in headers
-    row1 = [table.cell(1, c).text for c in range(len(table.columns))]
-    assert "L-44A_01" in row1
-    assert "24-117" in row1 and "7718-A" in row1 and "L-44A" in row1
 
 
 def test_legacy_model_without_hierarchy_keeps_old_footer_and_title(tmp_path):
@@ -623,20 +1163,11 @@ def test_long_title_does_not_overlap_subtitle(tmp_path):
     shapes = list(prs.slides[0].shapes)
     title_shape = next(sh for sh in shapes if sh.has_text_frame and model.title in sh.text_frame.text)
     title_bottom_in = Emu(title_shape.top).inches + Emu(title_shape.height).inches
-    # The very next shape drawn after the title is the first subtitle line
-    # (hierarchy/"Sample/Lot" line) -- it must start at or below the
-    # title's *actual* (possibly multi-line) bottom edge.
     next_box = shapes[shapes.index(title_shape) + 1]
     assert Emu(next_box.top).inches >= title_bottom_in - 0.01
 
 
 def test_short_title_keeps_original_subtitle_position(tmp_path):
-    """Regression guard: FIX-11 must not disturb the common (short-title,
-    single-line) case beyond a small, deliberate gap increase -- the old
-    hardcoded 3.7in put the subtitle only 0.1in below the title box's own
-    declared *top* + 1.2in height (3.8in), effectively no gap at all; the
-    new geometry always leaves a real +0.1in gap below the title's actual
-    bottom edge."""
     model = _build_model(tmp_path, n=1)
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
@@ -660,7 +1191,7 @@ def test_distribution_chart_normal_fit_is_a_line_not_bars(tmp_path):
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    area_slide = prs.slides[2]  # title, exec, area-dist
+    area_slide = _dist_slide(prs, "area")
     chart = next(sh for sh in area_slide.shapes if sh.has_chart).chart
     assert len(chart.plots) == 2
     bar_plot, line_plot = chart.plots
@@ -668,70 +1199,14 @@ def test_distribution_chart_normal_fit_is_a_line_not_bars(tmp_path):
     assert isinstance(line_plot, LinePlot)
     assert [s.name for s in bar_plot.series] == ["Count"]
     assert [s.name for s in line_plot.series] == ["Normal Fit"]
-    # Round-trips through save/reopen (real combo-chart XML, not a hack that
-    # only holds in memory).
     assert os.path.exists(out)
 
 
 # ---------------------------------------------------------------------------
-# FIX-12: the executive-summary table and the Methods text box used to
-# overflow straight through the footer bar (fixed 0.4in/row and a single
-# fixed-height text box, neither of which shrink/paginate on their own).
+# FIX-12: the Methods text box used to overflow straight through the footer
+# bar (a single fixed-height text box that never shrinks/paginates on its
+# own).
 # ---------------------------------------------------------------------------
-
-def _build_many_images_model(tmp_path, n, px_per_um=8.0):
-    det = GrainDetector()
-    items = []
-    for i in range(n):
-        gray, _ = make_mosaic(seed=i + 1, h=96, w=96, n_grains=12)
-        bgr = np.repeat(gray[:, :, None], 3, axis=2)
-        res = det.analyze(bgr, px_per_um=px_per_um, params=DetectionParams())
-        img_path = str(tmp_path / f"many_{i}.png")
-        cv2.imwrite(img_path, bgr)
-        items.append(ReportImageInput(image_path=img_path, result=res, image_bgr=bgr,
-                                       sample_id=f"S{i}", lot_number="L1"))
-    return ReportModel.from_results(items, title="Many Images", asset_dir=str(tmp_path / "assets_many"))
-
-
-def test_executive_summary_table_paginates_when_too_many_images(tmp_path):
-    n = 20
-    model = _build_many_images_model(tmp_path, n)
-    out = str(tmp_path / "deck.pptx")
-    render_pptx(model, out)
-    prs = Presentation(out)
-    exec_slides = [s for s in prs.slides if _all_text(s).startswith("Executive Summary")]
-    assert len(exec_slides) > 1
-
-    total_body_rows = 0
-    combined_seen = 0
-    for i, s in enumerate(exec_slides):
-        table_shape = next(sh for sh in s.shapes if sh.has_table)
-        bottom_in = Emu(table_shape.top).inches + Emu(table_shape.height).inches
-        assert bottom_in < FOOTER_TOP_IN  # FIX-12: never runs into the footer
-        table = table_shape.table
-        body = [table.cell(r, 0).text for r in range(1, len(table.rows))]
-        if i == len(exec_slides) - 1:
-            assert body[-1] == "Combined"
-            combined_seen += 1
-            body = body[:-1]
-        else:
-            assert "Combined" not in body
-        total_body_rows += len(body)
-    assert total_body_rows == n
-    assert combined_seen == 1
-    assert "(cont'd)" in _all_text(exec_slides[1])
-
-
-def test_executive_summary_small_image_count_still_single_slide(tmp_path):
-    """Regression guard: FIX-12 pagination must not split the common
-    (small-lot) case that already had its own dedicated test."""
-    model = _build_model(tmp_path, n=3)
-    out = str(tmp_path / "deck.pptx")
-    render_pptx(model, out)
-    prs = Presentation(out)
-    exec_slides = [s for s in prs.slides if _all_text(s).startswith("Executive Summary")]
-    assert len(exec_slides) == 1
-
 
 def test_methods_slide_paginates_when_params_dont_fit(tmp_path):
     model = _build_model(tmp_path, n=1)

@@ -1,10 +1,15 @@
 """PowerPoint renderer (python-pptx) for ``ReportModel``.
 
 16:9 deck built in ``Section.order`` (the designer's outline order), with
-two structural rules always enforced (matching the Excel renderer and the
-designer): a ``cover`` section (if enabled) is the title slide and an
-``overview_table`` section (if enabled) is the executive summary — combined
-distribution slides (NATIVE, editable charts), one slide per included image
+structural rules always enforced (matching the Excel renderer and the
+designer): a ``cover`` section (if enabled) is the title slide; an
+``overview_table`` section (if enabled) is, in order, (1) a part-summary
+table slide -- one row per PART, averaged across its lots (D-30 /
+REP-DESIGN-01, see ``_part_summary_rows``) -- (2) three native bar charts
+(ASTM G / mean diameter / mean area, one bar per part), and (3) the
+per-image data-table slides, split so a part's rows never continue onto the
+next part's slide (``_plan_image_table_slides``); combined distribution
+slides (NATIVE, editable charts) follow; one slide per included image
 (original + overlay side by side with key-metric callouts, in
 ``ImageSummary.order``), a methods slide and ``custom_text`` slides can
 appear in any order/mix the designer picked; the appendix slide (pointing at
@@ -19,6 +24,7 @@ explicit shapes so the result is template-agnostic either way.
 """
 from __future__ import annotations
 
+import math
 import os
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
@@ -72,8 +78,40 @@ METHODS_BOX_W_IN = 11.5
 METHODS_FONT_PT = 16
 METHODS_SAFE_BOTTOM_IN = 6.9
 
-EXEC_TABLE_ROW_IN = 0.4
-EXEC_TABLE_SAFE_BOTTOM_IN = 6.95
+TABLE_ROW_IN = 0.37
+TABLE_SAFE_BOTTOM_IN = 6.95
+
+# D-30 / REP-DESIGN-01 (+ coordinator layout-review fixes): part-summary
+# table and per-image data-table caps.
+MAX_SUMMARY_ROWS = 14
+MAX_DATA_ROWS = 14
+# Coordinator review: table + 3 bar charts share slide 2 only while they
+# comfortably fit one compact table on top of 3 side-by-side charts; beyond
+# this many parts the table stays on slide 2 (paginated as needed) and the
+# 3 charts move to their own slide right after.
+MAX_PARTS_COMBINED = 6
+
+# Coordinator review (layout defects): every content shape (table/chart/
+# picture -- not the intentional full-bleed header/footer bars) must stay
+# inside this margin on all four sides. ``CONTENT_LEFT_IN``/``CONTENT_WIDTH_IN``
+# is the standard usable horizontal band content tables/charts are laid out
+# in so they can never run past the right edge (the bug that clipped the
+# summary table's last column).
+MARGIN_IN = 0.5
+CONTENT_LEFT_IN = MARGIN_IN
+CONTENT_RIGHT_IN = 13.333 - MARGIN_IN
+CONTENT_WIDTH_IN = CONTENT_RIGHT_IN - CONTENT_LEFT_IN
+
+# Coordinator review: the fixed 14-character image-name truncation was too
+# aggressive for the widened Image column -- truncate only when the name
+# actually doesn't fit the column at the rendered font size.
+IMAGE_CELL_TEXT_MARGIN_IN = 0.2   # cell left+right internal padding allowance
+IMAGE_CHAR_WIDTH_FACTOR = 0.5     # average glyph width vs font pt, regular weight
+
+# Coordinator review: a footer that lists every distinct part/lot name used
+# to wrap to 2 lines and get clipped by the footer bar -- cap the "named"
+# form's length and fall back to counts ("3 parts · 9 lots") beyond it.
+FOOTER_MAX_CHARS = 80
 
 
 def _hexrgb(h: str) -> RGBColor:
@@ -163,18 +201,39 @@ def render_pptx(model: ReportModel, output_path: str, template_path: Optional[st
                 _title_slide(new_slide(), model, navy, accent2)
                 _add_footer(prs.slides[-1], model, page[0], navy)
             elif kind == "overview_table":
-                # FIX-12: paginate across continuation slides once the
-                # table would otherwise run past the footer.
-                show_tiles_first = bool(model.sample_statistics and
-                                         model.is_enabled("sample_statistics", default=True))
-                cap_first = _exec_table_capacity(2.35 if show_tiles_first else 1.3)
-                cap_rest = _exec_table_capacity(1.3)
-                pages = _paginate_images_for_table(images, cap_first, cap_rest)
-                for i, chunk in enumerate(pages):
-                    _exec_summary_slide(new_slide(), model, images, navy, page_images=chunk,
-                                         show_tiles=(i == 0), show_combined=(i == len(pages) - 1),
-                                         heading_suffix="" if i == 0 else " (cont'd)")
-                    _add_footer(prs.slides[-1], model, page[0], navy)
+                # D-30 / REP-DESIGN-01 (+ coordinator layout-review fixes):
+                # the old per-image "Executive Summary" table (+ Combined
+                # row + INN-27 KPI tiles) is replaced by, always in this
+                # order right after the cover: (1) the part-summary table
+                # (one row per PART, averaged over its lots -- see
+                # ``_part_summary_rows``) together with the three native bar
+                # charts (G / diameter / area, one bar per part) on slide 2
+                # -- table across the top, charts side by side underneath --
+                # when there are few enough parts for that to stay legible
+                # (``MAX_PARTS_COMBINED``); beyond that, the table alone
+                # (paginated as needed) stays on slide 2 and the 3 charts
+                # move to their own slide right after. (2) the restyled
+                # per-image data tables, split so a part's rows never
+                # continue onto the next part's slide.
+                if images:
+                    rows, au, du = _part_summary_rows(model, images)
+                    part_label = _part_axis_label(model)
+                    if len(rows) <= MAX_PARTS_COMBINED:
+                        _summary_and_charts_slide(new_slide(), rows, au, du, part_label, navy, series)
+                        _add_footer(prs.slides[-1], model, page[0], navy)
+                    else:
+                        summary_pages = _chunk(rows, MAX_SUMMARY_ROWS)
+                        for i, chunk in enumerate(summary_pages):
+                            suffix = ("" if len(summary_pages) <= 1
+                                     else f" (cont'd {i + 1}/{len(summary_pages)})")
+                            _part_summary_slide(new_slide(), chunk, au, du, navy, heading_suffix=suffix)
+                            _add_footer(prs.slides[-1], model, page[0], navy)
+                        _charts_only_slide(new_slide(), rows, au, du, part_label, navy, series)
+                        _add_footer(prs.slides[-1], model, page[0], navy)
+
+                    for part, idx, total, page_rows in _plan_image_table_slides(model, images):
+                        _image_data_table_slide(new_slide(), model, part, idx, total, page_rows, navy)
+                        _add_footer(prs.slides[-1], model, page[0], navy)
             elif kind == "charts":
                 opts = resolve_chart_options(model.chart_options)
                 if opts["area"]["enabled"]:
@@ -218,10 +277,10 @@ def render_pptx(model: ReportModel, output_path: str, template_path: Optional[st
 # ---------------------------------------------------------------------------
 
 def _textbox(slide, left, top, width, height, text, *, size=18, bold=False, color=TEXT_DARK,
-             align=PP_ALIGN.LEFT, font="Calibri"):
+             align=PP_ALIGN.LEFT, font="Calibri", wrap=True):
     box = slide.shapes.add_textbox(left, top, width, height)
     tf = box.text_frame
-    tf.word_wrap = True
+    tf.word_wrap = wrap
     p = tf.paragraphs[0]
     p.alignment = align
     run = p.add_run()
@@ -241,20 +300,64 @@ def _fill_rect(slide, left, top, width, height, color):
     return shape
 
 
+def _distinct_level_values(model: ReportModel, key: str) -> List[str]:
+    seen: List[str] = []
+    for img in model.images:
+        v = img.level_value(key, "")
+        if v and v not in seen:
+            seen.append(v)
+    return seen
+
+
+_LEVEL_PLURAL_WORD = {"project": "jobs", "sample": "parts", "part": "parts", "lot": "lots"}
+
+
+def _level_plural_word(h: Dict[str, str]) -> str:
+    word = _LEVEL_PLURAL_WORD.get(h.get("key", ""))
+    if word:
+        return word
+    label = (h.get("label") or h.get("key") or "item").strip().lower()
+    return label if label.endswith("s") else label + "s"
+
+
 def _footer_text(model: ReportModel, page_num: int) -> str:
     """'<Job #> 24-117 · <Part Number> 7718-A · <Lot> L-44A · page n' when a
-    hierarchy is set; otherwise the legacy '<title> ... page' footer."""
-    if model.hierarchy:
-        levels = " · ".join(f"{h.get('label', '')} {model.hierarchy_value(h)}".strip()
-                                  for h in model.hierarchy)
-        return f"{levels} · page {page_num}" if levels else f"page {page_num}"
-    return model.title or "Grain Analysis Report"
+    hierarchy is set and the names are short enough to fit one line;
+    otherwise (coordinator layout-review fix -- a report spanning many
+    parts/lots used to list every distinct name and wrap to 2 lines,
+    clipped by the footer bar) each multi-value level collapses to a count,
+    e.g. 'Job # 24-117 · 3 parts · 9 lots · page n', so the footer always
+    stays a single line under ``FOOTER_MAX_CHARS``. Legacy no-hierarchy
+    models keep the '<title> ... page' footer."""
+    if not model.hierarchy:
+        return model.title or "Grain Analysis Report"
+
+    named_bits = [
+        f"{h.get('label', '')} {h.get('value') or ', '.join(_distinct_level_values(model, h.get('key', '')))}".strip()
+        for h in model.hierarchy
+    ]
+    named_line = " · ".join(b for b in named_bits if b)
+    if len(named_line) <= FOOTER_MAX_CHARS:
+        return f"{named_line} · page {page_num}" if named_line else f"page {page_num}"
+
+    counted_bits = []
+    for h in model.hierarchy:
+        label = h.get("label", "")
+        if h.get("value"):
+            counted_bits.append(f"{label} {h['value']}".strip())
+        else:
+            counted_bits.append(f"{len(_distinct_level_values(model, h.get('key', '')))} {_level_plural_word(h)}")
+    line = " · ".join(b for b in counted_bits if b)
+    return f"{line} · page {page_num}" if line else f"page {page_num}"
 
 
 def _add_footer(slide, model: ReportModel, page_num: int, navy: RGBColor = NAVY) -> None:
     _fill_rect(slide, 0, SLIDE_H - Inches(0.32), SLIDE_W, Inches(0.32), navy)
-    _textbox(slide, Inches(0.3), SLIDE_H - Inches(0.32), Inches(9), Inches(0.32),
-              _footer_text(model, page_num), size=10, color=WHITE, align=PP_ALIGN.LEFT)
+    # Coordinator layout-review fix: word_wrap=False so the footer can never
+    # wrap to a second line and get clipped by the footer bar's fixed
+    # height -- ``_footer_text`` already keeps it short enough to fit.
+    _textbox(slide, Inches(0.3), SLIDE_H - Inches(0.32), Inches(10.5), Inches(0.32),
+              _footer_text(model, page_num), size=10, color=WHITE, align=PP_ALIGN.LEFT, wrap=False)
     _textbox(slide, SLIDE_W - Inches(1.3), SLIDE_H - Inches(0.32), Inches(1.0), Inches(0.32),
               str(page_num), size=10, color=WHITE, align=PP_ALIGN.RIGHT)
 
@@ -450,22 +553,6 @@ def _sample_lot_summary(model: ReportModel) -> str:
     return f"{s} / {l}"
 
 
-EXEC_TABLE_W_IN = 12.1
-EXEC_TABLE_IMAGE_COL_IN = 2.6
-EXEC_TABLE_LEVEL_COL_IN = 1.3
-EXEC_TABLE_STAT_COLS = 6  # Grains, Mean Diam, Std Diam, Mean Area, Coverage %, Circularity
-EXEC_TABLE_STAT_MIN_IN = 0.9
-
-
-def _exec_table_col_widths(n_level_cols: int) -> List[float]:
-    """FIX-12: fixed, generous width for the free-text "Image"/hierarchy
-    columns so normal-length values don't wrap (see caller); the short
-    numeric/stat columns split whatever width is left."""
-    stat_total = EXEC_TABLE_W_IN - EXEC_TABLE_IMAGE_COL_IN - EXEC_TABLE_LEVEL_COL_IN * n_level_cols
-    stat_w = max(EXEC_TABLE_STAT_MIN_IN, stat_total / EXEC_TABLE_STAT_COLS)
-    return [EXEC_TABLE_IMAGE_COL_IN] + [EXEC_TABLE_LEVEL_COL_IN] * n_level_cols + [stat_w] * EXEC_TABLE_STAT_COLS
-
-
 def _style_body_cell(cell, size: int = 11) -> None:
     """FIX-12: an explicit, compact body font (vs. the ~18-24pt table-style
     default python-pptx falls back to when no size is set) keeps row
@@ -475,160 +562,406 @@ def _style_body_cell(cell, size: int = 11) -> None:
             run.font.size = Pt(size)
 
 
-def _exec_table_capacity(table_top_in: float) -> int:
-    """FIX-12: max image rows (excluding the header and the Combined row)
-    that fit in one executive-summary table before it would run past the
-    footer, at the table's fixed ``EXEC_TABLE_ROW_IN`` row height."""
-    avail_rows = int((EXEC_TABLE_SAFE_BOTTOM_IN - table_top_in) / EXEC_TABLE_ROW_IN)
-    return max(1, avail_rows - 2)
+# ---------------------------------------------------------------------------
+# D-30 / REP-DESIGN-01: part-level summary slide + restyled per-image data
+# tables (replaces the old per-image "Executive Summary" + Combined row +
+# INN-27 KPI tiles). "Part" is the hierarchy "sample"/"part" level (falling
+# back to ``ImageSummary.sample_id``); "Lot" is the hierarchy "lot" level
+# (falling back to ``lot_number``). Parts/lots with no value are grouped
+# under "—" so a report with no hierarchy at all still gets one part.
+# ---------------------------------------------------------------------------
+
+def _hier_level(model: ReportModel, keys: Tuple[str, ...]) -> Optional[Dict[str, str]]:
+    for h in model.hierarchy:
+        if h.get("key") in keys:
+            return h
+    return None
 
 
-def _paginate_images_for_table(images: List[ImageSummary], capacity_first: int,
-                                capacity_rest: int) -> List[List[ImageSummary]]:
-    """FIX-12: split ``images`` across as many executive-summary slides as
-    needed so the table's rows never run past the footer -- a fixed
-    ``rows * 0.4in`` table used to grow straight through the footer bar
-    (and even off the bottom of the slide) once a lot had more than a
-    handful of images. ``capacity_first``/``capacity_rest`` differ because
-    the first page may also carry the INN-27 lot tiles, which push the
-    table down and leave it less room."""
-    if len(images) <= capacity_first:
-        return [list(images)]
-    pages = [images[:capacity_first]]
-    remaining = images[capacity_first:]
-    while remaining:
-        pages.append(remaining[:capacity_rest])
-        remaining = remaining[capacity_rest:]
-    return pages
+def _part_axis_label(model: ReportModel) -> str:
+    lvl = _hier_level(model, ("sample", "part"))
+    return (lvl.get("label") or "Part Number") if lvl else "Part Number"
 
 
-def _exec_summary_slide(slide, model: ReportModel, images: List[ImageSummary], navy: RGBColor = NAVY, *,
-                         page_images: Optional[List[ImageSummary]] = None, show_tiles: bool = True,
-                         show_combined: bool = True, heading_suffix: str = "") -> None:
-    """One executive-summary table slide. ``images`` is always the *full*
-    included-image list (used for the lot tiles and the Combined row);
-    ``page_images`` (FIX-12 pagination) is the subset of rows drawn on
-    *this* slide -- defaults to all of ``images`` when the whole table
-    fits on one slide."""
-    _slide_heading(slide, "Executive Summary" + heading_suffix, navy)
-    if not images:
-        _textbox(slide, Inches(0.8), Inches(1.5), Inches(11), Inches(0.5), "No images included.", size=14)
-        return
-    page_images = images if page_images is None else page_images
+def _image_part_lot(model: ReportModel, img: ImageSummary) -> Tuple[str, str]:
+    part_lvl = _hier_level(model, ("sample", "part"))
+    if part_lvl is not None:
+        part = img.level_value(part_lvl.get("key", ""), part_lvl.get("value", ""))
+    else:
+        part = img.sample_id
+    lot_lvl = _hier_level(model, ("lot",))
+    if lot_lvl is not None:
+        lot = img.level_value(lot_lvl.get("key", ""), lot_lvl.get("value", ""))
+    else:
+        lot = img.lot_number
+    return (part or "—"), (lot or "—")
 
-    table_top_in = 1.3
-    if show_tiles and model.sample_statistics and model.is_enabled("sample_statistics", default=True):
-        _lot_tiles(slide, model, navy)
-        table_top_in = 2.35
 
-    level_cols = model.level_columns() if model.hierarchy else []
-    headers = (["Image"] + [label for _, label in level_cols] +
-               ["Grains", "Mean Diam", "Std Diam", "Mean Area", "Coverage %", "Circularity"])
-    rows = len(page_images) + 1 + (1 if show_combined else 0)  # header + page images (+ combined)
-    cols = len(headers)
-    table_shape = slide.shapes.add_table(rows, cols, Inches(0.6), Inches(table_top_in), Inches(12.1),
-                                          Inches(EXEC_TABLE_ROW_IN) * rows)
-    table = table_shape.table
-    # FIX-12: an equal-width "Image" column left long filenames/display
-    # names wrapping to 2 lines, which makes PowerPoint auto-expand that
-    # row well past our budgeted EXEC_TABLE_ROW_IN -- exactly the overflow
-    # this fix is meant to prevent. Give Image (and any hierarchy level
-    # columns, which can also hold free text) generous fixed width so
-    # normal-length values fit on one line; split the rest evenly across
-    # the short numeric/stat columns.
-    for c, w_in in enumerate(_exec_table_col_widths(len(level_cols))):
-        table.columns[c].width = Inches(w_in)
+def _group_by_part(model: ReportModel,
+                    images: List[ImageSummary]) -> Dict[str, Dict[str, List[ImageSummary]]]:
+    groups: Dict[str, Dict[str, List[ImageSummary]]] = {}
+    for img in images:
+        part, lot = _image_part_lot(model, img)
+        groups.setdefault(part, {}).setdefault(lot, []).append(img)
+    return groups
 
-    for c, h in enumerate(headers):
+
+def _global_unit(model: ReportModel, images: List[ImageSummary]) -> Tuple[str, float, str, float, bool]:
+    """One (area_unit, area_mult, length_unit, length_mult, calibrated) for
+    the whole part-summary table/charts, so every part's row/bar is
+    comparable -- mirrors the Excel renderer's "Combined" row unit."""
+    if images and all(i.has_calibration for i in images):
+        au, am, du, dm = resolve_units(images[0].px_per_um, model.units)
+        return au, am, du, dm, True
+    return "px²", 1.0, "px", 1.0, False
+
+
+def _image_mean_area_diam(img: ImageSummary, am: float, dm: float, calibrated: bool) -> Tuple[float, float]:
+    if calibrated:
+        return img.mean_area_um2 * am, img.mean_diameter_um * dm
+    areas = [g["area_px"] for g in img.grains]
+    diams = [g["diameter_px"] for g in img.grains]
+    return (float(np.mean(areas)) if areas else 0.0, float(np.mean(diams)) if diams else 0.0)
+
+
+def _ci95_halfwidth(sd: Optional[float], n: int) -> Optional[float]:
+    """Two-sided 95% CI half-width (Student-t) for a sample of size ``n``
+    with standard deviation ``sd``; ``None`` when undefined (n < 2)."""
+    if sd is None or n < 2:
+        return None
+    from scipy import stats as _st
+    t = float(_st.t.ppf(0.975, n - 1))
+    return t * sd / math.sqrt(n)
+
+
+def _part_summary_rows(model: ReportModel,
+                        images: List[ImageSummary]) -> Tuple[List[Dict[str, Any]], str, str]:
+    """One row per part -- ``[{"part", "n_lots", "n_images", "G_mean",
+    "G_ci", "diam_mean", "diam_sd", "area_mean", "area_sd"}, ...]`` plus the
+    (area_unit, length_unit) every row/bar is expressed in.
+
+    Averaging rule: each lot's mean is computed first (mean of its images'
+    per-image means), then the part value is the mean *of the lot means* --
+    so every lot counts equally regardless of how many images it has. SD/CI
+    are taken across lot means when the part has >= 2 lots; with exactly one
+    lot, they fall back to the spread across that lot's images (a single lot
+    mean has no spread of its own to measure).
+    """
+    au, am, du, dm, calibrated = _global_unit(model, images)
+    groups = _group_by_part(model, images)
+    rows: List[Dict[str, Any]] = []
+    for part, lots in groups.items():
+        n_lots = len(lots)
+        n_images = sum(len(v) for v in lots.values())
+        lot_G_means: List[Optional[float]] = []
+        lot_diam_means: List[float] = []
+        lot_area_means: List[float] = []
+        single_lot_imgs: Optional[List[ImageSummary]] = None
+        for lot, imgs in lots.items():
+            gs = [i.astm_g for i in imgs if i.astm_g is not None]
+            pairs = [_image_mean_area_diam(i, am, dm, calibrated) for i in imgs]
+            lot_G_means.append(float(np.mean(gs)) if gs else None)
+            lot_diam_means.append(float(np.mean([d for _a, d in pairs])) if pairs else 0.0)
+            lot_area_means.append(float(np.mean([a for a, _d in pairs])) if pairs else 0.0)
+            if n_lots == 1:
+                single_lot_imgs = imgs
+
+        valid_lot_G = [g for g in lot_G_means if g is not None]
+        part_G = float(np.mean(valid_lot_G)) if valid_lot_G else None
+        part_diam = float(np.mean(lot_diam_means)) if lot_diam_means else 0.0
+        part_area = float(np.mean(lot_area_means)) if lot_area_means else 0.0
+
+        if n_lots >= 2:
+            g_sample, diam_sample, area_sample = valid_lot_G, lot_diam_means, lot_area_means
+        else:
+            imgs = single_lot_imgs or []
+            g_sample = [i.astm_g for i in imgs if i.astm_g is not None]
+            pairs = [_image_mean_area_diam(i, am, dm, calibrated) for i in imgs]
+            area_sample = [a for a, _d in pairs]
+            diam_sample = [d for _a, d in pairs]
+
+        g_sd = float(np.std(g_sample, ddof=1)) if len(g_sample) >= 2 else None
+        diam_sd = float(np.std(diam_sample, ddof=1)) if len(diam_sample) >= 2 else None
+        area_sd = float(np.std(area_sample, ddof=1)) if len(area_sample) >= 2 else None
+        g_ci = _ci95_halfwidth(g_sd, len(g_sample))
+
+        rows.append({
+            "part": part, "n_lots": n_lots, "n_images": n_images,
+            "G_mean": part_G, "G_ci": g_ci, "G_sd": g_sd,
+            "diam_mean": part_diam, "diam_sd": diam_sd,
+            "area_mean": part_area, "area_sd": area_sd,
+        })
+    return rows, au, du
+
+
+def _fmt_mean_sd(mean: float, sd: Optional[float], unit: str) -> str:
+    if sd is None:
+        return f"{mean:.2f} {unit}"
+    return f"{mean:.2f} ± {sd:.2f} {unit}"
+
+
+def _fmt_g_ci(mean: Optional[float], ci: Optional[float]) -> str:
+    if mean is None:
+        return "n/a"
+    if ci is None:
+        return f"{mean:.2f} ± n/a"
+    return f"{mean:.2f} ± {ci:.2f}"
+
+
+def _chunk(seq: List[Any], n: int) -> List[List[Any]]:
+    if not seq:
+        return [[]]
+    return [seq[i:i + n] for i in range(0, len(seq), n)]
+
+
+def _style_data_row(table, r: int, text_col_count: int, size: int = 11) -> None:
+    """Zebra-striped body row (even rows tinted) + right-aligned numeric
+    columns / left-aligned text columns -- the approved table style shared
+    by the part-summary and per-image data tables."""
+    fill = LIGHT_BAND if (r % 2 == 0) else WHITE
+    for c in range(len(table.columns)):
+        cell = table.cell(r, c)
+        cell.fill.solid()
+        cell.fill.fore_color.rgb = fill
+        for p in cell.text_frame.paragraphs:
+            p.alignment = PP_ALIGN.LEFT if c < text_col_count else PP_ALIGN.RIGHT
+            for run in p.runs:
+                run.font.size = Pt(size)
+                run.font.color.rgb = TEXT_DARK
+
+
+_SUMMARY_HEADERS = ["Part", "Lots", "Images", "ASTM G", "Mean Diameter", "Mean Area"]
+# Sums to CONTENT_WIDTH_IN (12.333in) exactly -- the standalone (>MAX_PARTS_COMBINED
+# parts) summary-table slide.
+_SUMMARY_COL_WIDTHS_IN = [2.933, 1.1, 1.1, 2.3, 2.4, 2.5]
+# Compact variant used on the combined slide 2 (table + 3 charts) -- a bit
+# narrower on the identity columns so the table reads as a "header strip"
+# above the charts.
+_SUMMARY_COMBINED_COL_WIDTHS_IN = [3.033, 1.0, 1.0, 2.4, 2.4, 2.5]
+SUMMARY_COMBINED_ROW_IN = 0.3
+
+
+def _fill_summary_table(table, rows: List[Dict[str, Any]], au: str, du: str, navy: RGBColor,
+                        header_size: int, body_size: int) -> None:
+    for c, h in enumerate(_SUMMARY_HEADERS):
         cell = table.cell(0, c)
         cell.text = h
-        _style_header_cell(cell, navy)
-
-    for r, img in enumerate(page_images, start=1):
-        au, du, mean_a, med_a, std_a, mean_d, std_d = _row_size_stats(model, img)
-        vals = (
-            [img.display()] + model.row_levels(img) + [
-                str(img.grain_count),
-                f"{mean_d:.2f} {du}",
-                f"{std_d:.2f} {du}",
-                f"{mean_a:.2f} {au}",
-                f"{img.grain_coverage_pct:.1f}",
-                f"{img.mean_circularity:.3f}",
-            ]
-        ) if model.hierarchy else [
-            img.display(),
-            str(img.grain_count),
-            f"{mean_d:.2f} {du}",
-            f"{std_d:.2f} {du}",
-            f"{mean_a:.2f} {au}",
-            f"{img.grain_coverage_pct:.1f}",
-            f"{img.mean_circularity:.3f}",
+        _style_header_cell(cell, navy, size=header_size)
+    for r, row in enumerate(rows, start=1):
+        vals = [
+            row["part"], str(row["n_lots"]), str(row["n_images"]),
+            _fmt_g_ci(row["G_mean"], row["G_ci"]),
+            _fmt_mean_sd(row["diam_mean"], row["diam_sd"], du),
+            _fmt_mean_sd(row["area_mean"], row["area_sd"], au),
         ]
         for c, v in enumerate(vals):
-            cell = table.cell(r, c)
-            cell.text = v
-            _style_body_cell(cell)
+            table.cell(r, c).text = v
+        _style_data_row(table, r, text_col_count=1, size=body_size)
 
-    if not show_combined:
-        return
 
-    # Combined row always summarises *all* included images, not just the
-    # rows drawn on this (last) page.
-    all_grains = [g for img in images for g in img.grains]
-    r = len(page_images) + 1
-    calibrated_all = all(i.has_calibration for i in images)
-    if calibrated_all and images:
-        au, am, du, dm = resolve_units(images[0].px_per_um, model.units)
-        diams = np.array([g["diameter_um"] for g in all_grains]) * dm if all_grains else np.array([0.0])
-        areas = np.array([g["area_um2"] for g in all_grains]) * am if all_grains else np.array([0.0])
-    else:
-        au, du = "px²", "px"
-        diams = np.array([g["diameter_px"] for g in all_grains]) if all_grains else np.array([0.0])
-        areas = np.array([g["area_px"] for g in all_grains]) if all_grains else np.array([0.0])
-    combined = (
-        ["Combined"] + ([""] * len(level_cols)) + [
-            str(len(all_grains)), f"{float(np.mean(diams)):.2f} {du}", f"{float(np.std(diams)):.2f} {du}",
-            f"{float(np.mean(areas)):.2f} {au}", f"{float(np.mean([i.grain_coverage_pct for i in images])):.1f}",
-            f"{float(np.mean([g['circularity'] for g in all_grains])) if all_grains else 0.0:.3f}",
+def _part_summary_slide(slide, rows: List[Dict[str, Any]], au: str, du: str, navy: RGBColor = NAVY,
+                         heading_suffix: str = "") -> None:
+    """Standalone part-summary table (only used beyond ``MAX_PARTS_COMBINED``
+    parts, where the table alone -- paginated as needed -- fills slide 2 and
+    the 3 bar charts move to their own slide right after). One row per
+    part, averaged across its lots -- no Grains column, no KPI tiles, no
+    "higher = finer" hint, no red rows."""
+    _slide_heading(slide, "Grain Size Summary" + heading_suffix, navy)
+    n_rows = len(rows) + 1
+    table_shape = slide.shapes.add_table(n_rows, len(_SUMMARY_HEADERS), Inches(CONTENT_LEFT_IN),
+                                          Inches(1.15), Inches(CONTENT_WIDTH_IN),
+                                          Inches(TABLE_ROW_IN) * n_rows)
+    table = table_shape.table
+    for c, w in enumerate(_SUMMARY_COL_WIDTHS_IN):
+        table.columns[c].width = Inches(w)
+    _fill_summary_table(table, rows, au, du, navy, header_size=11, body_size=11)
+
+
+def _three_chart_geometry() -> Tuple[float, List[float]]:
+    """(chart_width_in, [x0, x1, x2]) for 3 equal-width charts, side by
+    side, spanning the full ``CONTENT_WIDTH_IN`` band with a small gap
+    between them -- the last chart's right edge lands exactly on
+    ``CONTENT_RIGHT_IN`` (the 0.5in margin), never past it."""
+    gap = 0.15
+    cw = (CONTENT_WIDTH_IN - 2 * gap) / 3
+    x0 = CONTENT_LEFT_IN
+    x1 = x0 + cw + gap
+    x2 = x1 + cw + gap
+    return cw, [x0, x1, x2]
+
+
+def _draw_part_bar_chart(slide, x_in: float, y_in: float, cx_in: float, cy_in: float,
+                          bar_color_hex: str, chart_title: str, value_axis_title: str,
+                          category_axis_title: str, categories: List[str], values: List[float]):
+    """One native, editable bar chart -- one bar per PART -- at an explicit
+    position/size (so 3 can sit side by side on one slide)."""
+    chart_data = CategoryChartData()
+    chart_data.categories = categories or ["—"]
+    chart_data.add_series(chart_title, values or [0.0])
+    gframe = slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(x_in), Inches(y_in),
+                                    Inches(cx_in), Inches(cy_in), chart_data)
+    chart = gframe.chart
+    chart.has_title = True
+    chart.chart_title.text_frame.text = chart_title
+    chart.has_legend = False  # single series -- a legend would just be clutter
+    cat_axis = chart.category_axis
+    cat_axis.axis_title.text_frame.text = category_axis_title
+    val_axis = chart.value_axis
+    val_axis.axis_title.text_frame.text = value_axis_title
+    val_axis.has_major_gridlines = True
+    try:
+        chart.plots[0].series[0].format.fill.solid()
+        chart.plots[0].series[0].format.fill.fore_color.rgb = _hexrgb(bar_color_hex)
+    except Exception:
+        pass
+    return chart
+
+
+def _draw_three_part_charts(slide, rows: List[Dict[str, Any]], au: str, du: str, part_label: str,
+                             series: Dict[str, str], top_in: float, height_in: float) -> None:
+    categories = [r["part"] for r in rows]
+    cw, xs = _three_chart_geometry()
+    g_vals = [r["G_mean"] if r["G_mean"] is not None else 0.0 for r in rows]
+    diam_vals = [r["diam_mean"] for r in rows]
+    area_vals = [r["area_mean"] for r in rows]
+    _draw_part_bar_chart(slide, xs[0], top_in, cw, height_in, series["count_bar"],
+                        "ASTM Grain Size Number by Part", "ASTM G Number", part_label,
+                        categories, g_vals)
+    _draw_part_bar_chart(slide, xs[1], top_in, cw, height_in, series["diameter_bar"],
+                        "Mean Diameter by Part", f"Mean Diameter ({du})", part_label,
+                        categories, diam_vals)
+    _draw_part_bar_chart(slide, xs[2], top_in, cw, height_in, series["area_bar"],
+                        "Mean Area by Part", f"Mean Area ({au})", part_label,
+                        categories, area_vals)
+
+
+def _summary_and_charts_slide(slide, rows: List[Dict[str, Any]], au: str, du: str, part_label: str,
+                               navy: RGBColor, series: Dict[str, str]) -> None:
+    """SLIDE 2 (index 1) for <= ``MAX_PARTS_COMBINED`` parts (the Option A
+    approved layout): the part-summary table across the top (compact rows)
+    and the three bar charts side by side underneath, all on one slide."""
+    _slide_heading(slide, "Grain Size Summary", navy)
+    table_top_in = 1.05
+    n_rows = len(rows) + 1
+    table_shape = slide.shapes.add_table(n_rows, len(_SUMMARY_HEADERS), Inches(CONTENT_LEFT_IN),
+                                          Inches(table_top_in), Inches(CONTENT_WIDTH_IN),
+                                          Inches(SUMMARY_COMBINED_ROW_IN) * n_rows)
+    table = table_shape.table
+    for c, w in enumerate(_SUMMARY_COMBINED_COL_WIDTHS_IN):
+        table.columns[c].width = Inches(w)
+    _fill_summary_table(table, rows, au, du, navy, header_size=11, body_size=10)
+
+    table_bottom_in = table_top_in + SUMMARY_COMBINED_ROW_IN * n_rows
+    charts_top_in = table_bottom_in + 0.15
+    charts_height_in = min(4.5, (SLIDE_H.inches - MARGIN_IN) - charts_top_in)
+    _draw_three_part_charts(slide, rows, au, du, part_label, series, charts_top_in, charts_height_in)
+
+
+def _charts_only_slide(slide, rows: List[Dict[str, Any]], au: str, du: str, part_label: str,
+                        navy: RGBColor, series: Dict[str, str]) -> None:
+    """Slide right after the (paginated) standalone summary table when there
+    are more than ``MAX_PARTS_COMBINED`` parts -- the same three bar charts,
+    side by side, with the full slide height to themselves."""
+    _slide_heading(slide, "Grain Size Summary — Charts", navy)
+    top_in = 1.15
+    height_in = min(5.6, (SLIDE_H.inches - MARGIN_IN) - top_in)
+    _draw_three_part_charts(slide, rows, au, du, part_label, series, top_in, height_in)
+
+
+# ---------------------------------------------------------------------------
+# Per-image data-table slides -- restyled in the same table format as the
+# part summary, split so a part's rows never continue onto the next part's
+# slide, max ``MAX_DATA_ROWS`` rows per slide.
+# ---------------------------------------------------------------------------
+
+DATA_TABLE_HEADERS = ["Part", "Lot", "Image", "Grains", "Mean Diam", "Std Diam",
+                      "Mean Area", "Median Area", "Coverage %", "Circularity", "ASTM G"]
+# Part/Lot are short identifiers (narrowed); Image gets the reclaimed width
+# so normal-length display names aren't truncated. Sums to CONTENT_WIDTH_IN
+# (12.333in) exactly.
+_DATA_COL_WIDTHS_IN = [1.0, 0.85, 2.483, 0.8, 1.1, 1.1, 1.1, 1.1, 1.0, 1.0, 0.8]
+_DATA_IMAGE_COL_IN = _DATA_COL_WIDTHS_IN[2]
+_DATA_BODY_FONT_PT = 11
+
+
+def _max_chars_for_width(col_width_in: float, font_pt: int) -> int:
+    """How many characters of body text fit ``col_width_in`` wide at
+    ``font_pt`` -- an average-glyph-width estimate (same trick as
+    ``_wrap_line_count``), used to truncate only when a name really
+    doesn't fit its column instead of at a fixed character count."""
+    avail_in = max(0.1, col_width_in - IMAGE_CELL_TEXT_MARGIN_IN)
+    char_w_in = max(0.01, font_pt * IMAGE_CHAR_WIDTH_FACTOR / 72.0)
+    return max(3, int(avail_in / char_w_in))
+
+
+def _truncate_to_fit(name: str, col_width_in: float, font_pt: int = _DATA_BODY_FONT_PT) -> str:
+    maxlen = _max_chars_for_width(col_width_in, font_pt)
+    if len(name) <= maxlen:
+        return name
+    return name[: max(1, maxlen - 1)] + "…"
+
+
+def _plan_image_table_slides(model: ReportModel, images: List[ImageSummary]
+                              ) -> List[Tuple[str, int, int, List[Tuple[str, str, ImageSummary]]]]:
+    """``[(part, page_idx (1-based), total_pages, [(part, lot, image), ...]), ...]``
+    -- one entry per data-table slide, grouped by part (a part never shares
+    a slide with the next part's rows) and paginated at ``MAX_DATA_ROWS``."""
+    groups = _group_by_part(model, images)
+    plan: List[Tuple[str, int, int, List[Tuple[str, str, ImageSummary]]]] = []
+    for part, lots in groups.items():
+        rows = [(part, lot, img) for lot, imgs in lots.items() for img in imgs]
+        pages = _chunk(rows, MAX_DATA_ROWS)
+        total = len(pages)
+        for idx, page_rows in enumerate(pages, start=1):
+            plan.append((part, idx, total, page_rows))
+    return plan
+
+
+def _image_data_table_slide(slide, model: ReportModel, part: str, idx: int, total: int,
+                             rows: List[Tuple[str, str, ImageSummary]], navy: RGBColor = NAVY) -> None:
+    # Coordinator layout-review fix: even the *first* slide of a part that
+    # continues onto another slide carries the "(continued i/N)" suffix
+    # (not just the later ones), so it is never ambiguous which slide the
+    # reader is on.
+    heading = part if total <= 1 else f"{part} (continued {idx}/{total})"
+    _slide_heading(slide, heading, navy)
+    n_rows = len(rows) + 1
+    table_shape = slide.shapes.add_table(n_rows, len(DATA_TABLE_HEADERS), Inches(CONTENT_LEFT_IN),
+                                          Inches(1.05), Inches(CONTENT_WIDTH_IN),
+                                          Inches(TABLE_ROW_IN) * n_rows)
+    table = table_shape.table
+    for c, w in enumerate(_DATA_COL_WIDTHS_IN):
+        table.columns[c].width = Inches(w)
+    for c, h in enumerate(DATA_TABLE_HEADERS):
+        cell = table.cell(0, c)
+        cell.text = h
+        _style_header_cell(cell, navy, size=11)
+
+    truncated: Dict[str, str] = {}
+    for r, (part_v, lot_v, img) in enumerate(rows, start=1):
+        au, du, mean_a, med_a, std_a, mean_d, std_d = _row_size_stats(model, img)
+        disp = img.display()
+        shown = _truncate_to_fit(disp, _DATA_IMAGE_COL_IN, _DATA_BODY_FONT_PT)
+        if shown != disp:
+            truncated[shown] = disp
+        vals = [
+            part_v, lot_v, shown, str(img.grain_count),
+            f"{mean_d:.2f} {du}", f"{std_d:.2f} {du}",
+            f"{mean_a:.2f} {au}", f"{med_a:.2f} {au}",
+            f"{img.grain_coverage_pct:.1f}", f"{img.mean_circularity:.3f}",
+            f"{img.astm_g:.2f}" if img.astm_g is not None else "—",
         ]
-    )
-    for c, v in enumerate(combined):
-        cell = table.cell(r, c)
-        cell.text = v
-        _style_total_cell(cell)
+        for c, v in enumerate(vals):
+            table.cell(r, c).text = v
+        _style_data_row(table, r, text_col_count=3, size=_DATA_BODY_FONT_PT)
+
+    if truncated:
+        notes = slide.notes_slide
+        notes.notes_text_frame.text = "Full image names: " + "; ".join(
+            f"{k} = {v}" for k, v in truncated.items())
 
 
-def _lot_tile_text(st: dict) -> Tuple[str, str]:
-    """(big value, caption) for one INN-27 lot tile, e.g.
-    ("G 7.40 ± 0.39", "Lot L-44A · 95 % CI · n = 5 of 5 · %RA 3.1 %")."""
-    g, ci = st.get("G_mean"), st.get("G_ci95")
-    if g is None:
-        value = "G n/a"
-    elif ci is None:
-        value = f"G {g:.2f} ± n/a"
-    else:
-        value = f"G {g:.2f} ± {ci:.2f}"
-    ra = st.get("RA_pct")
-    parts = [f"{st.get('label') or st.get('scope', 'Lot')}", "95 % CI",
-             f"n = {st.get('n_fields', 0)} of {st.get('n_needed', 0)}"]
-    if ra is not None:
-        parts.append(f"%RA {ra:.1f} %")
-    if st.get("status"):
-        parts.append(str(st["status"]))
-    return value, " · ".join(parts)
-
-
-def _lot_tiles(slide, model: ReportModel, navy: RGBColor = NAVY) -> None:
-    """INN-27 "G ± CI" big-number tiles (max 3 lots) on the summary slide."""
-    stats = model.sample_statistics[:3]
-    w = Inches(12.1 / len(stats)) - Inches(0.1)
-    for i, st in enumerate(stats):
-        value, caption = _lot_tile_text(st)
-        _metric_callout(slide, Inches(0.6) + i * (w + Inches(0.1)), Inches(1.2), w, Inches(0.95),
-                        value, caption, navy)
-
-
-def _style_header_cell(cell, navy: RGBColor = NAVY) -> None:
+def _style_header_cell(cell, navy: RGBColor = NAVY, size: int = 12) -> None:
     cell.fill.solid()
     cell.fill.fore_color.rgb = navy
     for p in cell.text_frame.paragraphs:
@@ -636,16 +969,7 @@ def _style_header_cell(cell, navy: RGBColor = NAVY) -> None:
         for run in p.runs:
             run.font.color.rgb = WHITE
             run.font.bold = True
-            run.font.size = Pt(12)
-
-
-def _style_total_cell(cell) -> None:
-    cell.fill.solid()
-    cell.fill.fore_color.rgb = RGBColor(0xD9, 0xDE, 0xE8)
-    for p in cell.text_frame.paragraphs:
-        for run in p.runs:
-            run.font.bold = True
-            run.font.size = Pt(11)
+            run.font.size = Pt(size)
 
 
 def _slide_heading(slide, text: str, navy: RGBColor = NAVY) -> None:

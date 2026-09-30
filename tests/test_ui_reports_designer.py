@@ -179,7 +179,12 @@ def test_build_edit_export_roundtrip(analysed, qtbot, tmp_path):
     assert len(img_slides) == 2 and "Rim location, etched" in all_text[img_slides[0]]
     concl = [i for i, t in enumerate(all_text) if "Conclusions" in t]
     assert concl and "Meets ASTM E112 acceptance." in all_text[concl[0]]
-    assert concl[0] == 2          # right after the executive summary (charts disabled)
+    # D-30 / REP-DESIGN-01: the executive summary is now a multi-slide group
+    # (part-summary table + 3 bar charts + per-image data tables) -- the
+    # custom text section still lands right after that whole group and
+    # before the per-image (original + overlay) slides (charts disabled).
+    assert concl[0] > 0
+    assert concl[0] < img_slides[0]
     assert "Appendix" in all_text[-1]
     pages = [t.split()[-1] for t in all_text]
     assert pages == [str(i) for i in range(1, len(prs.slides) + 1)]   # footers renumbered

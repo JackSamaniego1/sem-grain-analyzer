@@ -179,10 +179,13 @@ def test_renamed_levels_and_custom_field_flow_into_next_export(tmp_path):
     assert "Work Order" in header and "Component" in header and "Heat Batch" in header
     assert "Job #" not in header
 
+    # D-30 / REP-DESIGN-01: the renamed hierarchy level flows into the
+    # part-summary chart's category-axis title (the "Part"/"Lot" table
+    # columns themselves are always the generic literal names per spec).
     prs = Presentation(pptx_path)
-    exec_table = [sh for sh in prs.slides[1].shapes if sh.has_table][0].table
-    headers = [exec_table.cell(0, c).text for c in range(len(exec_table.columns))]
-    assert "Work Order" in headers and "Component" in headers and "Heat Batch" in headers
+    chart_slide = list(prs.slides)[1]  # table + 3 charts share slide 2 (index 1) for <= 6 parts
+    chart = next(sh for sh in chart_slide.shapes if sh.has_chart).chart
+    assert chart.category_axis.axis_title.text_frame.text == "Component"
     title_text = _all_text(prs.slides[0])
     assert "Work Order: 24-117" in title_text
     assert "Component: 7718-A" in title_text

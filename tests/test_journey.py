@@ -184,11 +184,16 @@ def test_journey_threshold_scale_bar_full_lifecycle(env, qtbot):
     assert sorted(per_image) == sorted(edited_counts)
     assert total == sum(edited_counts)
 
+    # D-30 / REP-DESIGN-01: slide 1 is now the part-level summary table (no
+    # per-image "Grains" column) -- per-image counts now live on the
+    # restyled per-image data-table slide(s) instead.
     prs = Presentation(pptx)
-    exec_table = next(sh for sh in prs.slides[1].shapes if sh.has_table).table
-    headers = [exec_table.cell(0, c).text for c in range(len(exec_table.columns))]
+    data_table = next(
+        sh.table for s in prs.slides for sh in s.shapes
+        if sh.has_table and "Grains" in [sh.table.cell(0, c).text for c in range(len(sh.table.columns))])
+    headers = [data_table.cell(0, c).text for c in range(len(data_table.columns))]
     gcol = headers.index("Grains")
-    pptx_counts = [int(exec_table.cell(r, gcol).text) for r in range(1, 1 + len(edited_counts))]
+    pptx_counts = [int(data_table.cell(r, gcol).text) for r in range(1, 1 + len(edited_counts))]
     assert sorted(pptx_counts) == sorted(edited_counts)
 
     shell2.close()

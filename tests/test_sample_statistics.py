@@ -207,10 +207,13 @@ def test_reports_lot_block_and_pptx_tile(tmp_path):
     # lot block sits above the per-image table
     assert hdr["%RA"][0] < hdr["Grains"][0]
 
+    # D-30 / REP-DESIGN-01: the INN-27 "G X ± Y" KPI tile on the summary
+    # slide is gone (no KPI tiles at top) -- the same 95% CI now shows up as
+    # the ASTM G cell of the part-summary table (slide index 1) instead.
     pptx = render_pptx(model, str(tmp_path / "r.pptx"))
-    texts = [sh.text_frame.text for s in Presentation(pptx).slides for sh in s.shapes
-             if sh.has_text_frame]
-    assert any(t.startswith("G 7.40 ± 0.39") for t in texts)
+    prs = Presentation(pptx)
+    table = next(sh for sh in prs.slides[1].shapes if sh.has_table).table
+    assert table.cell(1, 3).text == "7.40 ± 0.39"
 
 
 def test_reports_unchanged_without_statistics(tmp_path):
