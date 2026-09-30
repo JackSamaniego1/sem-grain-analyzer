@@ -189,17 +189,18 @@ def render_pptx(model: ReportModel, output_path: str, template_path: Optional[st
     series = series_for(model.theme, model.custom_palette)
 
     with tempfile.TemporaryDirectory(prefix="grain_report_pptx_") as tmpdir:
-        page = [0]
+        seq: List[Any] = []                  # slides in creation order
+        groups: List[Tuple[str, str]] = []   # parallel (run key, contents label)
 
-        def new_slide():
+        def new_slide(key: str, label: str):
             s = prs.slides.add_slide(layout)
-            page[0] += 1
+            seq.append(s)
+            groups.append((key, label))
             return s
 
         for kind, sec in plan:
             if kind == "cover":
-                _title_slide(new_slide(), model, navy, accent2)
-                _add_footer(prs.slides[-1], model, page[0], navy)
+                _title_slide(new_slide('cover', 'Cover'), model, navy, accent2)
             elif kind == "overview_table":
                 # D-30 / REP-DESIGN-01 (+ coordinator layout-review fixes):
                 # the old per-image "Executive Summary" table (+ Combined
@@ -219,72 +220,156 @@ def render_pptx(model: ReportModel, output_path: str, template_path: Optional[st
                     rows, au, du = _part_summary_rows(model, images)
                     part_label = _part_axis_label(model)
                     if len(rows) <= MAX_PARTS_COMBINED:
-                        _summary_and_charts_slide(new_slide(), rows, au, du, part_label, navy, series)
-                        _add_footer(prs.slides[-1], model, page[0], navy)
+                        _summary_and_charts_slide(new_slide('summary', 'Grain size summary'), rows, au, du, part_label, navy, series)
                     else:
                         summary_pages = _chunk(rows, MAX_SUMMARY_ROWS)
                         for i, chunk in enumerate(summary_pages):
                             suffix = ("" if len(summary_pages) <= 1
                                      else f" (cont'd {i + 1}/{len(summary_pages)})")
-                            _part_summary_slide(new_slide(), chunk, au, du, navy, heading_suffix=suffix)
-                            _add_footer(prs.slides[-1], model, page[0], navy)
-                        _charts_only_slide(new_slide(), rows, au, du, part_label, navy, series)
-                        _add_footer(prs.slides[-1], model, page[0], navy)
+                            _part_summary_slide(new_slide('summary', 'Grain size summary'), chunk, au, du, navy, heading_suffix=suffix)
+                        _charts_only_slide(new_slide('summary', 'Grain size summary'), rows, au, du, part_label, navy, series)
 
                     # Slide ordering: cover -> summary (+charts) -> percentiles
                     # -> per-image data tables. Insert new slides here.
                     prows, pau, pdu = _percentile_rows(model, images)
                     ppages = _chunk(prows, MAX_DATA_ROWS)
                     for i, chunk in enumerate(ppages, start=1):
-                        _percentile_slide(new_slide(), chunk, pau, pdu, navy, idx=i, total=len(ppages))
-                        _add_footer(prs.slides[-1], model, page[0], navy)
+                        _percentile_slide(new_slide('percentiles', 'Grain size percentiles (D10 / D50 / D90)'), chunk, pau, pdu, navy, idx=i, total=len(ppages))
 
                     for part, idx, total, page_rows in _plan_image_table_slides(model, images):
-                        _image_data_table_slide(new_slide(), model, part, idx, total, page_rows, navy)
-                        _add_footer(prs.slides[-1], model, page[0], navy)
+                        _image_data_table_slide(new_slide('data_tables', 'Image data tables'), model, part, idx, total, page_rows, navy)
 
                     # UPDATE 4 item 17: per-lot area + size distribution slides,
                     # then the lot-to-lot comparison (after the data tables,
                     # before the per-image slides).
-                    for draw in _lot_distribution_slide_plan(model, images, series):
-                        draw(new_slide(), navy)
-                        _add_footer(prs.slides[-1], model, page[0], navy)
+                    for draw, is_cmp in _lot_distribution_slide_plan(model, images, series):
+                        draw(new_slide('lot_cmp' if is_cmp else 'lot_dist',
+                                       'Lot-to-lot distribution comparison' if is_cmp
+                                       else 'Grain distributions by lot'), navy)
             elif kind == "charts":
                 opts = resolve_chart_options(model.chart_options)
                 if opts["area"]["enabled"]:
-                    _distribution_slide(new_slide(), model, images, kind="area", series=series,
+                    _distribution_slide(new_slide('charts', 'Combined grain distributions'), model, images, kind="area", series=series,
                                         navy=navy)
-                    _add_footer(prs.slides[-1], model, page[0], navy)
                 if opts["diameter"]["enabled"]:
-                    _distribution_slide(new_slide(), model, images, kind="diameter", series=series,
+                    _distribution_slide(new_slide('charts', 'Combined grain distributions'), model, images, kind="diameter", series=series,
                                         navy=navy)
-                    _add_footer(prs.slides[-1], model, page[0], navy)
             elif kind == "lot_comparison":
                 for part in sec.payload.get("parts") or []:
-                    _lot_comparison_slide(new_slide(), part, navy)
-                    _add_footer(prs.slides[-1], model, page[0], navy)
+                    _lot_comparison_slide(new_slide('lot_comparison', 'Lot comparison by part'), part, navy)
             elif kind == "images":
                 for img in images:
-                    _image_slide(new_slide(), model, img, tmpdir, navy)
-                    _add_footer(prs.slides[-1], model, page[0], navy)
+                    _image_slide(new_slide('images', 'Image results'), model, img, tmpdir, navy)
             elif kind == "methods":
                 # FIX-12: paginate across continuation slides once the
                 # methods text would otherwise run past the footer.
                 pages = _paginate_methods_lines(_methods_lines(model))
                 for i, chunk in enumerate(pages):
-                    _methods_slide(new_slide(), model, navy, lines=chunk,
+                    _methods_slide(new_slide('methods', 'Methods & parameters'), model, navy, lines=chunk,
                                     heading_suffix="" if i == 0 else " (cont'd)")
-                    _add_footer(prs.slides[-1], model, page[0], navy)
             elif kind == "custom_text":
-                _text_slide(new_slide(), model, sec, navy)
-                _add_footer(prs.slides[-1], model, page[0], navy)
+                _text_slide(new_slide('text:' + str(sec.id), sec.title or 'Notes'), model, sec, navy)
 
         if want_raw:
-            _appendix_slide(new_slide(), model, navy)
-            _add_footer(prs.slides[-1], model, page[0], navy)
+            _appendix_slide(new_slide('appendix', 'Appendix'), model, navy)
+
+
+        # UPDATE 4 item 19: contents page(s) right after the cover (slide 2).
+        # The number of contents slides is fixed from the run count first,
+        # then page numbers come from the FINAL order; footers are written
+        # last so they carry the final numbers too.
+        contents_slides: List[Any] = []
+        at = 1 if (groups and groups[0][0] == "cover") else 0
+        if seq and model.is_enabled("contents", default=True):
+            runs = _collapse_runs(groups)
+            n_contents = max(1, len(_chunk(runs, MAX_DATA_ROWS)))
+            for _ in range(n_contents):
+                contents_slides.append(prs.slides.add_slide(layout))
+            _move_slides_after(prs, contents_slides, seq[at - 1] if at else None, seq[0])
+            _fill_contents(contents_slides, runs, seq, at, n_contents, navy)
+        final = seq[:at] + contents_slides + seq[at:]
+        for n, sl in enumerate(final, start=1):
+            _add_footer(sl, model, n, navy)
 
     prs.save(output_path)
     return output_path
+
+
+# ---------------------------------------------------------------------------
+# Contents page (UPDATE 4 item 19)
+# ---------------------------------------------------------------------------
+
+CONTENTS_ROW_IN = 0.36
+
+
+def _collapse_runs(groups: List[Tuple[str, str]]) -> List[Dict[str, Any]]:
+    """Consecutive slides with the same key -> one ``{label, first, last}``
+    (0-based indexes into the pre-contents slide list)."""
+    runs: List[Dict[str, Any]] = []
+    for i, (key, label) in enumerate(groups):
+        if runs and runs[-1]["key"] == key:
+            runs[-1]["last"] = i
+        else:
+            runs.append({"key": key, "label": label, "first": i, "last": i})
+    return runs
+
+
+def _move_slides_after(prs, slides: List[Any], anchor, first_slide) -> None:
+    """Move freshly appended ``slides`` within the slide-id list: right after
+    ``anchor``'s entry, or before ``first_slide``'s when anchor is None."""
+    lst = prs.slides._sldIdLst
+
+    def entry(sl):
+        for sid in lst:
+            if prs.part.related_part(sid.rId) is sl.part:
+                return sid
+        raise KeyError("slide not found in slide list")
+
+    els = [entry(s) for s in slides]
+    for el in els:
+        lst.remove(el)
+    if anchor is not None:
+        ref = entry(anchor)
+        for el in reversed(els):
+            ref.addnext(el)
+    else:
+        ref = entry(first_slide)
+        for el in els:
+            ref.addprevious(el)
+
+
+def _fill_contents(slides: List[Any], runs: List[Dict[str, Any]], seq: List[Any],
+                   at: int, n_contents: int, navy: RGBColor) -> None:
+    """Heading + one clickable row per run. The row's click action jumps to
+    the first slide of the run (an internal slide link, no network)."""
+    def final_page(i: int) -> int:
+        return i + 1 + (n_contents if i >= at else 0)
+
+    for n, (slide, chunk) in enumerate(zip(slides, _chunk(runs, MAX_DATA_ROWS) or [[]]), start=1):
+        suffix = "" if n_contents <= 1 else f" ({n}/{n_contents})"
+        _slide_heading(slide, "Contents" + suffix, navy)
+        for r, run in enumerate(chunk):
+            top = Inches(1.15 + r * CONTENTS_ROW_IN)
+            if r % 2 == 0:
+                _fill_rect(slide, Inches(CONTENT_LEFT_IN), top, Inches(CONTENT_WIDTH_IN),
+                           Inches(CONTENTS_ROW_IN), LIGHT_BAND)
+            a, b = final_page(run["first"]), final_page(run["last"])
+            where = f"Page {a}" if a == b else f"Pages {a}\u2013{b}"
+            box = slide.shapes.add_textbox(Inches(CONTENT_LEFT_IN), top,
+                                           Inches(CONTENT_WIDTH_IN), Inches(CONTENTS_ROW_IN))
+            tf = box.text_frame
+            tf.word_wrap = False
+            p = tf.paragraphs[0]
+            for txt, bold, color in ((where, True, navy),
+                                     ("  \u00b7  " + run["label"], False, TEXT_DARK)):
+                rn = p.add_run()
+                rn.text = txt
+                rn.font.size = Pt(14)
+                rn.font.bold = bold
+                rn.font.name = "Calibri"
+                rn.font.color.rgb = color
+            box.click_action.target_slide = seq[run["first"]]
+            box.name = "Contents link: " + run["label"]
 
 
 # ---------------------------------------------------------------------------
@@ -1093,7 +1178,7 @@ def _comparison_slide(slide, chunk, units, edges_by_kind, labels_by_kind, colors
 
 def _lot_distribution_slide_plan(model: ReportModel, images: List[ImageSummary],
                                  series: Dict[str, str]):
-    """Closures ``draw(slide, navy)``: one slide per lot (area + size charts),
+    """``(draw(slide, navy), is_comparison)`` pairs: one slide per lot (area + size charts),
     then the lot-to-lot comparison slide(s). Empty when both distributions are
     disabled in the report's chart options."""
     opts = resolve_chart_options(model.chart_options)
@@ -1103,8 +1188,8 @@ def _lot_distribution_slide_plan(model: ReportModel, images: List[ImageSummary],
     groups = _lot_groups(model, images)
     plan = []
     for part, lot, imgs in groups:
-        plan.append(lambda slide, navy, p=part, l=lot, i=imgs:
-                    _lot_slide(slide, model, images, p, l, i, series, kinds, navy))
+        plan.append((lambda slide, navy, p=part, l=lot, i=imgs:
+                     _lot_slide(slide, model, images, p, l, i, series, kinds, navy), False))
 
     multi_part = len({g[0] for g in groups}) > 1
     lots, omitted, units = [], [], {}
@@ -1130,9 +1215,9 @@ def _lot_distribution_slide_plan(model: ReportModel, images: List[ImageSummary],
     colors = _lot_colors(series, len(lots))
     chunks = _chunk(lots, MAX_LOTS_PER_COMPARISON)
     for i, chunk in enumerate(chunks, start=1):
-        plan.append(lambda slide, navy, c=chunk, i=i: _comparison_slide(
+        plan.append((lambda slide, navy, c=chunk, i=i: _comparison_slide(
             slide, c, units, edges_by_kind, labels_by_kind, colors, i, len(chunks),
-            omitted, kinds, navy))
+            omitted, kinds, navy), True))
     return plan
 
 

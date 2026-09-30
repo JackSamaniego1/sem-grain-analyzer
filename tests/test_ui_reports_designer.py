@@ -177,7 +177,8 @@ def test_build_edit_export_roundtrip(analysed, qtbot, tmp_path):
     assert not any("Distribution" in t and "Combined" in t for t in all_text)
     img_slides = [i for i, t in enumerate(all_text) if "Image 1:" in t or "Image 2:" in t]
     assert len(img_slides) == 2 and "Rim location, etched" in all_text[img_slides[0]]
-    concl = [i for i, t in enumerate(all_text) if "Conclusions" in t]
+    assert all_text[1].strip().startswith("Contents")          # UPDATE 4 item 19: slide 2
+    concl = [i for i, t in enumerate(all_text) if "Conclusions" in t and i != 1]
     assert concl and "Meets ASTM E112 acceptance." in all_text[concl[0]]
     # D-30 / REP-DESIGN-01: the executive summary is now a multi-slide group
     # (part-summary table + 3 bar charts + per-image data tables) -- the

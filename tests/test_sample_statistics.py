@@ -212,7 +212,7 @@ def test_reports_lot_block_and_pptx_tile(tmp_path):
     # the ASTM G cell of the part-summary table (slide index 1) instead.
     pptx = render_pptx(model, str(tmp_path / "r.pptx"))
     prs = Presentation(pptx)
-    table = next(sh for sh in prs.slides[1].shapes if sh.has_table).table
+    table = next(sh for sh in prs.slides[2].shapes if sh.has_table).table
     assert table.cell(1, 3).text == "7.40 ± 0.39"
 
 

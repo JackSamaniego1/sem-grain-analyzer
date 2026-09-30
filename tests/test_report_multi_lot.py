@@ -226,7 +226,8 @@ def test_pptx_one_lot_comparison_slide_per_part_right_after_exec_summary(tmp_pat
     prs = Presentation(out)
     titles = _slide_titles(prs)
     assert titles[0] == model.title
-    assert titles[1] == "Grain Size Summary"
+    assert titles[1] == "Contents"
+    assert titles[2] == "Grain Size Summary"
     lc_indices = [i for i, t in enumerate(titles) if t.startswith("Lot Comparison")]
     assert len(lc_indices) == 2
     assert "7718-A" in titles[lc_indices[0]]

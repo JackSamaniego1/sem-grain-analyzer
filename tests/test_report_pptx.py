@@ -87,7 +87,7 @@ def _overview_slide_count(model, images):
 
 
 def _expected_slide_count(model, images, want_charts=True, want_methods=True):
-    n = 1  # cover
+    n = 2  # cover + contents (UPDATE 4 item 19)
     n += _overview_slide_count(model, images)
     n += (2 if want_charts else 0)
     n += len(images)  # one image (original + overlay) slide each
@@ -254,7 +254,7 @@ def test_summary_slide_is_index_1_with_one_row_per_part_and_correct_counts(tmp_p
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    slide = prs.slides[1]
+    slide = prs.slides[2]
     assert _heading(slide) == "Grain Size Summary"
     table = next(sh for sh in slide.shapes if sh.has_table).table
     assert len(table.rows) == 3 + 1  # header + 3 parts
@@ -273,7 +273,7 @@ def test_summary_slide_has_no_grains_column_or_kpi_hint_text(tmp_path):
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    slide = prs.slides[1]
+    slide = prs.slides[2]
     table = next(sh for sh in slide.shapes if sh.has_table).table
     headers = [table.cell(0, c).text for c in range(len(table.columns))]
     assert "Grains" not in headers
@@ -287,8 +287,8 @@ def test_single_part_report_still_gets_summary_slide(tmp_path):
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    assert _heading(prs.slides[1]) == "Grain Size Summary"
-    table = next(sh for sh in prs.slides[1].shapes if sh.has_table).table
+    assert _heading(prs.slides[2]) == "Grain Size Summary"
+    table = next(sh for sh in prs.slides[2].shapes if sh.has_table).table
     assert len(table.rows) == 2  # header + 1 part
 
 
@@ -300,7 +300,7 @@ def test_parts_with_no_name_grouped_as_emdash(tmp_path):
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    table = next(sh for sh in prs.slides[1].shapes if sh.has_table).table
+    table = next(sh for sh in prs.slides[2].shapes if sh.has_table).table
     assert table.cell(1, 0).text == "—"
 
 
@@ -382,7 +382,7 @@ def test_summary_slide_combines_table_and_charts_when_few_parts(tmp_path):
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    slide = prs.slides[1]
+    slide = prs.slides[2]
     assert _heading(slide) == "Grain Size Summary"
     assert any(sh.has_table for sh in slide.shapes)
     charts = [sh.chart for sh in slide.shapes if sh.has_chart]
@@ -396,7 +396,7 @@ def test_summary_slide_combines_table_and_charts_when_few_parts(tmp_path):
         assert c.category_axis.axis_title.text_frame.text == "Part Number"
         assert c.value_axis.axis_title.text_frame.text  # non-empty
     # no leftover separate chart slides 3/4 for the small-part-count case
-    assert not any(sh.has_chart for sh in prs.slides[2].shapes)
+    assert not any(sh.has_chart for sh in prs.slides[3].shapes)
 
 
 def test_summary_chart_uses_hierarchy_part_label(tmp_path):
@@ -405,7 +405,7 @@ def test_summary_chart_uses_hierarchy_part_label(tmp_path):
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    chart = next(sh for sh in prs.slides[1].shapes if sh.has_chart).chart
+    chart = next(sh for sh in prs.slides[2].shapes if sh.has_chart).chart
     assert chart.category_axis.axis_title.text_frame.text == "Casting Number"
 
 
@@ -416,7 +416,7 @@ def test_more_than_six_parts_splits_table_and_charts_across_slides_2_and_3(tmp_p
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    table_slide, charts_slide = prs.slides[1], prs.slides[2]
+    table_slide, charts_slide = prs.slides[2], prs.slides[3]
     assert any(sh.has_table for sh in table_slide.shapes)
     assert not any(sh.has_chart for sh in table_slide.shapes)
     table = next(sh for sh in table_slide.shapes if sh.has_table).table
@@ -657,7 +657,7 @@ def test_summary_table_area_column_shows_squared_unit(tmp_path):
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    table = next(sh for sh in prs.slides[1].shapes if sh.has_table).table
+    table = next(sh for sh in prs.slides[2].shapes if sh.has_table).table
     area_col = [h for h in range(len(table.columns))
                if table.cell(0, h).text == "Mean Area"][0]
     diam_col = [h for h in range(len(table.columns))
@@ -666,10 +666,10 @@ def test_summary_table_area_column_shows_squared_unit(tmp_path):
         assert table.cell(r, area_col).text.endswith("µm²")
         assert table.cell(r, diam_col).text.endswith("µm")
         assert not table.cell(r, diam_col).text.endswith("µm²")
-    chart = next(sh for sh in prs.slides[1].shapes if sh.has_chart
+    chart = next(sh for sh in prs.slides[2].shapes if sh.has_chart
                 and "Area" in sh.chart.chart_title.text_frame.text).chart
     assert chart.value_axis.axis_title.text_frame.text == "Mean Area (µm²)"
-    diam_chart = next(sh for sh in prs.slides[1].shapes if sh.has_chart
+    diam_chart = next(sh for sh in prs.slides[2].shapes if sh.has_chart
                       and "Diameter" in sh.chart.chart_title.text_frame.text).chart
     assert diam_chart.value_axis.axis_title.text_frame.text == "Mean Diameter (µm)"
 
@@ -690,7 +690,7 @@ def test_footer_collapses_to_counts_when_names_dont_fit(tmp_path):
     # a single-valued level (Job #) stays named; the multi-valued part/lot
     # levels (3 parts, 9 distinctly-named lots) are what overflow the cap.
     model.hierarchy.insert(0, {"key": "project", "label": "Job #", "value": "24-117"})
-    page_num = 2  # slide index 1 (summary) is the 2nd slide created, right after the cover
+    page_num = 3  # slide index 2 (summary): cover, contents, summary
     footer = _footer_text(model, page_num)
     assert "\n" not in footer
     assert len(footer) <= FOOTER_MAX_CHARS + 20   # + " · page N" suffix
@@ -701,7 +701,7 @@ def test_footer_collapses_to_counts_when_names_dont_fit(tmp_path):
     render_pptx(model, out)
     prs = Presentation(out)
     slide_h_in = Emu(prs.slide_height).inches
-    box = _footer_main_textbox(prs.slides[1], slide_h_in)
+    box = _footer_main_textbox(prs.slides[2], slide_h_in)
     assert box.text_frame.text == footer
     assert not box.text_frame.word_wrap
 
@@ -976,7 +976,8 @@ def test_disabling_cover_removes_title_slide(tmp_path):
     render_pptx(model, out)
     prs = Presentation(out)
     assert len(prs.slides) == _expected_slide_count(model, model.ordered_images()) - 1
-    assert _heading(prs.slides[0]) == "Grain Size Summary"
+    assert _heading(prs.slides[0]) == "Contents"
+    assert _heading(prs.slides[1]) == "Grain Size Summary"
 
 
 def test_disabling_overview_table_removes_summary_and_data_table_slides(tmp_path):
