@@ -15,6 +15,7 @@ Return shape (all sizes already in the report's display units)::
       "total": stats,              # whole job
       "rows":  [{"kind": "lot"|"part"|"total", **stats}, ...],  # table order
       "charts": [chart, ...],
+      "footnotes": [str, ...],     # show under the table (may be empty)
     }
 
     stats = {"part", "lot", "label", "n_lots", "n_images", "n_grains",
@@ -88,7 +89,7 @@ def _stats(part: str, lot: str, imgs: List[ImageSummary], calibrated: bool, am: 
     out: Dict[str, Any] = {
         "part": part, "lot": lot, "label": label if label is not None else lot,
         "n_lots": n_lots, "n_images": len(imgs),
-        "n_grains": int(len(diams)) if len(diams) or not imgs else 0,
+        "n_grains": int(len(diams)),
         "mean_diameter": None, "median_diameter": None, "d10": None, "d90": None,
         "mean_area": None, "astm_g": float(np.mean(gs)) if gs else None,
     }
@@ -198,7 +199,19 @@ def lot_summary_data(model: ReportModel,
         })
     return {"has_lots": has_lots, "units": {"calibrated": calibrated, "length": du, "area": au},
             "part_label": part_label, "lot_label": lot_label, "multi_part": multi_part,
-            "lots": lots, "parts": parts, "total": total, "rows": rows, "charts": charts}
+            "lots": lots, "parts": parts, "total": total, "rows": rows, "charts": charts,
+            "footnotes": footnotes_for(rows)}
+
+
+ASTM_AVG_FOOTNOTE = "ASTM G in subtotal and total rows is the average of the image values."
+
+
+def footnotes_for(rows: List[Dict[str, Any]]) -> List[str]:
+    """Footnotes that apply to ``rows`` (a page of the table is fine): the
+    ASTM G note appears only when a subtotal/total row with a value is shown."""
+    if any(r["kind"] != "lot" and r.get("astm_g") is not None for r in rows):
+        return [ASTM_AVG_FOOTNOTE]
+    return []
 
 
 def table_headers(data: Dict[str, Any]) -> List[str]:

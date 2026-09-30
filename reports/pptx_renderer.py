@@ -46,7 +46,7 @@ from reports.charts import (
 )
 from reports.model import ReportModel, ImageSummary, Section, pooled_grain_percentiles
 from reports.excel_renderer import _resized_png, _row_size_stats
-from reports.lot_summary import lot_summary_data, table_headers, id_cells, NUMERIC_KEYS
+from reports.lot_summary import lot_summary_data, footnotes_for, table_headers, id_cells, NUMERIC_KEYS
 
 try:
     from version import __version__ as APP_VERSION
@@ -1292,6 +1292,10 @@ def _lot_summary_table_slide(slide, rows: List[Dict[str, Any]], data: Dict[str, 
                 for para in table.cell(r, c).text_frame.paragraphs:
                     for run in para.runs:
                         run.font.bold = True
+    for note in footnotes_for(rows):
+        top = _LS_TABLE_TOP_IN + _LS_HEADER_ROW_IN + TABLE_ROW_IN * len(rows) + 0.05
+        _textbox(slide, Inches(CONTENT_LEFT_IN), Inches(top), Inches(CONTENT_WIDTH_IN), Inches(0.28),
+                 note, size=9, color=TEXT_DARK)
     if truncated:
         slide.notes_slide.notes_text_frame.text = "Full names: " + "; ".join(
             f"{k} = {v}" for k, v in truncated.items())

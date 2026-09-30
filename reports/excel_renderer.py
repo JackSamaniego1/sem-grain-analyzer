@@ -914,6 +914,9 @@ def _write_job_summary_and_lot_charts(ws, wb, model: ReportModel, images: List[I
         for c, key in enumerate(NUMERIC_KEYS, start=2):
             _ls_cell(ws, row, c, r[key], num, cell, integer=key in ("n_images", "n_grains"))
         row += 1
+    for note in data.get("footnotes", []):
+        ws.merge_range(row, 0, row, 9, note, fmts["label"])
+        row += 1
     row += 1
 
     charts = data["charts"]

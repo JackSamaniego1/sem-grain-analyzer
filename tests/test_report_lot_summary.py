@@ -13,7 +13,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from reports.excel_renderer import render_excel
-from reports.lot_summary import lot_summary_data, id_cells
+from reports.lot_summary import lot_summary_data, id_cells, ASTM_AVG_FOOTNOTE
 from reports.model import ImageSummary, ReportModel, Section
 from reports.pptx_renderer import (
     LOT_CHART_TITLE, LOT_SUMMARY_TITLE, MAX_DATA_ROWS, MAX_LOTS_PER_CHART, render_pptx,
@@ -180,7 +180,9 @@ def test_excel_job_summary_table_rows_and_total(tmp_path):
         if r[0] is None and r[1] is None:
             break
         body.append(r)
-    assert len(body) == 9                      # 6 lots + 2 part totals + JOB TOTAL
+    assert body[-1][0] == ASTM_AVG_FOOTNOTE     # footnote sits right under the table
+    body = body[:-1]
+    assert len(body) == 9                     # 6 lots + 2 part totals + JOB TOTAL
     assert body[-1][0] == "JOB TOTAL" and body[-1][2] == 12 and body[-1][3] == 360
     assert body[3][1] == "All lots" and body[3][0] == "P1"
     header = [c.value for c in ws[4]][:10]
@@ -275,6 +277,18 @@ def test_pptx_lot_summary_table_and_charts_present(tmp_path):
     assert charts[0].value_axis.axis_title.text_frame.text == "Mean Equivalent Diameter (µm)"
     assert charts[2].value_axis.axis_title.text_frame.text == "Mean Grain Area (µm²)"
     assert charts[3].value_axis.axis_title.text_frame.text == "Number of Grains"
+
+
+def test_astm_average_footnote_in_data_and_pptx(tmp_path):
+    d = lot_summary_data(_model(_job(parts=2, lots=2, per=1)))
+    assert d["footnotes"] == [ASTM_AVG_FOOTNOTE]
+    assert "average of the image values" in d["footnotes"][0]
+    # no subtotal/total ASTM value -> no footnote
+    assert lot_summary_data(_model([_img("a", "P1", "L1", [1.0, 2.0])]))["footnotes"] == []
+    prs = _pptx(tmp_path, _model(_lots(20)))
+    t1, t2 = _slides(prs, LOT_SUMMARY_TITLE)
+    assert ASTM_AVG_FOOTNOTE not in _text(t1)   # page 1 has lot rows only
+    assert ASTM_AVG_FOOTNOTE in _text(t2)       # page with JOB TOTAL
 
 
 def test_pptx_single_lot_no_trend(tmp_path):
