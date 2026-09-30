@@ -24,7 +24,7 @@ source build_env/bin/activate
 
 echo "[2/5] Installing packages..."
 pip install --upgrade pip -q
-pip install pyinstaller PySide6 opencv-python scikit-image scipy numpy openpyxl xlsxwriter python-pptx qtawesome Pillow segment-anything
+pip install pyinstaller PySide6 opencv-python scikit-image scipy numpy openpyxl xlsxwriter python-pptx qtawesome Pillow segment-anything rapidocr-onnxruntime==1.4.4
 # CPU-only torch wheel keeps the installer smaller; this app never needs a
 # GPU at runtime.
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu

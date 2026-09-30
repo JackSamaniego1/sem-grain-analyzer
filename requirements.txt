@@ -16,3 +16,10 @@ tifffile>=2023.1.0
 torch>=2.0.0
 torchvision>=0.15.0
 segment-anything>=1.0
+# Offline OCR for SEM info bars (core/info_bar_ocr.py). Apache-2.0; the
+# PaddleOCR-derived ONNX models ship inside the wheel (no runtime download).
+# It requires opencv-python (already above) - never install a headless variant.
+rapidocr-onnxruntime==1.4.4
+onnxruntime==1.30.0
+shapely==2.1.2
+pyclipper==1.4.0

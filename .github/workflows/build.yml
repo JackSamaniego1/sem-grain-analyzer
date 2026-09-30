@@ -23,7 +23,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller PySide6 opencv-python scikit-image scipy numpy openpyxl xlsxwriter python-pptx qtawesome Pillow segment-anything
+          pip install pyinstaller PySide6 opencv-python scikit-image scipy numpy openpyxl xlsxwriter python-pptx qtawesome Pillow segment-anything rapidocr-onnxruntime==1.4.4
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
       - name: Download SAM model (SHA-256 verified)
@@ -99,7 +99,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller PySide6 opencv-python scikit-image scipy numpy openpyxl xlsxwriter python-pptx qtawesome Pillow segment-anything
+          pip install pyinstaller PySide6 opencv-python scikit-image scipy numpy openpyxl xlsxwriter python-pptx qtawesome Pillow segment-anything rapidocr-onnxruntime==1.4.4
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
       - name: Download SAM model (SHA-256 verified)

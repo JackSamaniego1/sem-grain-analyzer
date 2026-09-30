@@ -41,7 +41,7 @@ echo.
 echo [2/7] Installing dependencies (this may take a few minutes)...
 call build_env\Scripts\activate.bat
 pip install --upgrade pip --quiet
-pip install pyinstaller PySide6 opencv-python scikit-image scipy numpy openpyxl xlsxwriter python-pptx qtawesome Pillow segment-anything
+pip install pyinstaller PySide6 opencv-python scikit-image scipy numpy openpyxl xlsxwriter python-pptx qtawesome Pillow segment-anything rapidocr-onnxruntime==1.4.4
 if errorlevel 1 (
     echo ERROR: Failed to install packages. Check your internet connection.
     pause

@@ -79,6 +79,48 @@ bundled into the installer under the same licence. The build fails if
 the hash does not match. Never downloaded at runtime by the installed
 application.
 --------------------------------------------------------------------------
+RapidOCR (rapidocr-onnxruntime 1.4.4) — offline SEM info-bar text reader
+Licence: Apache License 2.0
+Upstream: https://github.com/RapidAI/RapidOCR
+Bundled ONNX models (inside the wheel, no runtime download):
+ch_PP-OCRv4_det_infer.onnx, ch_PP-OCRv4_rec_infer.onnx,
+ch_ppocr_mobile_v2.0_cls_infer.onnx. These are PaddleOCR (PP-OCR)
+models converted to ONNX; PaddleOCR and its models are Apache License 2.0.
+Upstream: https://github.com/PaddlePaddle/PaddleOCR
+--------------------------------------------------------------------------
+ONNX Runtime (onnxruntime 1.30.0)
+Licence: MIT
+Upstream: https://github.com/microsoft/onnxruntime
+--------------------------------------------------------------------------
+Shapely 2.1.2
+Licence: BSD 3-Clause (links the GEOS library, LGPL v2.1, as a shared
+library inside the wheel)
+Upstream: https://github.com/shapely/shapely
+--------------------------------------------------------------------------
+pyclipper 1.4.0 (wraps the Clipper library, Boost Software License 1.0)
+Licence: MIT
+Upstream: https://github.com/greginvm/pyclipper
+--------------------------------------------------------------------------
+PyYAML 6.0.3
+Licence: MIT
+Upstream: https://pyyaml.org/
+--------------------------------------------------------------------------
+six 1.17.0
+Licence: MIT
+Upstream: https://github.com/benjaminp/six
+--------------------------------------------------------------------------
+flatbuffers (Python runtime 25.12.19)
+Licence: Apache License 2.0
+Upstream: https://github.com/google/flatbuffers
+--------------------------------------------------------------------------
+protobuf 7.36.2
+Licence: BSD 3-Clause
+Upstream: https://github.com/protocolbuffers/protobuf
+--------------------------------------------------------------------------
+packaging 26.3
+Licence: Apache License 2.0 or BSD 2-Clause
+Upstream: https://github.com/pypa/packaging
+--------------------------------------------------------------------------
 
 This file is installed alongside the application (see the NSIS installer
 script and grain_analyzer.spec) so licence information is available

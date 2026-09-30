@@ -2,7 +2,7 @@
 # PyInstaller spec for Grain Analyzer v3
 # Build: pyinstaller grain_analyzer.spec
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_dynamic_libs
 import os
 import sys
 
@@ -30,8 +30,13 @@ license_datas = [(p, '.') for p in ('LICENSE.txt', 'THIRD_PARTY_LICENSES.txt')
 a = Analysis(
     ['main.py'],
     pathex=['.'],
-    binaries=[],
+    binaries=[
+        # onnxruntime native DLLs for the offline info-bar OCR (RapidOCR)
+        *collect_dynamic_libs('onnxruntime'),
+    ],
     datas=[
+        # RapidOCR config.yaml + bundled ONNX models (det/rec/cls)
+        *collect_data_files('rapidocr_onnxruntime'),
         *collect_data_files('skimage'),
         *collect_data_files('scipy'),
         *collect_data_files('cv2'),
@@ -55,6 +60,8 @@ a = Analysis(
         'ui.app_shell','ui.calibration_dialog','ui.scan_area_dialog',
         'reports.excel_renderer','reports.pptx_renderer',
         'segment_anything',
+        'core.info_bar_ocr','rapidocr_onnxruntime','onnxruntime',
+        'shapely','shapely.geometry','pyclipper','yaml','six',
         *torch_hidden,
         *tv_hidden,
         *sam_hidden,
@@ -66,7 +73,8 @@ a = Analysis(
     # because nothing in this codebase imports them and bundling them would
     # be a large, pointless attack surface for an app that must never touch
     # the network (HARD CONSTRAINT: offline & private).
-    excludes=['napari','matplotlib','IPython','tkinter','_tkinter',
+    # tqdm (MPL-2.0) is declared by rapidocr but never imported; keep it out.
+    excludes=['tqdm','napari','matplotlib','IPython','tkinter','_tkinter',
               'wx','PySide2','PyQt5','PyQt6','pandas',
               'PySide6.QtWebEngineCore','PySide6.QtWebEngineWidgets',
               'PySide6.QtWebEngineQuick','PySide6.QtNetwork',
