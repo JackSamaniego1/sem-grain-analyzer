@@ -235,3 +235,14 @@
 - **Test suite status**: 991 passed / 1 skipped / 1 failed (item 18 journey test, now fixed); offline guard clean; installer 644 MB.
 - **Batch 2 ready to start** (6 ui-designer items): 6 (unit dropdown) → 4 UI wiring (same card) → 9 (opacity slider) → 13 (grouped tree) → 14 (display persist) → 10a (remove CPU tile). Reports track (item 15, 17, 19) and core track (item 11) run parallel. Batch 3 (7, 8, 10b, 12) follows.
 - **Handoff files updated** (SESSION_STATE.md, UPDATE_4.md execution checklist, 06_PROGRESS_LOG.md, 03_TASK_BOARD.md) and ready to commit. Context clearing next so next coordinator session resumes with zero context loss.
+
+## 2026-09-30 — UPDATE 4 batch 2 continuing; 4 commits landed
+- **Item 17 DONE (83a864e)**: PPTX per-lot grain distribution slides (area + diameter, native bars + KDE trendline) and lot-to-lot comparison (all lots' curves stacked, bars + trendlines per colour). Sample deck in %TEMP%\lot_distributions_sample.pptx. Code-reviewed. Open question: user feedback on y-axis (share-% vs counts) and comparison scope (all parts vs per-part).
+- **Items 6, 14, 10a DONE (7a70d74)**: Scale-length number box + nm/µm/mm dropdown with accent pulse + focus after auto-find; display mode persists across images per page; "AI runs on CPU" tile and device probe removed. Code-reviewed (minor follow-ups: tiny lengths <0.0005 µm round to 0, pulse skipped if row not visible, `_timer` init in ui/widgets/attention.py).
+- **In progress (uncommitted, 4 agents)**:
+  - **Item 4 follow-up** (detection-engineer): JEOL bar rect 678,963,32,15 needs verification (expected 100 nm); Thermo split scale-line join (centred "100 µm" label splits the line); vendor logo detection in data bar (OpenCV template, no new dependency); parse `curr` (beam current). New file core/vendor_logo.py. Real image: scratch/real_sem/1A-1-GS-BM1.jpg (1280x1024, 100 nm, x30,000, 7.0 kV, WD 9.7 mm, LEI). Expected.json updated with both JEOL + Thermo. Still wanted: Phenom-style Thermo ("15 µm" under tick line).
+  - **Item 9** (ui-designer): Overlay opacity slider (top-right image, Analyze + Review tabs).
+  - **Item 13** (ui-designer): Review image list grouped Job › Part › Lot (reuse ImageTree).
+  - **Item 19** (report-engineer): PPTX contents page as slide 2 with page numbers/ranges and links.
+- **Test status**: Last full run 1034 passed / 7 failed (7 were mid-edit report tests, now fixed). Full suite owed after item 4 follow-up review + commit.
+- **Next**: Review item 4 follow-up (code-reviewer) → commit + full suite. Then items 4 UI wiring (same card as 6) + item 11 (metadata). Then items 9/13/19 review → commit. Then items 15 (lot summary charts) + 5 (profiles). Batch 3 (7, 8, 10b, 12 last).

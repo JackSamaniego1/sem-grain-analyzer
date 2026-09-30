@@ -140,7 +140,7 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 | UX-15 | Custom palettes: create from 3 hex/colour-wheel colours, save locally, selectable next to 4 built-in, drives report colours | report-engineer | done | 560deed: palette editor (hex input + wheel); palette_library.json; selectable in report UI |
 | UX-16 | Overlay opacity in report export — use ReportModel.overlay_opacity (UX-05) | report-engineer | done | 1e0a895: export respects ReportModel.overlay_opacity; Excel & PPTX apply opacity |
 
-## UPDATE 4 (batch 1 complete; batch 2 ready)
+## UPDATE 4 (batch 2 in progress; batch 3 queued)
 See handoff/UPDATE_4.md: 19 items, 3 batches, execution checklist.
 
 **Batch 1 (done 2026-09-29):**
@@ -148,29 +148,29 @@ See handoff/UPDATE_4.md: 19 items, 3 batches, execution checklist.
 |---|------|-------|--------|-------|
 | 1 | New Lot/Part: multiple boxes, stay on page | ui-designer (sonnet) | done | 42e44a2 |
 | 2 | Drag images into lot (copy into job folder) | ui-designer + data-architect | done | b343d3f (UI) + f42fdab (data layer) |
-| 3 | Image checkboxes + "Analyze selected" button | ui-designer | done | 05435d7; checkboxes, checked_uids(), "Analyze selected (N)" button |
-| 16 | Units & bins bug (nm²↔µm² rescale) | report-engineer | done | e09677f; build_bins() equal-width; bin_labels() wired |
-| 18 | PPTX percentile slide (D10/D50/D90) | report-engineer | done | fa6c95f; per part & lot; journey test fixed 2ce1e24 |
-| 4 | Scale-bar label OCR (JEOL + Thermo) | detection-engineer | review | e634d33 core + packaging done; UI wiring + image validation pending |
+| 3 | Image checkboxes + "Analyze selected" button | ui-designer | done | 05435d7 |
+| 16 | Units & bins bug (nm²↔µm² rescale) | report-engineer | done | e09677f |
+| 18 | PPTX percentile slide (D10/D50/D90) | report-engineer | done | fa6c95f + 2ce1e24 |
 
-**Batch 1 remaining (batch 2 queue):**
+**Batch 2 (in progress / done 2026-09-30):**
 | # | Item | Owner | Status | Notes |
 |---|------|-------|--------|-------|
-| 6 | Scale length units dropdown + highlight | ui-designer | todo | Batch 2, item 1 |
-| 9 | Overlay opacity slider (top-right image) | ui-designer | todo | Batch 2, item 2 |
-| 13 | Review image list grouped Job › Part › Lot | ui-designer | todo | Batch 2, item 3; reuse ImageTree component |
-| 14 | Display mode persists across images | ui-designer | todo | Batch 2, item 4 |
-| 10a | Remove CPU tile from Analyze | detection-engineer | todo | Batch 2, item 5 |
+| 6 | Scale length units dropdown + highlight | ui-designer | done | 7a70d74; nm/µm/mm dropdown, accent pulse, focus after auto-find |
+| 14 | Display mode persists across images | ui-designer | done | 7a70d74 |
+| 10a | Remove CPU tile from Analyze | detection-engineer | done | 7a70d74 |
+| 17 | PPTX distribution slides per lot + lot-to-lot | report-engineer | done | 83a864e; area+diameter bars+KDE; comparison slide stacked |
+| 4 | Scale-bar label OCR (JEOL + Thermo) | detection-engineer | doing | e634d33 core done; follow-up in progress (vendor logo, bar join, curr parse) |
+| 9 | Overlay opacity slider (top-right image) | ui-designer | doing | Analyze + Review tabs |
+| 13 | Review image list grouped Job › Part › Lot | ui-designer | doing | Reuse ImageTree component |
+| 19 | PPTX contents page as slide 2 with links | report-engineer | doing | Page numbers/ranges, clickable links; do after 17+18 |
 
-**Batch 2+ (parallel: reports + core):**
+**Batch 3 (parallel: reports + core):**
 | # | Item | Owner | Status | Notes |
 |---|------|-------|--------|-------|
 | 15 | Lot summary charts (bar+trendline) | report-engineer | todo | **Unblocked (D-31)**: build now, user reviews when testing |
-| 17 | PPTX distribution slides per lot + lot-to-lot | report-engineer | todo | per-lot area + diameter bars with trendline; comparison slide |
-| 19 | PPTX contents page as slide 2 with links | report-engineer | todo | Do after 17 + 18 |
-| 11 | Auto-fill mag/instrument/kV/WD from metadata | detection-engineer | todo | Parallel track |
+| 11 | Auto-fill mag/instrument/kV/WD from metadata | detection-engineer | todo | Parallel track after item 4 |
 | 5 | Resolution Profiles sidebar card | ui-designer + data-architect | todo | Batch 3 |
-| 10b | GPU/CUDA torch build + AI-Assisted modes | detection-engineer + build-engineer | todo | **Unblocked (D-32)**: NVIDIA GPU confirmed; batch 3 |
-| 7 | Stability on weak CPUs during analysis | opus | todo | Batch 3 |
-| 8 | Review: "Add grain" tool | ui-designer + detection-engineer | todo | Batch 3 |
-| 12 | Fable: speed & usability optimisation | fable | todo | Batch 3, LAST item |
+| 10b | GPU/CUDA torch build + AI-Assisted modes | detection-engineer + build-engineer | todo | **Unblocked (D-32)**: NVIDIA GPU confirmed |
+| 7 | Stability on weak CPUs during analysis | opus | todo |  |
+| 8 | Review: "Add grain" tool | ui-designer + detection-engineer | todo |  |
+| 12 | Fable: speed & usability optimisation | fable | todo | LAST item |

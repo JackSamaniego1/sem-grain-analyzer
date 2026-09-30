@@ -70,12 +70,14 @@ Rules: Fable coordinates only and implements nothing except #12 (one-time except
 - [x] 16 Units & bins bug (nm² → µm² rescales; more bins = narrower bins) (e09677f)
 - [x] 18 PPTX percentile slide: D10 / D50 (median) / D90 per part and lot (fa6c95f)
 
-**Batch 1 pending:**
-- [ ] 6  Unit dropdown for scale length + highlight the length box after auto-find
-- [ ] 9  Overlay opacity slider (top-right of image, Analyze + Review)
-- [ ] 13 Review image list grouped Job › Part › Lot like Analyze
-- [ ] 14 Display mode (Original/Overlay) persists across images
-- [ ] 10a Remove the "AI runs on CPU" tile
+**Batch 2 in progress (2026-09-30):**
+- [x] 6  Unit dropdown for scale length + highlight the length box after auto-find (7a70d74)
+- [x] 14 Display mode (Original/Overlay) persists across images (7a70d74)
+- [x] 10a Remove the "AI runs on CPU" tile (7a70d74)
+- [x] 17 PPTX distribution slides: per-lot area + diameter bars with trendline; lot-to-lot comparison (83a864e)
+- [ ] 9  Overlay opacity slider (top-right of image, Analyze + Review) — in progress
+- [ ] 13 Review image list grouped Job › Part › Lot like Analyze — in progress
+- [ ] 19 PPTX contents page as slide 2 with links — in progress
 
 **Batch 1 partial:**
 - [ ] 4  Read scale-bar label (value + unit) with bundled offline OCR (core + packaging done e634d33; UI wiring + test images validation pending)
