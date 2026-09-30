@@ -21,7 +21,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QItemSelectionModel, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFontMetricsF, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QHBoxLayout, QMenu, QStyle, QStyledItemDelegate, QTreeWidget,
@@ -48,6 +48,8 @@ ROLE_CAL = Qt.UserRole + 8        # group: scale tone
 ROLE_PATHS = Qt.UserRole + 9      # restore row: record paths
 
 THUMB_W, THUMB_H = 46, 34
+CHECK_SIZE = 16
+CHECK_GUTTER = 24          # room the tick box takes on the left of an image row
 IMAGE_ROW_H = 46
 GROUP_ROW_H = 40
 RESTORE_ROW_H = 28
@@ -139,6 +141,10 @@ class _Delegate(QStyledItemDelegate):
 
     def _paint_image(self, p, r: QRectF, index, t) -> None:
         pad = 5
+        if self.tree.checkable:
+            self._paint_check(p, self.tree.tree.check_rect(r),
+                              self.tree.is_checked(index.data(ROLE_UID)), t)
+            pad += CHECK_GUTTER
         tr = QRectF(r.left() + pad, r.center().y() - THUMB_H / 2, THUMB_W, THUMB_H)
         path = QPainterPath()
         path.addRoundedRect(tr, RADII.sm, RADII.sm)
@@ -186,6 +192,19 @@ class _Delegate(QStyledItemDelegate):
         p.drawText(QRectF(x + 12, r.top() + 24, w - 12, 16), Qt.AlignLeft | Qt.AlignVCenter,
                    fm.elidedText(line2, Qt.ElideRight, w - 12))
 
+    def _paint_check(self, p, box: QRectF, on: bool, t) -> None:
+        p.save()
+        p.setPen(QPen(qcolor(t.accent.base if on else t.text.tertiary), 1.4))
+        p.setBrush(qcolor(t.accent.base) if on else Qt.NoBrush)
+        p.drawRoundedRect(box, 3, 3)
+        if on:
+            p.setPen(QPen(qcolor(t.accent.fg), 1.8,
+                          Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            x, y, w, h = box.x(), box.y(), box.width(), box.height()
+            p.drawPolyline([QPointF(x + w * .24, y + h * .52), QPointF(x + w * .43, y + h * .70),
+                            QPointF(x + w * .76, y + h * .32)])
+        p.restore()
+
     def _paint_group(self, p, r: QRectF, index, t) -> None:
         x = r.left() + 4
         w = r.right() - x - 4
@@ -221,10 +240,63 @@ class _Delegate(QStyledItemDelegate):
 
 class _Tree(QTreeWidget):
     files_dropped = Signal(list)
+    check_toggled = Signal(object)           # the image item whose tick box was hit
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setAcceptDrops(True)
+        self.checkable = False
+        self._checked: set = set()
+        self._quiet_current = False
+
+    def check_rect(self, r: QRectF) -> QRectF:
+        return QRectF(r.left() + 5, r.center().y() - CHECK_SIZE / 2, CHECK_SIZE, CHECK_SIZE)
+
+    def _box_hit(self, e):
+        """The image item whose tick box the mouse event hit, else None."""
+        if self.checkable and e.button() == Qt.LeftButton:
+            it = self.itemAt(e.position().toPoint())
+            if it is not None and it.data(0, ROLE_KIND) == "image":
+                rect = QRectF(self.visualItemRect(it)).adjusted(1, 1, -2, -1)
+                if self.check_rect(rect).adjusted(-4, -4, 4, 4).contains(QPointF(e.position())):
+                    return it
+        return None
+
+    def _toggle_from_mouse(self, it) -> None:
+        # the row becomes current (so Space acts on it) but is not selected and
+        # the displayed image does not change
+        self._quiet_current = True
+        try:
+            self.setCurrentItem(it, 0, QItemSelectionModel.NoUpdate)
+        finally:
+            self._quiet_current = False
+        self.check_toggled.emit(it)
+
+    def mousePressEvent(self, e) -> None:
+        # a hit on the tick box toggles it only: no selection / current-image change
+        it = self._box_hit(e)
+        if it is not None:
+            self._toggle_from_mouse(it)
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def mouseDoubleClickEvent(self, e) -> None:
+        it = self._box_hit(e)
+        if it is not None:          # a fast second click toggles again, never activates
+            self._toggle_from_mouse(it)
+            e.accept()
+            return
+        super().mouseDoubleClickEvent(e)
+
+    def keyPressEvent(self, e) -> None:
+        if self.checkable and e.key() == Qt.Key_Space:
+            it = self.currentItem()
+            if it is not None and it.data(0, ROLE_KIND) == "image":
+                self.check_toggled.emit(it)
+                e.accept()
+                return
+        super().keyPressEvent(e)
 
     @staticmethod
     def _paths(md) -> List[str]:
@@ -259,8 +331,10 @@ class ImageTree(ThemeAware, QWidget):
     add_requested = Signal()
     remove_requested = Signal(list)         # uids
     restore_requested = Signal(object)      # list of record Paths, or None = all
+    checked_changed = Signal(list)          # uids ticked now (only when checkable)
 
-    def __init__(self, state, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, state, parent: Optional[QWidget] = None,
+                 checkable: bool = False) -> None:
         super().__init__(parent)
         self.state = state
         self._items: Dict[object, QTreeWidgetItem] = {}
@@ -297,6 +371,8 @@ class ImageTree(ThemeAware, QWidget):
         head.addWidget(self.add_btn)
         v.addLayout(head)
         self.tree = _Tree()
+        self.tree.checkable = checkable
+        self.tree.check_toggled.connect(self._toggle_item)
         self.tree.setColumnCount(1)
         self.tree.setHeaderHidden(True)
         self.tree.setIndentation(10)
@@ -324,6 +400,39 @@ class ImageTree(ThemeAware, QWidget):
 
     def sizeHint(self) -> QSize:
         return QSize(260, 600)
+
+    # ------------------------------------------------------------------ tick boxes
+    @property
+    def checkable(self) -> bool:
+        return self.tree.checkable
+
+    def set_checkable(self, on: bool) -> None:
+        if on == self.tree.checkable:
+            return
+        self.tree.checkable = bool(on)
+        if not on:
+            self._set_checked(set())
+        self.tree.viewport().update()
+
+    def is_checked(self, uid) -> bool:
+        return uid in self.tree._checked
+
+    def checked_uids(self) -> List:
+        """Ticked images, in list order."""
+        return [u for u in self._items if u in self.tree._checked]
+
+    def set_checked(self, uids) -> None:
+        self._set_checked({u for u in uids if u in self._items})
+
+    def _set_checked(self, new: set) -> None:
+        if new != self.tree._checked:
+            self.tree._checked = new
+            self.tree.viewport().update()
+            self.checked_changed.emit(self.checked_uids())
+
+    def _toggle_item(self, it) -> None:
+        uid = it.data(0, ROLE_UID)
+        self._set_checked(self.tree._checked ^ {uid})
 
     # ------------------------------------------------------------------ build
     def _group(self, kind: str, path: Path, cap: str, parent) -> QTreeWidgetItem:
@@ -421,6 +530,8 @@ class ImageTree(ThemeAware, QWidget):
                                         "analyzer (nothing was deleted)")
         if self._current in self._items:
             self.set_current(self._current)
+        if self.tree._checked:            # ticks survive rebuilds; removed images drop out
+            self._set_checked({u for u in self.tree._checked if u in self._items})
 
     def _fill(self, it: QTreeWidgetItem, im) -> None:
         tone, text = image_status(im)
@@ -567,13 +678,19 @@ class ImageTree(ThemeAware, QWidget):
                 if it.data(0, ROLE_KIND) == "image"]
 
     def _on_current_item(self, cur, _prev) -> None:
-        if self._building or cur is None or cur.data(0, ROLE_KIND) != "image":
+        if (self._building or self.tree._quiet_current or cur is None
+                or cur.data(0, ROLE_KIND) != "image"):
             return
         uid = cur.data(0, ROLE_UID)
         self._current = uid
         self.current_changed.emit(uid)
 
     def _on_clicked(self, it, _col=0) -> None:
+        if it is not None and it.data(0, ROLE_KIND) == "image":
+            uid = it.data(0, ROLE_UID)     # the row may be current already (tick box
+            if uid != self._current:       # click) without being the displayed image
+                self._current = uid
+                self.current_changed.emit(uid)
         if it is not None and it.data(0, ROLE_KIND) == "restore":
             self.restore_requested.emit([Path(p) for p in (it.data(0, ROLE_PATHS) or [])])
 

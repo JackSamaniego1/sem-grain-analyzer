@@ -541,7 +541,7 @@ class AnalyzePage(QWidget):
         film_panel = Panel("right")
         fl = QVBoxLayout(film_panel)
         fl.setContentsMargins(0, 0, 0, 0)
-        self.film = ImageTree(self.state)
+        self.film = ImageTree(self.state, checkable=True)
         self.film.setMinimumWidth(260)
         self.film.setMaximumWidth(320)
         fl.addWidget(self.film)
@@ -642,6 +642,10 @@ class AnalyzePage(QWidget):
         br.addWidget(self.btn_cur, 1)
         br.addWidget(self.btn_cancel, 1)
         run.body_layout().addLayout(br)
+        self.btn_sel = AnimatedButton("Analyze selected", "run", "secondary")
+        self.btn_sel.setToolTip("Analyze only the images ticked in the image list")
+        self.btn_sel.hide()          # shown when 2 or more images are ticked
+        run.body_layout().addWidget(self.btn_sel)
         iv.addWidget(run)
 
         # 1 detection mode · 5 excluded regions · 6 advanced (ParamPanel)
@@ -802,6 +806,8 @@ class AnalyzePage(QWidget):
         self.btn_11.clicked.connect(self.canvas.actual_size)
         self.btn_all.clicked.connect(self.analyze_all)
         self.btn_cur.clicked.connect(self.analyze_current)
+        self.btn_sel.clicked.connect(self.analyze_selected)
+        self.film.checked_changed.connect(self._on_checked_changed)
         self.btn_cancel.clicked.connect(self.cancel)
         self.btn_cal.clicked.connect(self.calibrate_requested)
         self.btn_scan.clicked.connect(self.scan_area_requested)
@@ -1328,10 +1334,12 @@ class AnalyzePage(QWidget):
                                                              f"{total} folders")
             self.btn_all.setEnabled(False)
             self.btn_cur.setEnabled(False)
+            self.btn_sel.setEnabled(False)
 
     def _on_records_loaded(self) -> None:
         self.btn_all.setEnabled(True)
         self.btn_cur.setEnabled(True)
+        self.btn_sel.setEnabled(True)
         self.progress_changed.emit(-1, "")
         self._set_idle()
         self._refresh_setup_all()
@@ -1353,6 +1361,19 @@ class AnalyzePage(QWidget):
         im = self.state.current_image()
         if im is not None and (im.readable or im.loading):
             self._start([im], self.btn_cur)
+
+    def _on_checked_changed(self, uids=None) -> None:
+        n = len(self.film.checked_uids())
+        self.btn_sel.setText(f"Analyze selected ({n})")
+        # never hide the button that is driving a run; re-checked when the run ends
+        self.btn_sel.setVisible(n >= 2 or self._run_btn is self.btn_sel)
+
+    def analyze_selected(self) -> None:
+        """Run the ticked images through the same batch path as Analyze all."""
+        ticked = set(self.film.checked_uids())
+        imgs = [im for im in self.state.images()
+                if im.uid in ticked and (im.readable or im.loading)]
+        self._start(imgs, self.btn_sel)
 
     def _start(self, images, button: Optional[AnimatedButton] = None) -> None:
         if self.state.session is None or not images:
@@ -1378,7 +1399,7 @@ class AnalyzePage(QWidget):
         # UX-08: only the button that was clicked shows the spinner
         self._run_btn = button or self.btn_all
         self._run_btn.set_loading(True)
-        for b in (self.btn_all, self.btn_cur):
+        for b in (self.btn_all, self.btn_cur, self.btn_sel):
             if b is not self._run_btn:
                 b.setEnabled(False)
         self.btn_cancel.show()
@@ -1426,10 +1447,11 @@ class AnalyzePage(QWidget):
         self.progress_changed.emit(pct, self.run_sub.text().split("\n")[0])
 
     def _on_queue_finished(self, cancelled: bool) -> None:
-        for b in (self.btn_all, self.btn_cur):
+        for b in (self.btn_all, self.btn_cur, self.btn_sel):
             b.set_loading(False)
             b.setEnabled(True)
         self._run_btn = None
+        self._on_checked_changed()
         self.btn_cancel.hide()
         self.busy_changed.emit(False)
         self.progress_changed.emit(-1, "")
