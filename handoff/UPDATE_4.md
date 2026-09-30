@@ -75,16 +75,16 @@ Rules: Fable coordinates only and implements nothing except #12 (one-time except
 - [x] 14 Display mode (Original/Overlay) persists across images (7a70d74)
 - [x] 10a Remove the "AI runs on CPU" tile (7a70d74)
 - [x] 17 PPTX distribution slides: per-lot area + diameter bars with trendline; lot-to-lot comparison (83a864e)
-- [~] 4  Read scale-bar label (value + unit) with bundled offline OCR — core 8a059e0 reviewed (JEOL 100 nm, Thermo 100 µm, vendor logo + beam current); **UI wiring in Automatic mode pending**
+- [x] 4  Read scale-bar label (value + unit) + UI auto-fill on Auto-find (455e548 + core 8a059e0); JEOL 100 nm, Thermo 100 µm, vendor logo + beam current parsed
 - [x] 9  Overlay opacity slider (top-right of image, Analyze + Review) (4127728)
 - [x] 13 Review image list grouped Job › Part › Lot like Analyze (4127728)
 - [x] 19 PPTX contents page as slide 2 with links (1c3eec9)
 
-**Batch 2 onwards / batch 3:**
-- [ ] 11 Auto-fill magnification / instrument / kV / WD from JEOL + Thermo metadata (after item 4 UI wiring)
-- [ ] 5  Resolution Profiles sidebar card (manual selection) (after item 15)
-- [ ] 15 Lot Summary page: fix blank preview; bar+trendline lot charts + job summary (unblocked D-31: build now, user reviews when testing)
-- [ ] 7  Stability during analysis on weak CPUs; lock with "Continue anyway"
-- [ ] 8  Review: "Add grain" tool (split-tool drawing style)
-- [~] 10b AI-Assisted (GPU) / (CPU) modes + CUDA installer — core 822bfb3 + packaging fcf57cc done (GPU device resolution, scaffolding); **UI modes + installer GPU-pack page + trial build pending** (unblocked D-32: NVIDIA confirmed)
+**Batch 3 (in progress, 2026-09-30 night):**
+- [~] 15 Lot Summary page: bar+trendline lot charts + job summary in Excel + PPTX (b4e38a5 reviewed; user must open sample to verify; minor follow-up: ASTM G avg label)
+- [ ] 11 Auto-fill magnification / instrument / kV / WD from JEOL + Thermo metadata on image load (UI wiring in progress; core 959ffe0 done)
+- [ ] 5  Resolution Profiles sidebar card (manual selection) (data layer + UI; fixes on review findings in progress)
+- [~] 7  Stability during analysis on weak CPUs; lock with "Continue anyway" — core a51a2d2 done; **UI wiring pending** (call configure_threads at startup, add lock to analysis, undo cleanup)
+- [ ] 8  Review: "Add grain" tool (split-tool drawing style) — core 273750b done; **UI wiring in progress**
+- [x] 10b AI-Assisted (GPU) / (CPU) modes + CUDA installer — 822bfb3 core + fcf57cc packaging + c4b2584 installer page + 455e548 UI modes done; **trial GPU build + manual checks pending** (D-35, D-36: NVIDIA confirmed)
 - [ ] 12 Fable: speed & usability optimisation, faster detection without accuracy loss — LAST

@@ -1,8 +1,8 @@
 # SESSION STATE - read this first when resuming
 
-**Last updated:** 2026-09-30 (night: item 11 + item 8 cores reviewed; UPDATE 4 batch 2 complete, batch 3 half-done)  
-**Branch:** `v3-dev` | **Last commit:** `273750b` (item 8 core: add_grain lasso, image_info polish, item 7 stability plan; 959ffe0: item 11 core read_image_info) | **Phase:** UPDATE 4 batch 3: item 11 core + item 8 core done; UI wiring (4, 8, 10b UI modes) + item 15 reports in progress  
-**Resume with:** read this file only, then handoff/UPDATE_4.md and handoff/02_TEAM_ROSTER.md.
+**Last updated:** 2026-09-30 (night, cont: items 15 reports, 4 UI, 10b UI, 7 core committed; 3 agents still running on items 11 UI, 8 UI, 5, 7 UI)  
+**Branch:** `v3-dev` | **Last commit:** `a51a2d2` (item 7 core: thread caps, atomic pack_result, add_grain hardening; NOT yet called by UI) | **Phase:** UPDATE 4 batch 3: items 4, 10b UI, 15 reports, 7 core done; items 11, 8, 5 UI + item 7 UI wiring in progress  
+**Resume with:** read this file only, then handoff/UPDATE_4.md and handoff/02_TEAM_ROSTER.md. **Note:** User overnight: keep working through UPDATE 4 tonight; ignore context-size warning when it fires.
 
 ## Done and committed
 
@@ -31,28 +31,27 @@
 - Installer builds locally: GrainAnalyzer_Setup.exe 644 MB
 
 ## In-progress tasks (uncommitted, agents running)
-- **Item 4 UI wiring** (ui-designer): Scale-bar label auto-fill in Automatic mode (worker thread, non-blocking). Also: touch-up after item 11 OCR.
-- **Item 8 UI half** (ui-designer + detection-engineer): Review "Add grain" tool UI wiring (split-tool style, mirror core logic). Core half done (273750b).
-- **Item 11 UI wiring** (detection-engineer): Auto-fill magnification/instrument/kV/WD on image load from metadata. Core read_image_info() done (959ffe0).
-- **Item 15 reports** (report-engineer): reports/lot_summary.py (lot bar+trendline charts, job summary) + excel/pptx renderers (lot bar+trendline charts, job summary).
-- **Item 10b UI modes** (ui-designer): "AI-Assisted (GPU)" / "AI-Assisted (CPU)" detection modes, GPU greyed with tooltip from ai_devices().
+- **Item 11 UI wiring** (detection-engineer): Auto-fill magnification/instrument/kV/WD on image load from metadata. Core read_image_info() done (959ffe0). Fills fields in Analyze card on image load.
+- **Item 8 UI half** (ui-designer + detection-engineer): Review "Add grain" tool UI wiring (split-tool style, mirror core logic). Core add_grain done (273750b).
+- **Item 5 data layer** (data-architect): ProfileStore, ResolutionProfile, check_fit, import/export; session field `resolution_profile`. Fixing review findings on unit spelling, save-failure rollback, NaN/inf checks.
+- **Item 7 UI wiring** (opus): Call core/perf.py `configure_threads()` at startup in main.py; AnalysisQueue generation fix; analysis lock with "Continue anyway"/"Don't warn again" per ITEM_7_STABILITY_PLAN.md.
 
 ## NEXT 3 ACTIONS
 
-1. **Review + commit three agent branches** (ui-designer: 4+8+10b UI, report-engineer: 15). Code-reviewer on each diff, full test suite after each, then commit.
-2. **Item 11 UI wiring** (fill metadata fields on image load) + **item 8 UI finish** (Review Add grain tool) + **item 10b UI modes** (GPU/CPU toggle + trial build).
-3. **Item 5 Resolution Profiles** → batch 3 final (items 7 Opus, 12 Fable).
+1. **Review + commit ui/data layer branches** (detection-engineer: items 11, 7 UI + item 8 UI). Code-reviewer on each diff, full test suite after review/commit.
+2. **Item 5 Resolution Profiles** (data layer + UI sidebar card) → item 7 UI wiring (thread caps lock during analysis) → item 12 Fable last (speed optimisation).
+3. **Final full suite + smoke-app** → summary for user: manual checks needed (installer GPU page, real JEOL/Thermo images, sample Excel/PowerPoint, NSIS build on installer PC).
 
 **Batch 2 status** ✓ complete:
 - [x] Item 6: Unit dropdown + pulse (7a70d74)
 - [x] Item 14: Display mode persist (7a70d74)
 - [x] Item 10a: Remove CPU tile (7a70d74)
 - [x] Item 17: PPTX distribution slides (83a864e)
-- [~] Item 4: RapidOCR core done (8a059e0 reviewed); UI wiring pending
+- [x] Item 4: RapidOCR core + UI auto-fill on Auto-find (455e548 reviewed; core 8a059e0)
 - [x] Item 9: Overlay opacity slider (4127728)
 - [x] Item 13: Review image list grouped (4127728)
 - [x] Item 19: PPTX contents page (1c3eec9)
-- [~] Item 10b: Core + packaging done (822bfb3, fcf57cc); UI modes + installer page + trial build pending
+- [x] Item 10b: Core + packaging + UI modes (822bfb3, fcf57cc, c4b2584 installer, 455e548 UI modes). Trial build + manual GPU pack checks pending (D-35, D-36)
 
 **User decisions this session (D-34 through D-37):**
 - D-34: Keep BOTH opacity controls (new pill + Analyze side-panel slider).
@@ -83,8 +82,10 @@ cd "C:\Users\saman\GRAIN ANALYSIS TOOL"
 - **Item 8** (ui-designer + detection-engineer): Review "Add grain" tool (split-tool style).
 - **Item 12** (Fable): Speed & usability optimisation, faster detection (LAST item).
 
-## NIGHT SESSION — 2026-09-30 (ongoing)
-- **Item 11 core REVIEWED (959ffe0)**: read_image_info(path, image=None, use_ocr=True) → ImageInfo with instrument/vendor/magnification/kV/WD/detector/scale_label/scale_bar/source/needs_check/field_notes/ocr_status. Safe on UI thread if use_ocr=False; must run in worker if use_ocr=True (RapidOCR).
-- **Item 8 core REVIEWED (273750b)**: add_grain(labels, outline, valid_mask, min_area, new_id) → AddGrainOutcome. UI must call split→remeasure→push GrainGeometryCommand; if not added show outcome.reason. Also: image_info polish; item 7 stability plan saved as handoff/specs/ITEM_7_STABILITY_PLAN.md (10 defects + fixes, read-only diagnosis).
-- **Agents running** (uncommitted): ui-designer (items 4+8+10b UI), report-engineer (item 15), detection-engineer (item 7 core side). Modified: reports/, ui/, tests/. New: reports/lot_summary.py, ui/ai_probe.py, tests/test_report_lot_summary.py, tests/test_ui_scale_label_ocr.py.
-- **Upcoming**: review/commit each → full test suite → item 11 UI (fill fields) → item 5 (profiles) → batch 3 final (items 7, 12 Fable).
+## NIGHT SESSION — 2026-09-30 (update 3)
+- **Item 15 DONE & REVIEWED (b4e38a5)**: reports/lot_summary.py `lot_summary_data(model, images=None) -> dict` is the single data source. Lot Summary in Excel (per-lot distribution chart + subtotals) + PowerPoint (job summary table + bar+trendline charts for mean diameter, D50, mean area, grain count, ASTM G). New tests in test_report_lot_summary.py. **User must open sample Excel/PowerPoint to verify**. Minor follow-up: ASTM G in subtotal rows should be labeled as average (not just the number).
+- **Item 4 DONE & REVIEWED (455e548)**: Auto-find now reads scale-bar label in Automatic mode (worker thread, non-blocking). Unsure readings get "Please check" badge; auto-apply disabled until user confirms. Reuses OCR from item 4 core (8a059e0).
+- **Item 10b UI DONE & REVIEWED (455e548)**: "AI-Assisted (GPU)" / "AI-Assisted (CPU)" mode cards (ui/ai_probe.py background GPU check). GPU greyed with reason if unavailable. **Trial GPU build + manual checks pending** (D-35, D-36).
+- **Item 7 core DONE & REVIEWED (a51a2d2)**: core/perf.py `configure_threads()` (OpenCV, torch, OCR thread caps), atomic pack_result, add_grain hardening. **NOT yet called by app**: UI-side item 7 pass must call configure_threads() at startup in main.py. Caveat: AI-assisted (SAM) results on CPU may differ by a few pixels with different thread count (untested; standard modes identical).
+- **Agents running** (uncommitted): detection-engineer (items 11 UI + 7 UI wiring + 8 UI), data-architect (item 5 data layer). Modified: data/, ui/, tests/. New files staged.
+- **Upcoming**: review/commit each → full test suite → item 5 sidebar (profiles UI) → batch 3 final (item 12 Fable speed optimisation).

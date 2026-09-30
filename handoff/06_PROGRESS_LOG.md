@@ -277,3 +277,11 @@
   - **report-engineer**: item 15 (lot summary bar+trendline charts, job summary in Excel/PPTX; reports/lot_summary.py + renderers).
   - **detection-engineer**: item 7 core (analysis stability; from ITEM_7_STABILITY_PLAN.md, implementation TBD).
 - **Next**: Review + commit each agent branch (code-reviewer) → full test suite → item 11 UI wiring → item 5 profiles → batch 3 final (item 7, 12 Fable).
+
+## 2026-09-30 (late) — Three more items committed; batch 3 agents continue
+- **Item 15 DONE (b4e38a5)**: Lot Summary in Excel (per-lot distribution chart, subtotals) + PowerPoint (job summary table, bar+trendline charts: mean diameter, D50, mean area, grain count, ASTM G). Single data source: reports/lot_summary.py `lot_summary_data(model, images=None)`. User must verify by opening sample Excel/PowerPoint. Minor: ASTM G in subtotal rows needs "average" label.
+- **Item 4 DONE (455e548)**: Auto-find scale-bar label in Automatic mode (worker thread, non-blocking). Unsure readings flagged with "Please check" badge; auto-apply disabled. Reuses OCR from core (8a059e0).
+- **Item 10b UI DONE (455e548)**: "AI-Assisted (GPU)" / "AI-Assisted (CPU)" mode cards; GPU greyed if unavailable (ui/ai_probe.py background check). Trial GPU pack build and manual checks (installer, real images, NSIS) pending D-35/D-36.
+- **Item 7 core DONE (a51a2d2)**: core/perf.py `configure_threads()` caps OpenCV/torch/OCR threads; atomic pack_result; add_grain hardening. NOT YET WIRED: UI must call configure_threads() at startup. Caveat: SAM results on CPU may shift by pixels with different thread counts (untested; standard modes identical).
+- **Uncommitted agents** (3 running): detection-engineer (items 11, 8, 7 UI), data-architect (item 5 data layer).
+- **Next**: Review/commit each → full test suite → item 5 profiles UI → batch 3 final (item 12 Fable).

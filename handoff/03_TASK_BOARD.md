@@ -159,18 +159,18 @@ See handoff/UPDATE_4.md: 19 items, 3 batches, execution checklist.
 | 14 | Display mode persists across images | ui-designer | done | 7a70d74 |
 | 10a | Remove CPU tile from Analyze | detection-engineer | done | 7a70d74 |
 | 17 | PPTX distribution slides per lot + lot-to-lot | report-engineer | done | 83a864e; area+diameter bars+KDE; comparison slide stacked |
-| 4 | Scale-bar label OCR (JEOL + Thermo) | detection-engineer | review | 8a059e0 core reviewed; JEOL 100 nm (32 px, 0.94 conf), Thermo 100 µm (279 px, 0.97 conf), vendor logo + beam current parsed; **UI wiring in Automatic mode in progress** |
+| 4 | Scale-bar label OCR + Auto-find UI | detection-engineer | done | 455e548 UI + core 8a059e0; worker thread, "Please check" badge for unsure reads |
 | 9 | Overlay opacity slider (top-right image) | ui-designer | done | 4127728; Analyze + Review tabs, shared persisted value, Overlay view only |
 | 13 | Review image list grouped Job › Part › Lot | ui-designer | done | 4127728; reused ImageTree component, folder nesting, image stepping |
 | 19 | PPTX contents page as slide 2 with links | report-engineer | done | 1c3eec9; page numbers, collapsed ranges, clickable links, Grain Size Summary now slide 3 |
 
-**Batch 3 (parallel: reports + core; 2026-09-30 night update):**
+**Batch 3 (parallel: reports + core + UI; 2026-09-30 night update):**
 | # | Item | Owner | Status | Notes |
 |---|------|-------|--------|-------|
-| 15 | Lot summary charts (bar+trendline) | report-engineer | doing | In progress (uncommitted); job summary + bar/trendline per lot in Excel/PPTX |
-| 11 | Auto-fill mag/instrument/kV/WD from metadata | detection-engineer | review | 959ffe0: core/image_info.py read_image_info (reviewed). UI wiring pending (fill fields on image load) |
-| 5 | Resolution Profiles sidebar card | ui-designer + data-architect | todo | Batch 3; after items 4 UI + item 15 |
-| 10b | GPU/CUDA torch build + AI-Assisted modes | ui-designer + build-engineer | doing | 822bfb3 core + fcf57cc packaging + c4b2584 installer page (DONE). **UI modes in progress** (ai_probe.py); trial build + manual checks pending (D-35, D-36) |
-| 7 | Stability on weak CPUs during analysis | opus | todo | Diagnosis: handoff/specs/ITEM_7_STABILITY_PLAN.md (10 defects + fixes); implementation pending batch 3 |
-| 8 | Review: "Add grain" tool | ui-designer + detection-engineer | doing | 273750b: core add_grain (reviewed). UI wiring pending (split-tool logic, Review page) |
+| 15 | Lot summary charts (bar+trendline) | report-engineer | review | b4e38a5: job summary table + bar/trendline charts in Excel/PPTX; user must open sample to verify |
+| 11 | Auto-fill mag/instrument/kV/WD from metadata | detection-engineer | doing | 959ffe0: core read_image_info done; UI wiring in progress (fill fields on Analyze card on image load) |
+| 5 | Resolution Profiles sidebar card | ui-designer + data-architect | doing | Data layer fixes in progress (unit spelling, save rollback, NaN/inf); then UI sidebar |
+| 10b | GPU/CUDA torch build + AI-Assisted modes | ui-designer + build-engineer | review | 822bfb3 core + fcf57cc packaging + c4b2584 installer page + 455e548 UI modes (DONE); trial build + manual checks pending |
+| 7 | Stability on weak CPUs during analysis | opus | doing | a51a2d2: core perf.py configure_threads done; UI wiring in progress (startup call, analysis lock, undo cleanup) |
+| 8 | Review: "Add grain" tool | ui-designer + detection-engineer | doing | 273750b: core add_grain done; UI wiring in progress (split-tool logic, Review page) |
 | 12 | Fable: speed & usability optimisation | fable | todo | LAST item |
