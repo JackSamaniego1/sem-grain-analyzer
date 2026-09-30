@@ -61,3 +61,13 @@ cd "C:\Users\saman\GRAIN ANALYSIS TOOL"
 - `handoff/03_TASK_BOARD.md` — task tracking (flip status todo→doing→review→done/blocked)
 - `handoff/05_DECISIONS.md` — ADR-style decision log (D-01..D-30)
 - `handoff/07_IDEAS_BACKLOG.md` — ideas (top 25 active; rest archived)
+
+## ADDED 2026-09-29 (after checkpoint 6353fb0) — item 4 follow-up, do this FIRST on the core track
+User supplied a third real image (saved, git-ignored): `scratch/real_sem/thermo_databar_logo_100um.png` + `scratch/real_sem/expected.json` (768x547, Thermo/FEI-style data bar: atom-like Thermo Fisher LOGO at the bottom-left, label-over-value columns `HV 15.00 kV | curr 1.1 nA | det CBS | HFW 276 µm`, then a long thin scale line with end ticks and the label "100 µm" in the MIDDLE of the line).
+User request: **identify Thermo Fisher from the logo** (bottom-left of the data bar) instead of guessing from layout. This answers the open vendor question: detect the logo; if found, vendor = Thermo Fisher with normal confidence; layout-only guess stays flagged.
+Result of `read_info_bar` on it today: text is read correctly (scale 100 µm, HV 15 kV, det CBS, HFW 276 µm) BUT the scale BAR is mis-detected (23 px; correct is about 768*100/276 = 278 px, the line is split by its centred label), so the FW cross-check fails and the scale is flagged (confidence 0.28). `curr` (beam current, nA) is not parsed yet.
+Task for detection-engineer (opus), core/ + tests only, then code-reviewer → commit:
+1. Bar detection for a thin line with end ticks whose label sits in a gap in the middle (join the two halves; use HFW to validate: bar_px/width ≈ scale/HFW).
+2. Offline logo detection (no new dependency; e.g. OpenCV shape/template matching against a small template generated in code or a bundled asset we draw ourselves — do not ship a copied trademark image) in the left end of the data bar → vendor "Thermo Fisher".
+3. Parse `curr` (nA/pA) and accept "HFW" as field width; add this layout to `tests/sem_infobar_fixtures.py` as a third synthetic renderer; the real-image test in tests/test_info_bar_ocr.py must pass on this file.
+Still wanted from the user: the actual JEOL file and the Phenom-style Thermo file (only pasted in chat so far).
