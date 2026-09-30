@@ -31,7 +31,15 @@ The user numbered two items "8"; they are renumbered 1–12 here.
 2. **Calibration automation (~4–5 d):** 11 → 4 → 5 (profiles build on auto scale/scan).
 3. **Performance & tools (~5–6 d):** 7 + 12 together (same profiling work), 8, 10 GPU.
 
-## Open questions for the user
+## User answers (2026-09-29)
+- A1. SEMs: **JEOL and Thermo Fisher**. Both are already supported by `core/sem_metadata.py`: JEOL through the `<stem>.txt` sidecar (must sit next to the image), Thermo through TIFF tag 34682/34680. The user will supply real images for testing; OCR tuning waits for them.
+- A2. The work PC **has a graphics card**; a bigger installer is fine. *To confirm when starting #10: NVIDIA, since CUDA needs it (if Intel/AMD, use DirectML).*
+- A3. **Fable is allowed ONE time, for #12 only** (optimisation + clean-up). The "never Fable agents" rule stays in force otherwise.
+- A4. Dragged-in images are **copied into the job folder** (into the lot's folder inside the job).
+- A5. Resolution profiles are **always picked by hand**; no auto-suggest.
+- #7 lock: not asked in chat. Default: always lock grain editing during analysis, with "Continue anyway" + "don't warn again".
+
+## Open questions for the user (original)
 - Q1. SEM brand and file type: original TIFFs straight from the SEM, or exported JPG/PNG? Can the user supply 2–3 real images (also D-13) to tune/test text reading?
 - Q2. Does the work PC have an **NVIDIA** GPU? Is an installer about 2.5 GB larger (CUDA) OK on the flash drive? If there's no GPU, grey out the GPU mode.
 - Q3. The standing rule is "never run agents on Fable" (Fable plans, Opus coordinates). Is item 12 an exception (Fable implements), or should Fable profile and plan while Opus implements?
