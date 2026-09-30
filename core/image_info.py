@@ -40,7 +40,9 @@ magnification 5-2,000,000 x; accelerating voltage 0.05-40 kV (deceleration
 landing energies go below 0.1 kV); working distance 0.5-100 mm.
 
 Offline (D-14): local file reads and the bundled OCR engine only.  A missing
-OCR engine yields a "please reinstall" note, never a download.  No Qt.
+OCR engine yields a "please reinstall" note (only when the metadata left a
+field empty; ``ocr_status`` is ``"engine_missing"`` regardless), never a
+download.  No Qt.
 """
 from __future__ import annotations
 
@@ -303,7 +305,17 @@ def _fill(info: ImageInfo, path, image, use_ocr: bool) -> None:
         info.notes.append("The image file was not found.")
     elif not info.path and image is None:
         info.notes.append("No image was given.")
-    md = read_sem_metadata(info.path, image_width=width) if exists else None
+    md = None
+    if exists:
+        # Own try/except: a metadata parser failure must not stop the OCR
+        # step, which can still fill every field from the data bar.
+        try:
+            md = read_sem_metadata(info.path, image_width=width)
+        except Exception as exc:
+            logger.exception("read_sem_metadata failed")
+            info.notes.append(f"The file metadata could not be read "
+                              f"({type(exc).__name__}); the data bar is "
+                              "used instead.")
     if md is not None:
         _apply_metadata(info, md)
     if use_ocr and (image is not None or exists):
@@ -343,14 +355,24 @@ def _apply_metadata(info: ImageInfo, md) -> None:
 
 
 def _ocr_flag(fv) -> bool:
-    from core.info_bar_ocr import _CONFIRM_BELOW
-    return bool(fv.needs_confirmation) or float(fv.confidence) < _CONFIRM_BELOW
+    from core.info_bar_ocr import CONFIRM_BELOW
+    return bool(fv.needs_confirmation) or float(fv.confidence) < CONFIRM_BELOW
+
+
+# Fields the metadata can give.  If metadata already gave all of them, a
+# missing OCR engine changes nothing for the user and is not reported on
+# every load.  (The scale-bar label is info-bar only and is not needed when
+# the file metadata carries the pixel size, so it is not required here.)
+_OCR_FILLABLE = ("instrument", "magnification", "accelerating_voltage_kv",
+                 "working_distance_mm", "detector")
 
 
 def _apply_reading(info: ImageInfo, r) -> None:
     from core.info_bar_ocr import REINSTALL_MESSAGE
     if r.status == "engine_missing" or not getattr(r, "available", True):
-        info.notes.append(REINSTALL_MESSAGE)
+        # ocr_status stays "engine_missing" (set by the caller) either way.
+        if any(info.source.get(k) is None for k in _OCR_FILLABLE):
+            info.notes.append(REINSTALL_MESSAGE)
         return
     if r.status != "ok":
         if not info.is_empty:
@@ -359,7 +381,7 @@ def _apply_reading(info: ImageInfo, r) -> None:
                           if r.status in ("no_text", "no_info_bar") else
                           (r.message or "The data bar could not be read."))
         return
-    if r.message and "No data bar detected" in r.message:
+    if getattr(r, "bar_fallback", False):
         info.notes.append("No data bar was found; the bottom of the image was "
                           "read instead - please check the values.")
 

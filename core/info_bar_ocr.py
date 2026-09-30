@@ -93,6 +93,8 @@ REINSTALL_MESSAGE = ("The text-reading component (OCR) is missing from this "
 
 # --- tunables ----------------------------------------------------------------
 _CONFIRM_BELOW = 0.80        # confidence below which a field needs confirmation
+# Public alias for callers (core.image_info) - do not import the private name.
+CONFIRM_BELOW = _CONFIRM_BELOW
 _FW_TOL = 0.08               # FW cross-check relative tolerance
 _META_TOL = 0.05             # metadata pixel-size cross-check tolerance
 _DISPLAY_MM = (60.0, 800.0)  # plausible reference display width for mag check
@@ -169,6 +171,9 @@ class InfoBarReading:
     scale_bar_px: Optional[int] = None
     info_bar_rect: Optional[Rect] = None
     image_width_px: Optional[int] = None
+    # True when no data bar was found and the bottom strip of the image was
+    # read instead (every field is then flagged needs_confirmation).
+    bar_fallback: bool = False
     checks: dict = field(default_factory=dict)      # name -> True/False
     tokens: List[OcrToken] = field(default_factory=list)
     engine: str = ENGINE_NAME
@@ -209,7 +214,8 @@ class InfoBarReading:
                  message=self.message, scale_bar_rect=self.scale_bar_rect,
                  scale_bar_px=self.scale_bar_px,
                  info_bar_rect=self.info_bar_rect,
-                 image_width_px=self.image_width_px, checks=dict(self.checks),
+                 image_width_px=self.image_width_px,
+                 bar_fallback=self.bar_fallback, checks=dict(self.checks),
                  scale_um=self.scale_um, px_per_um=self.px_per_um,
                  beam_current_na=self.beam_current_na,
                  needs_confirmation=self.needs_confirmation,
@@ -1043,6 +1049,7 @@ def _read(image, scale_bar_bbox, info_bar, metadata) -> InfoBarReading:
     r = parse_tokens(tokens, W, scale_bar_bbox, metadata, logo=logo)
     r.info_bar_rect = None if fallback else rects[0]
     if fallback:
+        r.bar_fallback = True
         r.message = _join(r.message, "No data bar detected; read the bottom "
                                      "of the image instead.")
         for name in r.FIELDS:

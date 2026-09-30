@@ -28,6 +28,9 @@ saved and reloaded directly:
     grain 7 is cut along the polyline; the largest piece keeps id 7, the
     other piece(s) get ``new_ids``.  Cut pixels are given back to the nearest
     piece, so the grain's total area is unchanged.
+``{"op": "add", "id": 31, "outline": [[x, y], ...], "area_px": 412}``
+    a grain the detector missed, drawn by hand (:func:`add_grain`): the
+    drawn loop minus pixels of existing grains, inside the scan area.
 
 Measurements of the affected grains are recomputed with exactly the
 detector's own measuring code (``GrainDetector._measure_grains``) on a
@@ -314,6 +317,126 @@ def split_grain(labels: np.ndarray, polyline, grain_id: Optional[int] = None,
 
 
 # ======================================================================
+# Add (draw a missed grain by hand) - UPDATE 4 item 8
+# ======================================================================
+
+@dataclass
+class AddGrainOutcome(EditOutcome):
+    """Result of :func:`add_grain`.  Never raised as an error: when nothing
+    could be added ``added`` is False, ``reason`` says why in plain language,
+    ``labels`` is the unchanged input and ``changed`` / ``op`` are empty."""
+    added: bool = False
+    grain_id: int = 0          # id of the new grain (0 when nothing added)
+    area_px: int = 0           # pixels of the new grain
+    drawn_px: int = 0          # pixels inside the drawn outline (in the image)
+    reason: str = ""
+
+
+def _nothing(labels, reason: str, drawn: int = 0) -> AddGrainOutcome:
+    return AddGrainOutcome(labels=labels, added=False, reason=reason, drawn_px=drawn)
+
+
+def add_grain(labels: np.ndarray, outline, valid_mask: Optional[np.ndarray] = None,
+              min_area_px: int = MIN_PIECE_PX, new_id: Optional[int] = None
+              ) -> AddGrainOutcome:
+    """Turn a hand-drawn outline (label coords) into a new grain.
+
+    Rules, in order:
+
+    1. The outline is always treated as a closed loop: an open stroke is
+       closed end-to-start with a straight segment (lasso behaviour), so the
+       UI can hand over the raw freehand points.  The drawn line itself is
+       part of the region; self-crossing loops are filled solid (holes of
+       the drawn shape are filled).
+    2. Clipped to the label image (the analysed region) and to
+       ``valid_mask`` (the scan area / test field, same shape as ``labels``)
+       when given - the new grain must lie in the same test field that the
+       E112 / E1382 statistics are normalised by.
+    3. Existing grains keep every pixel (kept or filtered-out grains alike):
+       new grain = drawn area minus all ``labels > 0``.  An existing grain
+       fully enclosed by the outline therefore stays where it is.
+    4. Only the largest 8-connected piece is kept (as ``split_grain`` treats
+       pieces; a grain is one connected region).  Pixels freed this way stay
+       background.
+    5. The piece must have at least ``max(min_area_px, MIN_PIECE_PX)``
+       pixels (``MIN_PIECE_PX`` is the smallest region the detector's
+       measuring code keeps).  Pass the analysis's ``min_grain_size_px`` so a
+       hand-drawn grain obeys the same lower size limit as detected ones.
+
+    The new grain gets ``new_id`` or ``max(labels) + 1`` (same rule as
+    :func:`split_grain`).  Measure it with :func:`remeasure_after_edit`,
+    which runs the detector's own ``_measure_grains`` (equivalent circle
+    diameter, perimeter, axes ...) so a drawn grain is measured exactly like
+    a detected one of the same shape.  ``labels`` is never modified; undo =
+    keep the previous label image / result (as for merge and split).
+
+    Op (``outcome.op``, for the ``grain_edits`` audit list)::
+
+        {"op": "add", "id": 31, "outline": [[x, y], ...], "area_px": 412}
+    """
+    if labels is None or getattr(labels, "ndim", 0) < 2 or labels.size == 0:
+        return _nothing(labels, "This image has no grain map to edit - analyse it first.")
+    pts = np.asarray(outline if outline is not None else [], dtype=np.float64)
+    pts = pts.reshape(-1, 2) if pts.size % 2 == 0 else np.empty((0, 2))
+    pts = pts[np.isfinite(pts).all(axis=1)]
+    if len(pts) < 3:
+        return _nothing(labels, "Draw around the grain you want to add.")
+    H, W = labels.shape[:2]
+    # keep int32 safe; vertices far outside only matter up to the image edge
+    ipts = _int_pts(np.clip(pts, [-4 * W - 4, -4 * H - 4], [5 * W + 4, 5 * H + 4]))
+    x0, y0 = max(0, int(ipts[:, 0].min())), max(0, int(ipts[:, 1].min()))
+    x1, y1 = min(W, int(ipts[:, 0].max()) + 1), min(H, int(ipts[:, 1].max()) + 1)
+    if x1 <= x0 or y1 <= y0:
+        return _nothing(labels, "The outline is outside the analysed area.")
+    # draw on a 1-px padded crop so hole filling sees the true outline even
+    # where the shape leaves the image
+    pad = 1
+    local = ipts - np.array([x0 - pad, y0 - pad], dtype=np.int32)
+    shape = (y1 - y0 + 2 * pad, x1 - x0 + 2 * pad)
+    poly = np.zeros(shape, dtype=np.uint8)
+    cv2.fillPoly(poly, [local], 1)
+    cv2.polylines(poly, [local], True, 1, thickness=1, lineType=cv2.LINE_8)
+    drawn = ndi.binary_fill_holes(poly > 0)[pad:-pad, pad:-pad]
+    n_drawn = int(drawn.sum())
+    if n_drawn == 0:
+        return _nothing(labels, "The outline is outside the analysed area.")
+    region = drawn & (labels[y0:y1, x0:x1] == 0)
+    in_field = region
+    if valid_mask is not None and valid_mask.shape[:2] == labels.shape[:2]:
+        in_field = region & valid_mask[y0:y1, x0:x1].astype(bool)
+    if not region.any():
+        return _nothing(labels, "The outline lies entirely on grains that are "
+                                "already detected - nothing was added.", n_drawn)
+    if not in_field.any():
+        return _nothing(labels, "The outline lies outside the scan area - "
+                                "nothing was added.", n_drawn)
+    pieces, n = ndi.label(in_field, structure=_EIGHT)
+    sizes = np.bincount(pieces.ravel(), minlength=n + 1)
+    sizes[0] = 0
+    best = int(np.argmax(sizes))
+    area = int(sizes[best])
+    need = max(int(min_area_px or 0), MIN_PIECE_PX)
+    if area < need:
+        return _nothing(labels, f"The free area inside the outline is too small "
+                                f"({area} px; the smallest grain is {need} px) - "
+                                "nothing was added.", n_drawn)
+    if new_id is None:
+        gid = int(labels.max()) + 1
+    else:
+        gid = int(new_id)
+        if gid <= 0 or bool((labels == gid).any()):
+            return _nothing(labels, f"Grain number {gid} is already in use.", n_drawn)
+    if np.issubdtype(labels.dtype, np.integer) and gid > np.iinfo(labels.dtype).max:
+        return _nothing(labels, "Too many grains in this image to add another.", n_drawn)
+    out = labels.copy()
+    out[y0:y1, x0:x1][pieces == best] = gid
+    rounded = [[round(float(x), 1), round(float(y), 1)] for x, y in pts]
+    return AddGrainOutcome(labels=out, changed=[gid], removed=[],
+                           op={"op": "add", "id": gid, "outline": rounded, "area_px": area},
+                           added=True, grain_id=gid, area_px=area, drawn_px=n_drawn)
+
+
+# ======================================================================
 # Measurements
 # ======================================================================
 
@@ -366,6 +489,6 @@ def remeasure_after_edit(raw, outcome: EditOutcome, image_shape=None):
 __all__ = [
     "GrainEditError", "EditOutcome", "MIN_PIECE_PX", "DEFAULT_GAP_PX",
     "label_offset", "to_label_coords", "grains_in_polygon", "merge_grains",
-    "grain_under_line", "split_grain", "measure_ids",
+    "grain_under_line", "split_grain", "AddGrainOutcome", "add_grain", "measure_ids",
     "remeasure_after_edit",
 ]

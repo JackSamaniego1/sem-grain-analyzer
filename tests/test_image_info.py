@@ -294,22 +294,104 @@ def test_garbage_file_and_missing_sidecar(tmp_path, engine):
     assert info.is_empty and info.ocr_status == "no_text"
 
 
-def test_missing_ocr_engine_says_reinstall(tmp_path, monkeypatch):
+def _no_engine(monkeypatch, tmp_path, sidecar):
     ibo._reset_engine_cache()
 
     def boom():
         raise ImportError("No module named 'rapidocr_onnxruntime'")
     monkeypatch.setattr(ibo, "_load_engine", boom)
     try:
-        p, _ = _jeol_png(tmp_path, sidecar=_sidecar())
-        info = read_image_info(p)
+        p, _ = _jeol_png(tmp_path, sidecar=sidecar)
+        return read_image_info(p)
     finally:
         ibo._reset_engine_cache()
+
+
+def test_missing_ocr_engine_says_reinstall(tmp_path, monkeypatch):
+    # sidecar without WD: OCR would have been needed -> tell the user
+    info = _no_engine(monkeypatch, tmp_path, _sidecar(wd=""))
     assert info.ocr_status == "engine_missing"
     assert info.magnification == 30000            # metadata still delivered
     text = " ".join(info.notes).lower()
     assert "reinstall" in text
     assert "http" not in text and "download" not in text
+
+
+def test_missing_ocr_engine_quiet_when_metadata_complete(tmp_path,
+                                                         monkeypatch):
+    info = _no_engine(monkeypatch, tmp_path, _sidecar())
+    assert info.ocr_status == "engine_missing"
+    assert info.working_distance_mm == pytest.approx(9.7)
+    assert not any("reinstall" in n.lower() for n in info.notes)
+
+
+def test_metadata_failure_still_runs_ocr(tmp_path, engine, monkeypatch):
+    from core import sem_metadata
+
+    def boom(*a, **k):
+        raise ValueError("corrupt sidecar")
+    monkeypatch.setattr(sem_metadata, "read_sem_metadata", boom)
+    engine()
+    p, _ = _jeol_png(tmp_path, sidecar=_sidecar(5000))
+    info = read_image_info(p)
+    assert info.ocr_status == "ok"
+    assert info.magnification == 30000            # from the data bar
+    assert info.source["magnification"] == "info_bar"
+    assert any("metadata could not be read" in n for n in info.notes)
+
+
+def test_bar_fallback_flag_adds_note(tmp_path, monkeypatch):
+    def fake(image, metadata=None, **k):
+        r = ibo.InfoBarReading(status="ok", bar_fallback=True,
+                               message="anything at all")
+        r.magnification = ibo.ReadingField(30000.0, "x", 0.95, True)
+        return r
+    monkeypatch.setattr(ibo, "read_info_bar", fake)
+    p, _ = _jeol_png(tmp_path)
+    info = read_image_info(p)
+    assert any("No data bar was found" in n for n in info.notes)
+    assert info.needs_check["magnification"] is True
+    # the message text alone must not trigger the note
+    def fake2(image, metadata=None, **k):
+        return ibo.InfoBarReading(status="ok",
+                                  message="No data bar detected; read ...")
+    monkeypatch.setattr(ibo, "read_info_bar", fake2)
+    info = read_image_info(p)
+    assert not any("No data bar was found" in n for n in info.notes)
+
+
+def test_wd_printed_in_micrometres(tmp_path, engine):
+    toks = [t if not t[0].startswith("WD") else ("WD9700µm",) + t[1:]
+            for t in JEOL_STRIP]
+    engine(toks)
+    p, _ = _jeol_png(tmp_path)
+    info = read_image_info(p)
+    assert info.working_distance_mm == pytest.approx(9.7)
+    assert info.source["working_distance_mm"] == "info_bar"
+
+
+def test_wd_in_micrometres_agrees_with_metadata(tmp_path, engine):
+    toks = [t if not t[0].startswith("WD") else ("WD9700µm",) + t[1:]
+            for t in JEOL_STRIP]
+    engine(toks)
+    p, _ = _jeol_png(tmp_path, sidecar=_sidecar())
+    info = read_image_info(p)
+    assert info.source["working_distance_mm"] == "metadata"
+    assert info.needs_check["working_distance_mm"] is False
+
+
+def test_scale_label_in_millimetres(tmp_path, engine):
+    toks = [t if not t[0].startswith("100nm") else ("1mm JEOL",) + t[1:]
+            for t in JEOL_STRIP]
+    engine(toks)
+    p, _ = _jeol_png(tmp_path)
+    info = read_image_info(p)
+    assert (info.scale_label_value, info.scale_label_unit) == (1.0, "mm")
+    assert info.source["scale_label"] == "info_bar"
+    # 1 mm on a 30 px bar contradicts x30,000 -> must be flagged for checking
+    assert info.needs_check["scale_label"] is True
+    back = ImageInfo.from_dict(json.loads(json.dumps(info.to_dict())))
+    assert back.scale_label_unit == "mm"
 
 
 def test_unexpected_error_is_contained(tmp_path, monkeypatch):
@@ -342,9 +424,22 @@ def test_concurrent_ocr_calls(tmp_path, engine):
 
 
 def test_module_has_no_qt_or_network_imports():
-    src = open(ii.__file__, encoding="utf-8").read()
-    for bad in ("PySide6", "PyQt", "socket", "urllib", "requests", "http"):
-        assert bad not in src, bad
+    import ast
+    tree = ast.parse(open(ii.__file__, encoding="utf-8").read())
+    mods = set()
+    for node in ast.walk(tree):          # includes imports inside functions
+        if isinstance(node, ast.Import):
+            mods.update(a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            mods.add(node.module)
+            mods.update(f"{node.module}.{a.name}" for a in node.names)
+    assert mods, "no imports parsed"
+    bad = ("PySide6", "PyQt5", "PyQt6", "shiboken6", "socket", "urllib",
+           "http", "requests", "httpx", "aiohttp", "ftplib", "webbrowser",
+           "ssl", "smtplib")
+    for m in mods:
+        root = m.split(".")[0]
+        assert root not in bad, m
 
 
 # ------------------------------------------------------------ persistence
