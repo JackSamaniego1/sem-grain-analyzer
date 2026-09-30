@@ -186,11 +186,13 @@ def test_journey_threshold_scale_bar_full_lifecycle(env, qtbot):
 
     # D-30 / REP-DESIGN-01: slide 1 is now the part-level summary table (no
     # per-image "Grains" column) -- per-image counts now live on the
-    # restyled per-image data-table slide(s) instead.
+    # restyled per-image data-table slide(s) instead. The percentile slide
+    # (UPDATE 4 item 18) also has a "Grains" column, so match on "Image" too.
     prs = Presentation(pptx)
     data_table = next(
         sh.table for s in prs.slides for sh in s.shapes
-        if sh.has_table and "Grains" in [sh.table.cell(0, c).text for c in range(len(sh.table.columns))])
+        if sh.has_table and {"Image", "Grains"} <= {
+            sh.table.cell(0, c).text for c in range(len(sh.table.columns))})
     headers = [data_table.cell(0, c).text for c in range(len(data_table.columns))]
     gcol = headers.index("Grains")
     pptx_counts = [int(data_table.cell(r, gcol).text) for r in range(1, 1 + len(edited_counts))]
