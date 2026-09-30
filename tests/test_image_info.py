@@ -486,6 +486,60 @@ def test_from_dict_is_tolerant(bad):
     assert info.is_empty and info.ocr_status == "not_run"
 
 
+# ------------------------------------------- apply_info_bar_reading (public)
+
+def _reading(mag=30000.0, hv=7.0, wd=9.7):
+    r = ibo.InfoBarReading(status="ok")
+    if mag is not None:
+        r.magnification = ibo.ReadingField(mag, "x", 0.95, False)
+    if hv is not None:
+        r.hv = ibo.ReadingField(hv, "kV", 0.95, False)
+    if wd is not None:
+        r.wd = ibo.ReadingField(wd, "mm", 0.95, False)
+    return r
+
+
+def test_apply_reading_fills_empty_fields():
+    info = ImageInfo()
+    out = ii.apply_info_bar_reading(info, _reading())
+    assert out is info
+    assert info.magnification == 30000.0
+    assert info.accelerating_voltage_kv == 7.0
+    assert info.working_distance_mm == 9.7
+    assert info.source["magnification"] == "info_bar"
+
+
+def test_apply_reading_does_not_overwrite_metadata():
+    info = ImageInfo()
+    info._set("magnification", 5000.0, ii.SOURCE_METADATA)
+    ii.apply_info_bar_reading(info, _reading(mag=30000.0))
+    assert info.magnification == 5000.0
+    assert info.source["magnification"] == "metadata"
+    assert info.needs_check["magnification"] is True      # disagreement
+
+    info2 = ImageInfo()
+    info2._set("magnification", 30000.0, ii.SOURCE_METADATA)
+    ii.apply_info_bar_reading(info2, _reading(mag=30000.0))
+    assert not info2.needs_check.get("magnification", False)
+
+
+def test_apply_reading_rejects_absurd_values():
+    info = ImageInfo()
+    ii.apply_info_bar_reading(info, _reading(mag=1e12, hv=9999.0, wd=-5.0))
+    assert info.magnification is None
+    assert info.accelerating_voltage_kv is None
+    assert info.working_distance_mm is None
+
+
+@pytest.mark.parametrize("bad", [None, object(), "junk", 42,
+                                 ibo.InfoBarReading(status="error")])
+def test_apply_reading_never_raises(bad):
+    info = ImageInfo()
+    assert ii.apply_info_bar_reading(info, bad) is info
+    assert ii.apply_info_bar_reading(None, _reading()) is None
+    ii._apply_reading(info, bad)                          # legacy alias
+
+
 # ------------------------------------------------------ real engine (optional)
 
 def _has_rapidocr():

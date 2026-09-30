@@ -367,7 +367,34 @@ _OCR_FILLABLE = ("instrument", "magnification", "accelerating_voltage_kv",
                  "working_distance_mm", "detector")
 
 
+def apply_info_bar_reading(info: ImageInfo, reading) -> ImageInfo:
+    """Fill ``info`` from an already-obtained info-bar OCR ``reading``
+    (an ``InfoBarReading``) so the image need not be OCR'd a second time.
+
+    Same rules as :func:`read_image_info`: only empty fields are filled;
+    fields already set from file metadata are cross-checked and flagged in
+    ``needs_check`` on disagreement; values outside the sanity ranges are
+    ignored with a note.  The caller sets ``info.ocr_status`` itself.
+    Never raises (``None`` or malformed readings leave ``info`` unchanged
+    apart from a possible note).  Mutates and returns ``info``; it touches
+    no shared state, so it is safe from worker threads as long as each
+    thread owns its ``info``.
+    """
+    if info is None or reading is None:
+        return info
+    try:
+        _apply_reading_impl(info, reading)
+    except Exception:
+        pass
+    return info
+
+
 def _apply_reading(info: ImageInfo, r) -> None:
+    """Backward-compatible alias of :func:`apply_info_bar_reading`."""
+    apply_info_bar_reading(info, r)
+
+
+def _apply_reading_impl(info: ImageInfo, r) -> None:
     from core.info_bar_ocr import REINSTALL_MESSAGE
     if r.status == "engine_missing" or not getattr(r, "available", True):
         # ocr_status stays "engine_missing" (set by the caller) either way.
