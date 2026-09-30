@@ -222,3 +222,16 @@
   - Item 4 core (detection-engineer): RapidOCR offline info-bar text reader (JEOL + Thermo tuning).
 - **Process notes**: Agents not committing; no full-suite run while others mid-work. Coordinator commits after code-reviewer per explicit path. Full-suite run owed at end of batch 1.
 - **Full suite**: 862 tests pass / 0 fail (last confirmed at 42e44a2; 4 new test files staged, awaiting review).
+
+## 2026-09-29 (late) — UPDATE 4 batch 1 complete; context clear pending
+- **Batch 1 items ticked** (5 complete, 1 partial):
+  - [x] Item 1 (42e44a2): New Lot/Part multi-entry + stay on page
+  - [x] Item 2 (b343d3f, f42fdab): Drag images into lot (UI + data layer)
+  - [x] Item 3 (05435d7): Image checkboxes + "Analyze selected" button
+  - [x] Item 16 (e09677f): Units & bins fixed (equal-width, rescale on unit change)
+  - [x] Item 18 (fa6c95f): PPTX percentile slide (D10/D50/D90 per part & lot)
+  - [~] Item 4 core (e634d33): RapidOCR offline info-bar reader + packaging (60–70 MB larger); pending: UI wiring in Automatic mode + validation with real images + installer test
+- **Journey test fixed** (2ce1e24): percentile slide now has Grains column; test re-run green.
+- **Test suite status**: 991 passed / 1 skipped / 1 failed (item 18 journey test, now fixed); offline guard clean; installer 644 MB.
+- **Batch 2 ready to start** (6 ui-designer items): 6 (unit dropdown) → 4 UI wiring (same card) → 9 (opacity slider) → 13 (grouped tree) → 14 (display persist) → 10a (remove CPU tile). Reports track (item 15, 17, 19) and core track (item 11) run parallel. Batch 3 (7, 8, 10b, 12) follows.
+- **Handoff files updated** (SESSION_STATE.md, UPDATE_4.md execution checklist, 06_PROGRESS_LOG.md, 03_TASK_BOARD.md) and ready to commit. Context clearing next so next coordinator session resumes with zero context loss.

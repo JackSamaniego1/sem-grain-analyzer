@@ -140,20 +140,37 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 | UX-15 | Custom palettes: create from 3 hex/colour-wheel colours, save locally, selectable next to 4 built-in, drives report colours | report-engineer | done | 560deed: palette editor (hex input + wheel); palette_library.json; selectable in report UI |
 | UX-16 | Overlay opacity in report export — use ReportModel.overlay_opacity (UX-05) | report-engineer | done | 1e0a895: export respects ReportModel.overlay_opacity; Excel & PPTX apply opacity |
 
-## UPDATE 4 (IN PROGRESS, batch 1 running)
-See handoff/UPDATE_4.md: 16 items (renumbered 1–19 from user's list), 3 batches, execution checklist.
+## UPDATE 4 (batch 1 complete; batch 2 ready)
+See handoff/UPDATE_4.md: 19 items, 3 batches, execution checklist.
 
+**Batch 1 (done 2026-09-29):**
 | # | Item | Owner | Status | Notes |
 |---|------|-------|--------|-------|
 | 1 | New Lot/Part: multiple boxes, stay on page | ui-designer (sonnet) | done | 42e44a2 |
-| 2 | Drag images into lot (copy into job folder) | ui-designer + data-architect | doing | data half (add_images_to_lot) pending review; UI half pending |
-| 3 | Image checkboxes + "Analyze selected" button | ui-designer | doing | checkboxes + button in Analyze page |
-| 4 | Scale-bar label OCR (JEOL + Thermo) | detection-engineer | doing | RapidOCR offline; 2 real SEM images supplied (D-33) |
-| 6 | Scale length units dropdown + highlight | ui-designer | todo | |
-| 9 | Overlay opacity slider (top-right image) | ui-designer | todo | Analyze + Review pages |
-| 10a | Remove CPU tile from Analyze | detection-engineer | todo | unblocked; paired with 10b GPU modes |
-| 13 | Review image list grouped Job › Part › Lot | ui-designer | todo | reuse ImageTree component |
-| 14 | Display mode persists across images | ui-designer | todo | Original/Overlay stays same when switching images |
+| 2 | Drag images into lot (copy into job folder) | ui-designer + data-architect | done | b343d3f (UI) + f42fdab (data layer) |
+| 3 | Image checkboxes + "Analyze selected" button | ui-designer | done | 05435d7; checkboxes, checked_uids(), "Analyze selected (N)" button |
+| 16 | Units & bins bug (nm²↔µm² rescale) | report-engineer | done | e09677f; build_bins() equal-width; bin_labels() wired |
+| 18 | PPTX percentile slide (D10/D50/D90) | report-engineer | done | fa6c95f; per part & lot; journey test fixed 2ce1e24 |
+| 4 | Scale-bar label OCR (JEOL + Thermo) | detection-engineer | review | e634d33 core + packaging done; UI wiring + image validation pending |
+
+**Batch 1 remaining (batch 2 queue):**
+| # | Item | Owner | Status | Notes |
+|---|------|-------|--------|-------|
+| 6 | Scale length units dropdown + highlight | ui-designer | todo | Batch 2, item 1 |
+| 9 | Overlay opacity slider (top-right image) | ui-designer | todo | Batch 2, item 2 |
+| 13 | Review image list grouped Job › Part › Lot | ui-designer | todo | Batch 2, item 3; reuse ImageTree component |
+| 14 | Display mode persists across images | ui-designer | todo | Batch 2, item 4 |
+| 10a | Remove CPU tile from Analyze | detection-engineer | todo | Batch 2, item 5 |
+
+**Batch 2+ (parallel: reports + core):**
+| # | Item | Owner | Status | Notes |
+|---|------|-------|--------|-------|
 | 15 | Lot summary charts (bar+trendline) | report-engineer | todo | **Unblocked (D-31)**: build now, user reviews when testing |
-| 16 | Units & bins bug (nm²↔µm² rescale) | report-engineer | doing | build_bins() equal-width fix; bin_labels() wired; review pending |
-| 10b | GPU/CUDA torch build + AI-Assisted modes | detection-engineer + build-engineer | todo | **Unblocked (D-32)**: NVIDIA GPU confirmed |
+| 17 | PPTX distribution slides per lot + lot-to-lot | report-engineer | todo | per-lot area + diameter bars with trendline; comparison slide |
+| 19 | PPTX contents page as slide 2 with links | report-engineer | todo | Do after 17 + 18 |
+| 11 | Auto-fill mag/instrument/kV/WD from metadata | detection-engineer | todo | Parallel track |
+| 5 | Resolution Profiles sidebar card | ui-designer + data-architect | todo | Batch 3 |
+| 10b | GPU/CUDA torch build + AI-Assisted modes | detection-engineer + build-engineer | todo | **Unblocked (D-32)**: NVIDIA GPU confirmed; batch 3 |
+| 7 | Stability on weak CPUs during analysis | opus | todo | Batch 3 |
+| 8 | Review: "Add grain" tool | ui-designer + detection-engineer | todo | Batch 3 |
+| 12 | Fable: speed & usability optimisation | fable | todo | Batch 3, LAST item |

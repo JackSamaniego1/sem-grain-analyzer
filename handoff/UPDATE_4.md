@@ -63,23 +63,30 @@ The user numbered two items "8"; they are renumbered 1–12 here.
 ## Execution checklist (coordinator keeps this current; user gets a copy after every finished item)
 Rules: Fable coordinates only and implements nothing except #12 (one-time exception, last). Every item = agent on its pinned model → tests → code-reviewer → commit → `/save-handoff` → checklist to user.
 
+**Batch 1 complete (2026-09-29):**
 - [x] 1  New Lot/Part: multiple boxes, stay on page, keep data (42e44a2)
-- [ ] 2  Drag images from a folder into a lot (copied into the job folder)
-- [ ] 3  Image checkboxes + "Analyze selected"
+- [x] 2  Drag images from a folder into a lot (copied into the job folder) (b343d3f + f42fdab)
+- [x] 3  Image checkboxes + "Analyze selected" (05435d7)
+- [x] 16 Units & bins bug (nm² → µm² rescales; more bins = narrower bins) (e09677f)
+- [x] 18 PPTX percentile slide: D10 / D50 (median) / D90 per part and lot (fa6c95f)
+
+**Batch 1 pending:**
 - [ ] 6  Unit dropdown for scale length + highlight the length box after auto-find
 - [ ] 9  Overlay opacity slider (top-right of image, Analyze + Review)
 - [ ] 13 Review image list grouped Job › Part › Lot like Analyze
 - [ ] 14 Display mode (Original/Overlay) persists across images
-- [ ] 16 Units & bins bug (nm² → µm² rescales; more bins = narrower bins)
-- [ ] 18 PPTX percentile slide: D10 / D50 (median) / D90 per part and lot
+- [ ] 10a Remove the "AI runs on CPU" tile
+
+**Batch 1 partial:**
+- [ ] 4  Read scale-bar label (value + unit) with bundled offline OCR (core + packaging done e634d33; UI wiring + test images validation pending)
+
+**Batch 2 onwards:**
+- [ ] 11 Auto-fill magnification / instrument / kV / WD from JEOL + Thermo metadata
+- [ ] 5  Resolution Profiles sidebar card (manual selection)
+- [ ] 15 Lot Summary page: fix blank preview; bar+trendline lot charts + job summary (unblocked D-31: build now, user reviews when testing)
 - [ ] 17 PPTX distribution slides: per-lot area + size bars with trendline; lot-to-lot stacked comparison
 - [ ] 19 PPTX contents page as slide 2: every section with page numbers/ranges and links (do after 17 + 18)
-- [ ] 10a Remove the "AI runs on CPU" tile
-- [ ] 11 Auto-fill magnification / instrument / kV / WD from JEOL + Thermo metadata
-- [ ] 4  Read scale-bar label (value + unit) with bundled offline OCR — needs user's test images
-- [ ] 5  Resolution Profiles sidebar card (manual selection)
-- [ ] 15 Lot Summary page: fix blank preview; mock-ups → bar+trendline lot charts + job summary
 - [ ] 7  Stability during analysis on weak CPUs; lock with "Continue anyway"
 - [ ] 8  Review: "Add grain" tool (split-tool drawing style)
-- [ ] 10b AI-Assisted (GPU) / (CPU) modes + CUDA installer
+- [ ] 10b AI-Assisted (GPU) / (CPU) modes + CUDA installer (unblocked D-32: NVIDIA confirmed)
 - [ ] 12 Fable: speed & usability optimisation, faster detection without accuracy loss — LAST
