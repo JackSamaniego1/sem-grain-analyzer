@@ -188,3 +188,13 @@
 - **Long-table pagination rule proposed**: max 14 rows per PPTX slide, continued slides with repeated header + "(continued n/m)", break at part boundaries, truncate names >14 chars. Applied to Excel and PPTX.
 - **User blockers**: (1) Pick mockup option (A/B/C/D) or sketch custom design; (2) Specify which Excel problems matter most (awaiting answer). No code written pending user input.
 - **Next**: Await user decision on mockup + Excel priorities; then implement SUMMARY slide + table pagination for v3.0.1 (report-engineer task).
+
+## 2026-09-29 — REP-DESIGN-01: user chose Option A (modified), revised mockup v2 pending approval
+- **User decision (2026-09-29)**: User reviewed 4 mockup options and selected **Option A (modified)**. Revised mockup v2 created (artifact MiCcw4BV5AgFyfUNEQ4Y52, awaiting final approval).
+- **Spec locked (decision D-30)**:
+  - PPTX slide 2 (summary): single table with ONE ROW PER PART, columns: Part, Lots (count), Images (total across part's lots), ASTM G ± 95% CI, mean diameter ± SD, mean area ± SD.
+  - NO Grains column, NO KPI tiles at top, NO "higher = finer" hint text, NO red row highlighting.
+  - Three bar charts: G (by part), diameter (by part), area (by part), x-axis title "Part Number" with part names as tick labels.
+  - Per-image data tables: restyled in same table format as summary, max 14 rows per slide with "(continued n/m)" and repeated header, all existing columns + Median area + ASTM G added, no red rows.
+- **Still open**: User's Excel complaints (asked which sheet/column issues matter most; no answer yet).
+- **Next**: (1) User approves mockup v2 → (2) implement via report-engineer with tests (v3.0.1) → (3) address Excel priorities in follow-up batch.
