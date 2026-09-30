@@ -268,3 +268,12 @@
 - **Batch 2 complete checklist**: Items 1–3 (batch 1), 6, 9–10a, 13–14, 16–19 done; item 4 partial (core done, UI wiring pending); item 10b partial (core + scaffolding done, UI modes + installer GPU page + trial build pending). Batch 3 queued.
 - **In progress (uncommitted)**: build-engineer adding installer GPU-pack option to create_nsis_script.py (checkbox, auto-detect in $EXEDIR, Browse fallback, NVIDIA check, `/GPU=1`, run pack with `/S`, check exit code) + tests/test_gpu_pack_scripts.py. Will attempt makensis compile check.
 - **Next**: Review + commit installer GPU page → item 4 UI wiring (same card as 6) + item 11 (metadata) + item 10b UI (GPU/CPU modes, greyed with tooltip) → items 15 (lot summary) + 5 (profiles) → batch 3 (7, 8, trial GPU build, 12).
+
+## 2026-09-30 (night continuation) — Item 11 + 8 cores committed; batch 3 agents running
+- **Item 11 core DONE & REVIEWED (959ffe0)**: core/image_info.py `read_image_info(path, image=None, use_ocr=True) -> ImageInfo`. Reads instrument/vendor/magnification/kV/WD/detector from JEOL/Thermo metadata or OCR'd info bar text. Fields: source (metadata origin), needs_check (which ones OCR-vs-metadata mismatch). Safe call on UI thread with use_ocr=False; worker thread required if use_ocr=True (RapidOCR + glyph exclusions). Tests: test_image_info.py (14 real SEM images from scratch/real_sem/).
+- **Item 8 core DONE & REVIEWED (273750b)**: core/grain_edit.py `add_grain(labels, outline, valid_mask=None, min_area_px=MIN_PIECE_PX, new_id=None) -> AddGrainOutcome`. Returns added (bool), new_id, reason (if not added). UI must: call to_label_coords → remeasure_after_edit → push GrainGeometryCommand; show reason if not added; never push if not added. Also: image_info polish (no truncation on missing metadata fields); stability plan saved as handoff/specs/ITEM_7_STABILITY_PLAN.md (10 defects + 10 fixes, read-only diagnosis, no code yet).
+- **Agents running (uncommitted)**:
+  - **ui-designer**: items 4 UI wiring (scale label auto-fill + OCR) + item 8 UI (Review Add grain tool split logic) + item 10b UI (GPU/CPU mode toggle, ai_probe.py).
+  - **report-engineer**: item 15 (lot summary bar+trendline charts, job summary in Excel/PPTX; reports/lot_summary.py + renderers).
+  - **detection-engineer**: item 7 core (analysis stability; from ITEM_7_STABILITY_PLAN.md, implementation TBD).
+- **Next**: Review + commit each agent branch (code-reviewer) → full test suite → item 11 UI wiring → item 5 profiles → batch 3 final (item 7, 12 Fable).

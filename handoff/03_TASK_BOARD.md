@@ -168,9 +168,9 @@ See handoff/UPDATE_4.md: 19 items, 3 batches, execution checklist.
 | # | Item | Owner | Status | Notes |
 |---|------|-------|--------|-------|
 | 15 | Lot summary charts (bar+trendline) | report-engineer | doing | In progress (uncommitted); job summary + bar/trendline per lot in Excel/PPTX |
-| 11 | Auto-fill mag/instrument/kV/WD from metadata | detection-engineer | doing | In progress (core/image_info.py, tests/test_image_info.py); core reader done, UI wiring pending after item 4 |
-| 5 | Resolution Profiles sidebar card | ui-designer + data-architect | todo | Batch 3; after items 4 UI + item 11 |
-| 10b | GPU/CUDA torch build + AI-Assisted modes | ui-designer + build-engineer | doing | 822bfb3 core + fcf57cc packaging + **c4b2584 installer page (DONE)**: $EXEDIR path fix, exit codes 10/11, makensis test. **UI modes in progress** (ai_probe.py); trial build + manual pack checks pending (D-35, D-36) |
-| 7 | Stability on weak CPUs during analysis | opus | todo |  |
-| 8 | Review: "Add grain" tool | ui-designer + detection-engineer | todo |  |
+| 11 | Auto-fill mag/instrument/kV/WD from metadata | detection-engineer | review | 959ffe0: core/image_info.py read_image_info (reviewed). UI wiring pending (fill fields on image load) |
+| 5 | Resolution Profiles sidebar card | ui-designer + data-architect | todo | Batch 3; after items 4 UI + item 15 |
+| 10b | GPU/CUDA torch build + AI-Assisted modes | ui-designer + build-engineer | doing | 822bfb3 core + fcf57cc packaging + c4b2584 installer page (DONE). **UI modes in progress** (ai_probe.py); trial build + manual checks pending (D-35, D-36) |
+| 7 | Stability on weak CPUs during analysis | opus | todo | Diagnosis: handoff/specs/ITEM_7_STABILITY_PLAN.md (10 defects + fixes); implementation pending batch 3 |
+| 8 | Review: "Add grain" tool | ui-designer + detection-engineer | doing | 273750b: core add_grain (reviewed). UI wiring pending (split-tool logic, Review page) |
 | 12 | Fable: speed & usability optimisation | fable | todo | LAST item |

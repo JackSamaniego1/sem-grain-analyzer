@@ -1,7 +1,7 @@
 # SESSION STATE - read this first when resuming
 
-**Last updated:** 2026-09-30 (night: installer GPU page committed; UPDATE 4 batch 2 final, batch 3 in progress)  
-**Branch:** `v3-dev` | **Last commit:** `c4b2584` (item 10b installer page: $EXEDIR backslash strip, silent exit codes 10/11, tick state, makensis compile test) | **Phase:** UPDATE 4 batch 2 complete, batch 3 agents running (reports, core)  
+**Last updated:** 2026-09-30 (night: item 11 + item 8 cores reviewed; UPDATE 4 batch 2 complete, batch 3 half-done)  
+**Branch:** `v3-dev` | **Last commit:** `273750b` (item 8 core: add_grain lasso, image_info polish, item 7 stability plan; 959ffe0: item 11 core read_image_info) | **Phase:** UPDATE 4 batch 3: item 11 core + item 8 core done; UI wiring (4, 8, 10b UI modes) + item 15 reports in progress  
 **Resume with:** read this file only, then handoff/UPDATE_4.md and handoff/02_TEAM_ROSTER.md.
 
 ## Done and committed
@@ -31,16 +31,17 @@
 - Installer builds locally: GrainAnalyzer_Setup.exe 644 MB
 
 ## In-progress tasks (uncommitted, agents running)
-- **Item 4 UI wiring** (ui-designer): Scale-bar label auto-fill in Automatic mode (worker thread, non-blocking).
-- **Item 11 core** (detection-engineer): core/image_info.py read_image_info() + tests/test_image_info.py (JEOL/Thermo metadata auto-fill: mag/instrument/kV/WD).
+- **Item 4 UI wiring** (ui-designer): Scale-bar label auto-fill in Automatic mode (worker thread, non-blocking). Also: touch-up after item 11 OCR.
+- **Item 8 UI half** (ui-designer + detection-engineer): Review "Add grain" tool UI wiring (split-tool style, mirror core logic). Core half done (273750b).
+- **Item 11 UI wiring** (detection-engineer): Auto-fill magnification/instrument/kV/WD on image load from metadata. Core read_image_info() done (959ffe0).
 - **Item 15 reports** (report-engineer): reports/lot_summary.py (lot bar+trendline charts, job summary) + excel/pptx renderers (lot bar+trendline charts, job summary).
-- **Item 10b UI modes** (ui-designer): "AI-Assisted (GPU)" / "AI-Assisted (CPU)" detection modes, GPU greyed with tooltip (awaiting ai_devices() resolution).
+- **Item 10b UI modes** (ui-designer): "AI-Assisted (GPU)" / "AI-Assisted (CPU)" detection modes, GPU greyed with tooltip from ai_devices().
 
 ## NEXT 3 ACTIONS
 
-1. **Review + commit each in-progress agent work** (items 4, 11, 15, 10b UI): code-reviewer on each diff, run full test suite after each commit.
-2. **Item 4 UI wiring complete** (same card as item 6), then item 11 (auto-fill mag/instrument/kV/WD on image load) + item 10b UI (GPU/CPU modes + trial installer build).
-3. **Items 15 (lot summary bar+trendline charts) + 5 (Resolution Profiles sidebar)**, then batch 3 (items 7, 8, 12 Fable).
+1. **Review + commit three agent branches** (ui-designer: 4+8+10b UI, report-engineer: 15). Code-reviewer on each diff, full test suite after each, then commit.
+2. **Item 11 UI wiring** (fill metadata fields on image load) + **item 8 UI finish** (Review Add grain tool) + **item 10b UI modes** (GPU/CPU toggle + trial build).
+3. **Item 5 Resolution Profiles** → batch 3 final (items 7 Opus, 12 Fable).
 
 **Batch 2 status** ✓ complete:
 - [x] Item 6: Unit dropdown + pulse (7a70d74)
@@ -82,9 +83,8 @@ cd "C:\Users\saman\GRAIN ANALYSIS TOOL"
 - **Item 8** (ui-designer + detection-engineer): Review "Add grain" tool (split-tool style).
 - **Item 12** (Fable): Speed & usability optimisation, faster detection (LAST item).
 
-## NIGHT SESSION — 2026-09-30 (final handoff before context reset)
-- **Item 10b installer page COMMITTED (c4b2584)**: both .nsi scripts compile with makensis 3.10; $EXEDIR trailing backslash stripped via $GpuDir; silent `/S /GPU=1` exit codes 10 (pack missing/invalid) and 11 (pack installer failed); app always installs; tick state kept on Back→Next; makensis compile test included (17 passed).
-- **Portable makensis 3.10 used** from session scratch; **BUILD_WINDOWS.bat requires makensis on PATH** to build the installer — flag this for the user when preparing release.
-- **Manual checks pending**: pack beside installer with/without NVIDIA driver, Browse with wrong file name, path with spaces, run from drive root, real pack overlay, "app running" refusal (list in UPDATE_4.md batch 3 section or release checklist).
-- **Agents running** (uncommitted work): ui-designer (items 4 UI, 10b UI modes), detection-engineer (item 11 core), report-engineer (item 15 reports). Tree contains: core/image_info.py, reports/lot_summary.py, tests/test_image_info.py, ui/ai_probe.py + modified excel/pptx renderers.
-- **User confirmation**: agreement with NVIDIA GPU pack approach (D-35/D-36), instruction to keep working through UPDATE 4 despite context warnings.
+## NIGHT SESSION — 2026-09-30 (ongoing)
+- **Item 11 core REVIEWED (959ffe0)**: read_image_info(path, image=None, use_ocr=True) → ImageInfo with instrument/vendor/magnification/kV/WD/detector/scale_label/scale_bar/source/needs_check/field_notes/ocr_status. Safe on UI thread if use_ocr=False; must run in worker if use_ocr=True (RapidOCR).
+- **Item 8 core REVIEWED (273750b)**: add_grain(labels, outline, valid_mask, min_area, new_id) → AddGrainOutcome. UI must call split→remeasure→push GrainGeometryCommand; if not added show outcome.reason. Also: image_info polish; item 7 stability plan saved as handoff/specs/ITEM_7_STABILITY_PLAN.md (10 defects + fixes, read-only diagnosis).
+- **Agents running** (uncommitted): ui-designer (items 4+8+10b UI), report-engineer (item 15), detection-engineer (item 7 core side). Modified: reports/, ui/, tests/. New: reports/lot_summary.py, ui/ai_probe.py, tests/test_report_lot_summary.py, tests/test_ui_scale_label_ocr.py.
+- **Upcoming**: review/commit each → full test suite → item 11 UI (fill fields) → item 5 (profiles) → batch 3 final (items 7, 12 Fable).
