@@ -38,11 +38,11 @@ from data.models import read_json
 from data.session_io import import_loose_images, set_image_included
 from data.workspace import Workspace
 from ui import hierarchy_ui as hui
-from ui.app_state import NodeRef, node_display_name, node_for_path
+from ui.app_state import NodeRef, describe_add_result, node_display_name, node_for_path
 from ui.design import icons
 from ui.design.theme import ui_font
-from ui.design.tokens import SPACE, TypeStyle
-from ui.widgets._base import qcolor, tokens
+from ui.design.tokens import RADII, SPACE, TYPE, TypeStyle
+from ui.widgets._base import ThemeAware, qcolor, tokens
 from ui.format import fmt_date_utc, fmt_int, fmt_opt, smart_format
 from ui.pages.common import (
     CardGrid, ConfirmBar, MetricCard, PageHeader, Panel, SelectableCard, ThumbStrip, scroll,
@@ -991,6 +991,94 @@ class DetailsPanel(Panel):
 # The page
 # ======================================================================
 
+def dropped_local_files(md) -> List[str]:
+    """Local file paths of a drag's ``file://`` URLs (in-app drags carry none)."""
+    if md is None or not md.hasUrls():
+        return []
+    return [u.toLocalFile() for u in md.urls() if u.isLocalFile() and u.toLocalFile()]
+
+
+class _DropOverlay(ThemeAware, QWidget):
+    """Drag-over highlight painted above the lot's image area (never takes the mouse)."""
+
+    def __init__(self, parent) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.text = "Drop image files to add them"
+        self.hide()
+        self._connect_theme()
+
+    def paintEvent(self, _e) -> None:
+        t = tokens()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(2, 2, -2, -2)
+        p.setBrush(qcolor(t.accent.subtle, 0.92))
+        p.setPen(QPen(qcolor(t.accent.base), 2, Qt.DashLine))
+        p.drawRoundedRect(r, RADII.lg, RADII.lg)
+        icons.icon("upload", t.accent.text).paint(
+            p, int(r.center().x() - 16), int(r.center().y() - 40), 32, 32)
+        p.setFont(ui_font(TYPE.body_strong))
+        p.setPen(qcolor(t.text.primary))
+        p.drawText(QRectF(r.left(), r.center().y(), r.width(), 28), Qt.AlignCenter, self.text)
+
+
+class LotDropFrame(QWidget):
+    """Wraps a lot's image area: accepts image files dragged from Explorer.
+
+    Emits ``files_dropped(paths)`` for local-file drops; ignores everything
+    else (in-app drags, text) and shows the highlight only while a droppable
+    drag is over it.  ``enabled_fn`` says whether a lot is being shown."""
+
+    files_dropped = Signal(list)
+
+    def __init__(self, enabled_fn, parent=None) -> None:
+        super().__init__(parent)
+        self._enabled_fn = enabled_fn
+        self.setAcceptDrops(True)
+        self._lay = QVBoxLayout(self)
+        self._lay.setContentsMargins(0, 0, 0, 0)
+        self.overlay = _DropOverlay(self)
+
+    def set_content(self, w: QWidget) -> None:
+        self._lay.addWidget(w)
+        self.overlay.raise_()
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        self.overlay.setGeometry(self.rect())
+
+    def _droppable(self, md) -> bool:
+        return bool(self._enabled_fn()) and bool(dropped_local_files(md))
+
+    def dragEnterEvent(self, e) -> None:
+        if self._droppable(e.mimeData()):
+            self.overlay.setGeometry(self.rect())
+            self.overlay.show()
+            self.overlay.raise_()
+            e.acceptProposedAction()
+        else:
+            e.ignore()
+
+    def dragMoveEvent(self, e) -> None:
+        if self._droppable(e.mimeData()):
+            e.acceptProposedAction()
+        else:
+            e.ignore()
+
+    def dragLeaveEvent(self, e) -> None:
+        self.overlay.hide()
+
+    def dropEvent(self, e) -> None:
+        self.overlay.hide()
+        if not self._droppable(e.mimeData()):
+            e.ignore()
+            return
+        paths = dropped_local_files(e.mimeData())
+        e.acceptProposedAction()
+        self.files_dropped.emit(paths)
+
+
 class ProjectsPage(QWidget):
     open_session_requested = Signal(object)          # Path
     open_image_requested = Signal(object, str)       # session/lot Path, image filename
@@ -1016,7 +1104,10 @@ class ProjectsPage(QWidget):
         self.rename_dialog = None
         self._loading = False
         self._lot_gen = 0
+        self._adding = False                   # an add-images copy is running
         self._build()
+        state.session_opened.connect(self._clear_adding)
+        state.session_closed.connect(self._clear_adding)
         state.workspace_changed.connect(self.reload)
         state.node_changed.connect(self._on_state_node)
         state.profile_changed.connect(self._on_profile_changed)
@@ -1197,7 +1288,10 @@ class ProjectsPage(QWidget):
         self.empty.layout().insertWidget(self.empty.layout().count() - 1, self.empty_second, 0,
                                          Qt.AlignHCenter)
         self.stack.addWidget(self.empty)
-        cv.addWidget(self.stack, 1)
+        self.drop_frame = LotDropFrame(self.accepts_image_drops)
+        self.drop_frame.set_content(self.stack)
+        self.drop_frame.files_dropped.connect(self.add_images_to_current_lot)
+        cv.addWidget(self.drop_frame, 1)
         split.addWidget(centre)
 
         self.details = DetailsPanel()
@@ -1834,8 +1928,9 @@ class ProjectsPage(QWidget):
             e.action_button.setText(f"New {L('lot')}")
         elif hui.lot_mode(self.profile):
             e.title_label.setText(f"No images in this {L('lot')} yet")
-            e.body_label.setText(f"The SEM images of this {L('lot')}, their calibration and "
-                                 "results are stored in the folder itself.")
+            e.body_label.setText("Drop image files here or click Add images. They are copied "
+                                 f"into this {L('lot')}, together with their calibration and "
+                                 "results.")
             e.action_button.setText("Add images")
             e.action_button.set_icon_name("import")
             _reconnect(e.action_button.clicked, self.import_files)
@@ -2497,10 +2592,79 @@ class ProjectsPage(QWidget):
         else:
             self.import_requested.emit(paths)
 
+    # ------------------------------------------------------------------ add images to the lot
+    def accepts_image_drops(self) -> bool:
+        n = self._node
+        return n is not None and n.kind == "lot" and hui.lot_mode(self.profile)
+
+    def _lot_name(self, lot: Path) -> str:
+        try:
+            num = read_json(lot / "lot.json").get("lot_number")
+        except (OSError, ValueError):
+            num = None
+        return f"{self.lbl('lot')} {num or lot.name}"
+
+    def add_images_to_current_lot(self, paths: List[str]) -> None:
+        """Add image files to the lot being shown (button and drag-and-drop).
+        Copies off-thread through ``add_images_to_lot``; one add at a time."""
+        node = self._node
+        if not paths or not self.accepts_image_drops():
+            return
+        if self._adding:
+            self._toast("Still adding images",
+                        "Wait for the current images to finish, then drop the rest.", "info")
+            return
+        self._adding = True
+        lot = node.path
+        where = self._lot_name(lot)
+
+        def finished() -> None:
+            self._adding = False
+            if self._node is not None and self._node.path == lot:
+                self.reload()
+
+        def failed(msg: str) -> None:
+            _log.error("Adding images to %s failed: %s", lot, msg)
+            self._toast("Could not add images",
+                        "The images could not be copied into this "
+                        f"{self.lbl('lot')}. Nothing was changed.", "danger")
+            finished()
+
+        s = self.state.session
+        if s is not None and s.path == lot:
+            # open lot: append through the open record (stays in sync); the
+            # state raises the toast
+            try:
+                self.state.add_images(paths, on_result=lambda _r: finished(),
+                                      on_error=lambda m: finished(), where=where)
+            except Exception:
+                self._adding = False
+                raise
+            return
+
+        def done(result) -> None:
+            try:
+                title, body, sev = describe_add_result(result, where)
+                self._toast(title, body, sev)
+            finally:
+                finished()
+
+        try:
+            self.state.add_images_to_folder(lot, paths, on_done=done, on_error=failed)
+        except Exception:
+            self._adding = False
+            raise
+
+    def _clear_adding(self) -> None:
+        self._adding = False
+
     def _import(self, paths: List[str], label: str) -> None:
         node = self._node
         if node is None or node.kind != "lot":
             self.import_requested.emit(paths)
+            return
+        if hui.lot_mode(self.profile):
+            self.add_images_to_current_lot(paths)      # one shared path with drag-and-drop
             return
         lot = node.path
         s = self.state.session

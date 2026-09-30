@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import itertools
+import logging
 from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -42,6 +43,7 @@ from core.result_pack import (
 )
 from ui.overlay_cache import OverlayCache, OverlayJob
 
+_log = logging.getLogger(__name__)
 _uid_counter = itertools.count(1)
 _seq_counter = itertools.count(1)
 
@@ -594,21 +596,50 @@ def setup_probe(image_bgr, path=None, want_meta: bool = True) -> dict:
     return out
 
 
-def _add_images_worker(session_path: Path, root: Path, paths: List[str], known: set) -> List[dict]:
-    """Worker-thread: copy images into the open session and load them.
-    Lot records append in place, named by the profile's image template."""
+def _copy_into_record(session_path: Path, root: Path, paths: List[str]):
+    """Worker-thread: THE one place images are added to a lot / session folder
+    (button and drag-and-drop both end here).  Returns an AddImagesResult."""
+    from data.session_io import add_images_to_lot
     session_path = Path(session_path)
-    entries = [ImageEntry(source_path=str(p)) for p in paths]
+    template, ctx = None, None
     if (session_path / "lot.json").exists():
         from data.hierarchy import context_for_session
-        ws = Workspace(root)
-        profile = ws.profile
-        save_session(session_path, {}, entries, in_place=True, catalog=Catalog(root),
-                     image_name_template=profile.image_name_template,
-                     name_context=context_for_session(session_path, profile))
+        profile = Workspace(root).profile
+        template = profile.image_name_template
+        ctx = context_for_session(session_path, profile)
+    return add_images_to_lot(session_path, [str(p) for p in paths], catalog=Catalog(root),
+                             image_name_template=template, name_context=ctx)
+
+
+def _add_images_worker(session_path: Path, root: Path, paths: List[str], known: set) -> dict:
+    """Worker-thread: copy images into the open session/lot and load them.
+    Returns ``{"new": [image dicts], "result": AddImagesResult}``."""
+    result = _copy_into_record(session_path, root, paths)
+    return {"new": _load_new_images(Path(session_path), known), "result": result}
+
+
+def describe_add_result(result, where: str):
+    """Plain-language (title, body, severity) for an AddImagesResult."""
+    n = len(result.added)
+    s = "" if n == 1 else "s"
+    parts = []
+    if result.skipped:
+        parts.append(f"{len(result.skipped)} already in this lot")
+    if result.rejected:
+        r = result.rejected[0]
+        name = Path(r.path).name
+        why = (f"{name} is not a supported image type" if r.reason.startswith("Unsupported")
+               else f"{name}: {r.reason}")
+        parts.append(f"{len(result.rejected)} not added: {why}"
+                     if len(result.rejected) == 1 else
+                     f"{len(result.rejected)} not added (first: {why})")
+    if n:
+        title = f"{n} image{s} added to {where}"
+        sev = "warning" if result.rejected else "success"
     else:
-        update_session(session_path, images=entries, catalog=Catalog(root))
-    return _load_new_images(session_path, known)
+        title = "No images added" if result.rejected else "Nothing new to add"
+        sev = "warning" if result.rejected else "info"
+    return title, "; ".join(parts), sev
 
 
 def detect_info_bar_dict(image_bgr, path=None) -> dict:
@@ -1272,9 +1303,19 @@ class AppState(QObject):
         self.images_changed.emit()
         self.current_image_changed.emit(None)
 
-    def add_images(self, paths: List[str], on_done=None) -> None:
-        """Copy images into the open session (off-thread) and load them."""
+    def add_images_to_folder(self, folder, paths: List[str], on_done=None, on_error=None) -> None:
+        """Copy images into a lot/session folder that is NOT open (off-thread).
+        ``on_done(AddImagesResult)`` runs on the GUI thread."""
+        run_task(_copy_into_record, Path(folder), self.root, [str(p) for p in paths],
+                 on_done=on_done, on_error=on_error, pool=serial_pool())
+
+    def add_images(self, paths: List[str], on_done=None, on_result=None, on_error=None,
+                   where: str = "") -> None:
+        """Copy images into the open session (off-thread) and load them.
+        ``on_result(AddImagesResult)`` / ``on_error(msg)`` are optional."""
         if self.session is None or not paths:
+            if on_error and paths:
+                on_error("No lot is open.")
             return
         doc = self.session
         cur = self.current_image()
@@ -1283,8 +1324,13 @@ class AppState(QObject):
         root = self.root
         self.flush()
 
-        def done(new):
+        def done(out):
+            new, result = out["new"], out["result"]
             if self.session is not doc:
+                # another lot was opened mid-copy: files are safely in the lot;
+                # still tell the caller it is finished
+                if on_result:
+                    on_result(result)
                 return
             added = []
             for d in new:
@@ -1295,17 +1341,24 @@ class AppState(QObject):
                 self.current_uid = doc.images[0].uid
                 self.current_image_changed.emit(self.current_uid)
             self.images_changed.emit()
-            where = "the lot" if doc.is_lot else "the session"
-            self.message.emit("Images added", f"{len(new)} image(s) copied into {where}.",
-                              "success")
+            title, body, sev = describe_add_result(
+                result, where or ("the lot" if doc.is_lot else "the session"))
+            self.message.emit(title, body, sev)
             self.probe_metadata(added)
             if on_done:
                 on_done(len(new))
+            if on_result:
+                on_result(result)
+
+        def failed(m):
+            _log.error("Adding images failed: %s", m)
+            self.message.emit("Could not add images",
+                              "The images could not be copied. Nothing was changed.", "danger")
+            if on_error:
+                on_error(m)
 
         run_task(_add_images_worker, rec.path, root, [str(p) for p in paths], known,
-                 on_done=done, pool=serial_pool(),
-                 on_error=lambda m: self.message.emit("Could not add images",
-                                                      m.splitlines()[0], "danger"))
+                 on_done=done, pool=serial_pool(), on_error=failed)
 
     # ------------------------------------------------------------------ SEM metadata (INN-05)
     def probe_metadata(self, uids=None) -> None:
