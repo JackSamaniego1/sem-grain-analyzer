@@ -39,6 +39,7 @@ class AttentionRing(QWidget):
         self._t = 0.0
         self._done = False
         self._anim: Optional[QVariantAnimation] = None
+        self._timer: Optional[QTimer] = None
         target.installEventFilter(self)
         self._place()
         self.show()

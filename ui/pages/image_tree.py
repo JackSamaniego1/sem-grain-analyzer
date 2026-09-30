@@ -15,6 +15,11 @@ Job > Part > Lot (> Session, when a lot has several) > images.
 * Built once per image-list change; a status change updates one row and
   its ancestors, so hundreds of images stay fast.  Thumbnails arrive from
   the background loader; nothing here reads files.
+* Up/Down step from image to image in tree order (group rows are skipped,
+  a collapsed group opens to show the image it lands on).
+* Options: ``checkable`` (Analyze page tick boxes for "Analyze selected")
+  and ``manage`` (add / remove / add-back controls).  The Review page uses
+  the same tree with both off (UPDATE 4 item 13): browse only.
 """
 from __future__ import annotations
 
@@ -241,6 +246,7 @@ class _Delegate(QStyledItemDelegate):
 class _Tree(QTreeWidget):
     files_dropped = Signal(list)
     check_toggled = Signal(object)           # the image item whose tick box was hit
+    step_requested = Signal(int)             # Up/Down: -1 / +1 image
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -290,6 +296,11 @@ class _Tree(QTreeWidget):
         super().mouseDoubleClickEvent(e)
 
     def keyPressEvent(self, e) -> None:
+        if e.key() in (Qt.Key_Up, Qt.Key_Down) and not (
+                e.modifiers() & (Qt.ShiftModifier | Qt.ControlModifier)):
+            self.step_requested.emit(1 if e.key() == Qt.Key_Down else -1)
+            e.accept()
+            return
         if self.checkable and e.key() == Qt.Key_Space:
             it = self.currentItem()
             if it is not None and it.data(0, ROLE_KIND) == "image":
@@ -334,9 +345,10 @@ class ImageTree(ThemeAware, QWidget):
     checked_changed = Signal(list)          # uids ticked now (only when checkable)
 
     def __init__(self, state, parent: Optional[QWidget] = None,
-                 checkable: bool = False) -> None:
+                 checkable: bool = False, manage: bool = True) -> None:
         super().__init__(parent)
         self.state = state
+        self._manage = bool(manage)
         self._items: Dict[object, QTreeWidgetItem] = {}
         self._groups: Dict[Path, QTreeWidgetItem] = {}
         self._restore_rows: Dict[Path, QTreeWidgetItem] = {}
@@ -368,25 +380,33 @@ class ImageTree(ThemeAware, QWidget):
         self.add_btn = IconButton("add", "Add images to this lot (Ctrl+O). "
                                          "You can also drop files here.", size=26)
         self.add_btn.clicked.connect(self.add_requested)
+        self.add_btn.setVisible(self._manage)
         head.addWidget(self.add_btn)
         v.addLayout(head)
         self.tree = _Tree()
         self.tree.checkable = checkable
         self.tree.check_toggled.connect(self._toggle_item)
+        self.tree.step_requested.connect(self.step)
         self.tree.setColumnCount(1)
         self.tree.setHeaderHidden(True)
         self.tree.setIndentation(10)
         self.tree.setRootIsDecorated(True)
         self.tree.setUniformRowHeights(False)
         self.tree.setMouseTracking(True)
-        self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection if self._manage
+                                   else QAbstractItemView.SingleSelection)
         self.tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.tree.setItemDelegate(_Delegate(self))
-        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.tree.customContextMenuRequested.connect(self._menu)
-        self.tree.setToolTip("Images in the analyzer, by folder. Click to view; right-click "
-                             "to remove an image from the analyzer (the lot keeps it).")
+        if self._manage:
+            self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.tree.customContextMenuRequested.connect(self._menu)
+            self.tree.setToolTip("Images in the analyzer, by folder. Click to view; right-click "
+                                 "to remove an image from the analyzer (the lot keeps it).")
+        else:
+            self.tree.setContextMenuPolicy(Qt.NoContextMenu)
+            self.tree.setToolTip("Images in the analyzer, by folder. Click to view; "
+                                 "Up/Down step through the images.")
         self.tree.currentItemChanged.connect(self._on_current_item)
         self.tree.itemClicked.connect(self._on_clicked)
         self.tree.itemActivated.connect(self._on_clicked)
@@ -405,6 +425,10 @@ class ImageTree(ThemeAware, QWidget):
     @property
     def checkable(self) -> bool:
         return self.tree.checkable
+
+    @property
+    def manage(self) -> bool:
+        return self._manage
 
     def set_checkable(self, on: bool) -> None:
         if on == self.tree.checkable:
@@ -487,7 +511,7 @@ class ImageTree(ThemeAware, QWidget):
         # removed images: their group stays, with an "Add back" row
         removed: Dict[Path, List] = {}
         leaf: Dict[Path, QTreeWidgetItem] = {}
-        for im in (doc.removed if doc is not None else []):
+        for im in (doc.removed if doc is not None and self._manage else []):
             rec = doc.record_for(im)
             if rec is None:
                 continue
@@ -522,7 +546,7 @@ class ImageTree(ThemeAware, QWidget):
         n = len(images)
         self.count.setText(str(n) if n else "")
         self.hint.setVisible(not n)
-        n_removed = len(doc.removed) if doc is not None else 0
+        n_removed = len(doc.removed) if doc is not None and self._manage else 0
         self.restore_btn.setVisible(bool(n_removed))
         if n_removed:
             self.restore_btn.setToolTip(f"Put the {n_removed} removed image"
@@ -663,6 +687,42 @@ class ImageTree(ThemeAware, QWidget):
 
     def item(self, uid) -> Optional[QTreeWidgetItem]:
         return self._items.get(uid)
+
+    def image_order(self) -> List:
+        """Image uids in tree (display) order."""
+        out, stack = [], [self.tree.topLevelItem(i)
+                          for i in reversed(range(self.tree.topLevelItemCount()))]
+        while stack:
+            it = stack.pop()
+            if it.data(0, ROLE_KIND) == "image":
+                out.append(it.data(0, ROLE_UID))
+            stack.extend(it.child(i) for i in reversed(range(it.childCount())))
+        return out
+
+    def step(self, delta: int) -> None:
+        """Show the next (+1) / previous (-1) image in tree order; group
+        rows are skipped and a collapsed group opens."""
+        order = self.image_order()
+        if not order:
+            return
+        cur = self._current if self._current in order else None
+        if cur is None:
+            i = 0 if delta > 0 else len(order) - 1
+        else:
+            i = max(0, min(len(order) - 1, order.index(cur) + (1 if delta > 0 else -1)))
+        uid = order[i]
+        it = self._items[uid]
+        p = it.parent()
+        while p is not None:
+            p.setExpanded(True)
+            p = p.parent()
+        if self.tree.currentItem() is it:
+            if uid != self._current:          # e.g. current after a tick-box click
+                self._current = uid
+                self.current_changed.emit(uid)
+            return
+        self.tree.setCurrentItem(it)          # -> _on_current_item -> current_changed
+        self.tree.scrollToItem(it)
 
     def group_item(self, path) -> Optional[QTreeWidgetItem]:
         return self._groups.get(Path(path))

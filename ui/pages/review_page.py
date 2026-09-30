@@ -2,7 +2,8 @@
 Review page (UI-05-lite, DET-03 UI).
 
 Layout
-  left   : compact filmstrip
+  left   : image tree grouped Job > Part > Lot, the same ImageTree as the
+           Analyze page, browse-only (no tick boxes / remove) - UPDATE 4 item 13
   centre : toolbar (Original / Overlay / Mask / Excluded, undo/redo, edit tools
            Select / Lasso / Cut + Merge, remove, zoom) · canvas · "All images in this session" comparison table
   right  : StatCards · grain filters · tabs (area / diameter histograms,
@@ -37,7 +38,8 @@ from ui.format import (
 )
 from ui.pages.charts import ThemedHistogram
 from ui.pages.common import MetricCard, Panel, scroll
-from ui.pages.filmstrip import Filmstrip, status_text
+from ui.pages.filmstrip import status_text
+from ui.pages.image_tree import ImageTree
 from ui.pages.filter_card import FilterCard, Reveal
 from ui.widgets import (
     AnimatedButton, Card, EmptyState, FadeStackedWidget, IconButton, KeyValueList,
@@ -170,9 +172,9 @@ class ReviewPage(QWidget):
         fp = Panel("right")
         fl = QVBoxLayout(fp)
         fl.setContentsMargins(0, 0, 0, 0)
-        self.film = Filmstrip(compact=True)
-        self.film.setMinimumWidth(170)
-        self.film.setMaximumWidth(200)
+        self.film = ImageTree(self.state, checkable=False, manage=False)
+        self.film.setMinimumWidth(230)
+        self.film.setMaximumWidth(290)
         fl.addWidget(self.film)
         h.addWidget(fp)
 
@@ -231,6 +233,7 @@ class ReviewPage(QWidget):
             tool_group(self.btn_zo, self.btn_zi, self.btn_fit, self.btn_11)])
         tv.addWidget(self.toolbar)
         self.canvas = GrainCanvas(placeholder="Select an analysed image")
+        self.canvas.enable_opacity_control()        # UPDATE 4 item 9
         tv.addWidget(self.canvas, 1)
         hint = label("Click a grain to select · Ctrl+click adds · L lasso · M merge · "
                      "C cut · Delete removes · drag to pan · wheel zooms about the cursor",
@@ -432,6 +435,15 @@ class ReviewPage(QWidget):
             lambda o, scope: st.set_filter_options(o, st.current_uid if scope == "image" else None))
         self.filters.apply_all_requested.connect(st.apply_filters_to_all)
         self.filters.show_excluded_toggled.connect(self.canvas.set_show_excluded_grains)
+        # UPDATE 4 item 9: one overlay opacity for Analyze, Review and new reports
+        st.overlay_opacity_changed.connect(self.canvas.set_overlay_opacity)
+        self.canvas.overlay_opacity_edited.connect(self._on_canvas_opacity)
+        self.canvas.set_overlay_opacity(st.overlay_opacity)
+
+    def _on_canvas_opacity(self, v: float, final: bool) -> None:
+        self.state.set_overlay_opacity(v, persist=False)
+        if final:
+            self.state.persist_ui_state()
 
     # ------------------------------------------------------------------ sync
     def _on_session(self) -> None:

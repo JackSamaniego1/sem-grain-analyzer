@@ -106,11 +106,38 @@ def split_length_um(length_um: float) -> tuple:
     """(value, unit) that reads naturally for a length in µm: below 1 µm in
     nm, 1000 µm and above in mm, else µm (e.g. 0.5 -> (500, "nm"))."""
     um = float(length_um)
+    # significant figures, not fixed decimals: a tiny but valid length never
+    # rounds to 0 (which the length boxes would show as "cleared")
     if 0 < um < 1.0:
-        return round(um * 1000.0, 3), "nm"
+        return float(f"{um * 1000.0:.6g}"), "nm"
     if um >= 1000.0:
-        return round(um / 1000.0, 6), "mm"
+        return float(f"{um / 1000.0:.6g}"), "mm"
     return round(um, 3), "µm"
+
+
+LENGTH_DECIMALS = 3          # decimals the length boxes show for everyday values
+_MAX_LENGTH_DECIMALS = 9
+
+
+def length_decimals_for(value: float) -> int:
+    """Decimals a length box needs so ``value`` keeps 3 significant digits
+    (never fewer than LENGTH_DECIMALS)."""
+    v = abs(float(value))
+    if v <= 0 or v >= 1.0:
+        return LENGTH_DECIMALS
+    need = -math.floor(math.log10(v)) + 2
+    return max(LENGTH_DECIMALS, min(_MAX_LENGTH_DECIMALS, need))
+
+
+def set_length_value(spin, value: float) -> None:
+    """Put ``value`` into a QDoubleSpinBox without it rounding to 0 (or being
+    clamped up to the box's minimum) when it is tiny but valid."""
+    value = float(value)
+    d = length_decimals_for(value)
+    spin.setDecimals(d)
+    if 0 < value < spin.minimum():
+        spin.setMinimum(10.0 ** -d)
+    spin.setValue(value)
 
 
 class CalibrationDialog(QDialog):
@@ -293,7 +320,7 @@ class CalibrationDialog(QDialog):
         if length_um and length_um > 0:
             value, unit = split_length_um(length_um)
             self.unit_combo.setCurrentText(unit)
-            self.length_spin.setValue(value)
+            set_length_value(self.length_spin, value)
             msg = (f"Scale bar found automatically ({w} px); its length was filled in from "
                    "the image metadata — check it against the label, then Apply.")
         self.lbl_auto.setText(msg)

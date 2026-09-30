@@ -15,6 +15,7 @@ from ui.widgets.inputs import SearchBox
 from ui.widgets.layout import ResponsiveToolbar, WrapLabel, wrap_elide
 from ui.widgets.loading import ProgressRing, Skeleton, Spinner
 from ui.widgets.navigation import Breadcrumb, FadeStackedWidget, NavRail
+from ui.widgets.opacity_pill import OpacityPill
 from ui.widgets.overlay import ShortcutOverlay
 from ui.widgets.segmented import SegmentedControl
 from ui.widgets.selection_bar import SelectionBar
@@ -27,4 +28,5 @@ __all__ = [
     "Breadcrumb", "SearchBox", "EmptyState", "NavRail", "FadeStackedWidget",
     "Divider", "KeyValueList", "ShortcutOverlay", "SelectionBar",
     "ResponsiveToolbar", "WrapLabel", "wrap_elide", "AttentionRing", "pulse_attention",
+    "OpacityPill",
 ]

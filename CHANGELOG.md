@@ -147,8 +147,8 @@ tests cover the release.
   (and vice versa); only the button you clicked animates.
 - Nav rail hover labels (e.g. "Analyze") now appear almost instantly
   instead of after a noticeable delay.
-- The bottom-right status chip now reads clearly, e.g. "AI runs on: CPU"
-  (or the GPU name), with a tooltip explaining it.
+- The confusing "AI device" status chip was removed from the bottom-right
+  status bar.
 - The grain filters "Apply" button no longer says "Apply to all images"
   when its scope is set to "This image".
 

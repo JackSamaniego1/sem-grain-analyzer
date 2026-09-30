@@ -55,6 +55,7 @@ class GrainCanvas(ThemeAware, QWidget):
     tool_changed = Signal(str)         # select | lasso | split
     merge_requested = Signal(list)     # grain ids (2+)
     split_requested = Signal(list)     # [(x, y), ...] cut line, image coordinates
+    overlay_opacity_edited = Signal(float, bool)   # user moved the opacity pill: value, settled
 
     MIN_SCALE = 0.02
     MAX_SCALE = 32.0
@@ -96,6 +97,7 @@ class GrainCanvas(ThemeAware, QWidget):
         self._stroke: List[QPointF] = []   # lasso loop / cut line (image coords)
         self._drawing = False
         self._dash = 0.0
+        self.opacity_pill = None        # UPDATE 4 item 9: see enable_opacity_control()
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -137,6 +139,7 @@ class GrainCanvas(ThemeAware, QWidget):
             self._view = "overlay" if result is not None else "original"
         if not same_size or self._fit_mode:
             self.fit(animate=False)
+        self._update_pill()
         self.update()
 
     def set_result(self, result, raw=None, excluded=None) -> None:
@@ -256,15 +259,56 @@ class GrainCanvas(ThemeAware, QWidget):
             return
         self._view = view
         self._ensure_layer(view)
+        self._update_pill()
         self.view_changed.emit(view)
         self.update()
 
     def set_overlay_opacity(self, value: float) -> None:
         """UX-05: opacity (0-1) of the grain overlay."""
         v = max(0.0, min(1.0, float(value)))
+        if self.opacity_pill is not None:
+            self.opacity_pill.set_value(v)
         if abs(v - self._overlay_opacity) > 1e-4:
             self._overlay_opacity = v
-            self.update()
+            self.update()      # cached overlay layer is just redrawn at the new alpha
+
+    # UPDATE 4 item 9 ------------------------------------------------------
+    def enable_opacity_control(self) -> None:
+        """Float an overlay-opacity pill in the top-right corner, shown only
+        while the Overlay view has grains to draw.  Dragging it repaints the
+        cached overlay layer at the new opacity (no re-detection, no
+        re-compositing) and emits ``overlay_opacity_edited``."""
+        if self.opacity_pill is not None:
+            return
+        from ui.widgets.opacity_pill import OpacityPill
+        pill = OpacityPill(self)
+        pill.set_value(self._overlay_opacity)
+        pill.value_changed.connect(lambda v: self._on_pill(v, False))
+        pill.value_committed.connect(lambda v: self._on_pill(v, True))
+        self.opacity_pill = pill
+        self._place_pill()
+        self._update_pill()
+
+    def opacity_control_wanted(self) -> bool:
+        """True when the overlay opacity has a visible effect right now."""
+        if self._view != "overlay" or self._bgr is None:
+            return False
+        self._ensure_layer("overlay")
+        ov = self._pm.get("overlay")
+        return ov is not None and not ov.isNull()
+
+    def _on_pill(self, v: float, final: bool) -> None:
+        self.set_overlay_opacity(v)
+        self.overlay_opacity_edited.emit(float(v), bool(final))
+
+    def _update_pill(self) -> None:
+        if self.opacity_pill is not None:
+            self.opacity_pill.set_shown(self.opacity_control_wanted())
+
+    def _place_pill(self) -> None:
+        pill = self.opacity_pill
+        if pill is not None:
+            pill.move(max(0, self.width() - pill.width() - 12), 12)
 
     def overlay_opacity(self) -> float:
         return self._overlay_opacity
@@ -381,6 +425,7 @@ class GrainCanvas(ThemeAware, QWidget):
         self._ensure_layer(self._view)
         if self._show_excluded:
             self._ensure_layer("excluded_layer")
+        self._update_pill()
 
     def _label_ok(self) -> bool:
         lab = self._labels
@@ -731,6 +776,7 @@ class GrainCanvas(ThemeAware, QWidget):
     # ------------------------------------------------------------------ events
     def resizeEvent(self, e) -> None:
         super().resizeEvent(e)
+        self._place_pill()
         if self._fit_mode:
             self.fit(animate=False)
 

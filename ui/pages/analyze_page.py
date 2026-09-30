@@ -26,7 +26,7 @@ from __future__ import annotations
 import re
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import SIGNAL, Qt, QTimer, Signal
+from PySide6.QtCore import SIGNAL, QEvent, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QSizePolicy, QSlider, QSpinBox,
     QVBoxLayout, QWidget,
@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 
 from core.grain_detector import DetectionParams
 from ui.app_state import params_from_dict
-from ui.calibration_dialog import LENGTH_UNITS, _to_um, split_length_um
+from ui.calibration_dialog import LENGTH_UNITS, _to_um, set_length_value, split_length_um
 from ui.canvas import GrainCanvas
 from ui.canvas.edit_actions import GrainEditController
 from ui.design import icons
@@ -292,6 +292,10 @@ class ParamPanel(QWidget):
 ANALYZE_VIEWS = ("original", "overlay", "excluded")     # order of the view segments
 
 
+#: a deferred "enter the length" pulse is dropped if the row has not shown by then
+ATTENTION_DEFER_MS = 4000
+
+
 class SetupTile(Card):
     """UX-02: scan area + scale of the images, shown under the canvas.
 
@@ -384,6 +388,16 @@ class SetupTile(Card):
         br.addWidget(self.btn_bar)
         self.bar_row.hide()
         b.addWidget(self.bar_row)
+        self._attention_pending = False       # follow-up b: pulse once the row shows
+        self._attention_timer = QTimer(self)
+        self._attention_timer.setSingleShot(True)
+        self._attention_timer.setInterval(0)
+        self._attention_timer.timeout.connect(self._pulse_if_pending)
+        self._attention_expiry = QTimer(self)
+        self._attention_expiry.setSingleShot(True)
+        self._attention_expiry.setInterval(ATTENTION_DEFER_MS)
+        self._attention_expiry.timeout.connect(self.cancel_attention)
+        self.bar_row.installEventFilter(self)
 
     # UPDATE 4 item 6 ----------------------------------------------------
     def bar_length_um(self) -> float:
@@ -398,9 +412,9 @@ class SetupTile(Card):
         if length_um and length_um > 0:
             value, unit = split_length_um(length_um)
             self.bar_unit.setCurrentText(unit)
-            self.bar_len.setValue(value)
+            set_length_value(self.bar_len, value)      # tiny lengths never round to 0
         else:
-            self.bar_len.setValue(0.0)
+            set_length_value(self.bar_len, 0.0)
         self.bar_len.blockSignals(False)
         self.bar_unit.blockSignals(False)
 
@@ -422,10 +436,41 @@ class SetupTile(Card):
 
     def draw_attention_to_length(self) -> bool:
         """Pulse the length box and focus it (after Auto-find) when the
-        scale-bar row is showing.  True if it did."""
-        if not self.bar_row.isVisible():
+        scale-bar row is showing.  If the row is meant to show but its page is
+        not on screen yet, the pulse waits until the row appears.  True if it
+        pulsed or will pulse; False when the row is hidden (nothing to enter)."""
+        if self.bar_row.isHidden():
+            self.cancel_attention()
             return False
+        if not self.bar_row.isVisible():
+            self._attention_pending = True        # shown later -> eventFilter
+            self._attention_expiry.start()        # ... but only soon after Auto-find
+            return True
+        self.cancel_attention()
         return pulse_attention(self.bar_len) is not None
+
+    def attention_pending(self) -> bool:
+        return self._attention_pending
+
+    def cancel_attention(self) -> None:
+        """Drop a deferred pulse (image or scale changed, or it expired)."""
+        self._attention_pending = False
+        self._attention_expiry.stop()
+        self._attention_timer.stop()
+
+    def eventFilter(self, obj, ev) -> bool:
+        if obj is self.bar_row and ev.type() == QEvent.Show and self._attention_pending:
+            # after the page transition has laid the row out; the timer is
+            # owned by the tile, so it dies with it
+            self._attention_timer.start()
+        elif obj is self.bar_row and ev.type() == QEvent.Hide and self.bar_row.isHidden():
+            self.cancel_attention()               # row itself hidden: nothing to enter
+        return super().eventFilter(obj, ev)
+
+    def _pulse_if_pending(self) -> None:
+        if self._attention_pending and self.bar_row.isVisible():
+            self.cancel_attention()
+            pulse_attention(self.bar_len)
 
     def _column(self, title: str, tip: str):
         col = QVBoxLayout()
@@ -641,6 +686,7 @@ class AnalyzePage(QWidget):
         ip.setContentsMargins(0, 0, 0, 0)
         ip.setSpacing(SPACE.sm)
         self.canvas = GrainCanvas(placeholder="Select an image in the list")
+        self.canvas.enable_opacity_control()        # UPDATE 4 item 9
         ip.addWidget(self.canvas, 1)
         self.setup_tile = SetupTile()
         ip.addWidget(self.setup_tile)
@@ -844,6 +890,9 @@ class AnalyzePage(QWidget):
         st.overlay_opacity_changed.connect(self._sync_opacity)
         self.film.current_changed.connect(st.set_current_image)
         self.film.files_dropped.connect(st.add_images)
+        # a deferred "enter the length" pulse is stale once the image or scale changes
+        st.current_image_changed.connect(lambda _u: self.setup_tile.cancel_attention())
+        st.calibration_changed.connect(self.setup_tile.cancel_attention)
         self.film.add_requested.connect(self.add_images_requested)
         self.film.remove_requested.connect(self.remove_images)
         self.film.restore_requested.connect(self.restore_images)
@@ -891,6 +940,7 @@ class AnalyzePage(QWidget):
         self.filters.show_excluded_toggled.connect(self.canvas.set_show_excluded_grains)
         self.opacity.valueChanged.connect(self._on_opacity)
         self.opacity.sliderReleased.connect(self.state.persist_ui_state)
+        self.canvas.overlay_opacity_edited.connect(self._on_canvas_opacity)
         self.queue.job_started.connect(lambda uid: st.set_image_status(uid, "running", 0, "Starting"))
         self.queue.job_progress.connect(self._on_job_progress)
         self.queue.job_finished.connect(self._on_job_finished)
@@ -1220,6 +1270,13 @@ class AnalyzePage(QWidget):
         self.opacity_val.setText(f"{v} %")
         self.canvas.set_overlay_opacity(v / 100.0)
         self.state.set_overlay_opacity(v / 100.0, persist=not self.opacity.isSliderDown())
+
+    def _on_canvas_opacity(self, v: float, final: bool) -> None:
+        """UPDATE 4 item 9: the on-image opacity pill (live while dragging,
+        written to the settings once it settles)."""
+        self.state.set_overlay_opacity(v, persist=False)
+        if final:
+            self.state.persist_ui_state()
 
     def _sync_opacity(self, v: float) -> None:
         iv = int(round(float(v) * 100))
