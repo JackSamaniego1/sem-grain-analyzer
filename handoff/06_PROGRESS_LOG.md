@@ -298,3 +298,6 @@
 - **Smoke-app skill updated (c5fcc67)**: Uses PySide6 AppShell entry point; headless smoke passed (window renders, caps applied: opencv 31, torch 15, ocr 2 on 32-thread PC).
 - **UPDATE 4 CODE-COMPLETE**: Items 1–9, 11, 13–19 code+tests done and reviewed. Items 10 (GPU trial build), 12 (UI-side optimisation) deferred. Full suite: 1349 passed, 2 skipped. Offline guard clean.
 - **Next**: User manual spot checks (Add grain on real image, image details JEOL/Thermo, sample report Lot Summary/percentile/distribution/contents, Resolution Profiles end-to-end, analysis lock, crash log, installer GPU page 150/200% scaling).
+
+## 2026-09-30 (handoff update) — D-42 decision logged; Lot Summary trendline design finalized
+- **D-42 (user decision)**: Lot Summary "trendline" is a line joining lot values in lot order — NO curve fitting of any kind. Excel, PowerPoint, on-screen preview all use simple piecewise-linear trendlines; omitted when fewer than two lots have a value. Resolved design question from item 15; 433 report/preview tests pass. Removed outdated BATCH 3 PREP section from SESSION_STATE.md.

@@ -81,12 +81,3 @@ cd "C:\Users\saman\GRAIN ANALYSIS TOOL"
 - `handoff/05_DECISIONS.md` — ADR-style decision log (D-01..D-37)
 - `handoff/07_IDEAS_BACKLOG.md` — ideas (top 25 active; rest archived)
 
-## BATCH 3 PREP
-- **Item 15** (report-engineer): Lot summary bar+trendline charts per lot + job summary (unblocked D-31).
-- **Item 11** (detection-engineer): Auto-fill magnification/instrument/kV/WD from JEOL + Thermo metadata (parallel after item 4 UI).
-- **Item 5** (ui-designer + data-architect): Resolution Profiles sidebar (manual selection, after item 15).
-- **Item 10b UI** (ui-designer): Detection modes "AI-Assisted (GPU)" / "AI-Assisted (CPU)", GPU greyed with tooltip from `ai_devices()`.
-- **Item 7** (opus): Stability lock during analysis on weak CPUs.
-- **Item 8** (ui-designer + detection-engineer): Review "Add grain" tool (split-tool style).
-- **Item 12** (Fable): Speed & usability optimisation, faster detection (LAST item).
-

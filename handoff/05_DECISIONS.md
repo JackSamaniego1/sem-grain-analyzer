@@ -127,6 +127,7 @@ Context: UPDATE 4 item 7 stability issue (crash during analysis on weak CPUs). R
 ### D-41 · 2026-09-30 · accepted — Lighter review cadence was one-off per user request
 Context: UPDATE 4 batch 3 (items 5, 7, 8, 10b, 11, 12, 15) ran under lighter code-review cadence (per-step review + full suite once at end, not after every commit) per user request 2026-09-30. Decision: **this cadence is a one-off exception.** Standard process resumes: per-task agent work → code-reviewer → commit → save-handoff → next task. Lighter cadence suitable only when batch is small and low-risk (familiar agents, well-tested components). Consequences: next UPDATE 5 or feature batch returns to strict per-task review.
 
-
+### D-42 · 2026-09-30 · accepted (user) — Lot Summary trendline: join, no fitting
+Context: UPDATE 4 item 15 (Lot Summary charts) implemented bar charts and trendlines in Excel and PowerPoint. Initial design included curve-fitting (polynomial, exponential, linear). User decision 2026-09-30: no fitting of any kind. Decision: **Lot Summary "trendline" is a continuous line joining the lot values in lot order.** Single line per chart; omitted when fewer than two lots have a value. Applied to Excel, PowerPoint, and on-screen preview. One-row-per-lot layout already satisfied. Consequences: trendlines are now simple piecewise-linear; no curve-fit computation; v3.0.1+ reports ship with joined-value trendlines only.
 
 
