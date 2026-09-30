@@ -1,8 +1,8 @@
 # SESSION STATE - read this first when resuming
 
-**Last updated:** 2026-09-30 (late night: all UPDATE 4 code-complete including item 12 UI-side)  
-**Branch:** `v3-dev` | **Last commit:** `f440f40` (item 12 UI-side: overlay LUT + patch, lazy imports) | **Phase:** UPDATE 4 code-complete; items 1–9, 11–19 done; item 10 GPU trial build pending NSIS; item 12 done  
-**Resume with:** read this file only. All 16 items code-complete; GPU trial build & manual spot checks pending user.
+**Last updated:** 2026-09-30 (late night: UPDATE 4 fully code-complete with item 5 follow-up done)  
+**Branch:** `v3-dev` | **Last commit:** `9ccaf90` (item 5 follow-up: `result_scan` persisted, scan-area reopen survives) | **Phase:** UPDATE 4 code-complete; all 16 items done; GPU trial build pending NSIS; manual spot checks pending user  
+**Resume with:** read this file only. All code-complete; GPU trial build & manual spot checks pending user.
 
 ## Done and committed
 
@@ -26,7 +26,7 @@
   - **4127728**: Items 9, 13 — Overlay opacity pill (top-right image, persisted); Review image list grouped Job › Part › Lot.
 
 ## Test suite status
-- **1360 passed** (full suite with item 12 UI-side lazy imports & overlay patch; 2 skipped, 0 failed; `-X faulthandler` confirms no fatal crashes)
+- **1366 passed** (full suite with item 5 follow-up scan persistence & scan-area reopen tests; 2 skipped, 0 failed; `-X faulthandler` confirms no fatal crashes)
 - Offline guard clean (no network egress)
 - Installer builds locally: GrainAnalyzer_Setup.exe 644 MB
 - **NSIS not installed on dev PC** (no makensis on PATH) — GPU trial build remains blocked pending build-engineer environment setup
@@ -38,9 +38,9 @@
 
 ## NEXT 3 ACTIONS
 
-1. **User manual spot checks** (smoke-app + real SEM images): Add grain on real image; image details (JEOL/Thermo); sample report (Lot Summary, percentile, distribution, contents slides in PPTX; Lot Summary + raw data in Excel); Resolution Profiles end-to-end; editing during analysis lock; crash log after forced error; installer GPU page (check if NSIS available); display scaling 150/200%.
-2. **GPU trial build** (build-engineer): requires NSIS on PATH; build GrainAnalyzer_GPU_Pack.exe locally → manual pack install + GPU device detection on real work PC (if available).
-3. **(Optional) follow-up**: item 5 scan-area-only reopen flag (low priority; needs data/session model field).
+1. **User manual spot checks on real SEM images**: Add grain; image details (JEOL/Thermo); sample report (Lot Summary, percentile, distribution, contents slides in PPTX + Lot Summary/raw data in Excel); Resolution Profiles end-to-end; editing during analysis lock; crash log after forced error; display scaling 150/200%.
+2. **GPU trial build (build-engineer)** once NSIS is on PATH: build GrainAnalyzer_GPU_Pack.exe → manual pack install + GPU device detection on a work PC.
+3. **Release prep for v3.1** after spot checks pass (version bump via version.py, CHANGELOG, tag) — only when user asks.
 
 **Batch 3 final status (code & tests complete; 2026-09-30):**
 - [x] Item 15 DONE (b4e38a5): Lot Summary in Excel (per-lot distribution chart + subtotals) + PowerPoint (job summary table + bar+trendline charts).
