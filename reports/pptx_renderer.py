@@ -1230,7 +1230,7 @@ def _lot_distribution_slide_plan(model: ReportModel, images: List[ImageSummary],
 # ---------------------------------------------------------------------------
 # Lot Summary (UPDATE 4 item 15): job summary table (per lot, per-part
 # subtotal, JOB TOTAL; 14 rows/slide like the percentile slide) + lot-vs-lot
-# combo charts (bars = lots, line = linear trend within each part). All
+# combo charts (bars = lots, line = the lot values joined in lot order). All
 # numbers come from ``reports.lot_summary.lot_summary_data`` -- the same
 # source as the Excel sheet and the on-screen preview.
 # ---------------------------------------------------------------------------
@@ -1328,7 +1328,7 @@ def _draw_lot_metric_chart(slide, x_in: float, y_in: float, cx_in: float, cy_in:
     trend = ch["trend"][lo:hi] if ch["trend"] is not None else None
     has_trend = trend is not None and any(t is not None for t in trend)
     if has_trend:
-        cd.add_series("Trend (linear fit)", [None if t is None else round(t, 4) for t in trend],
+        cd.add_series("Lot values", [None if t is None else round(t, 4) for t in trend],
                       number_format=ch["num_format"])
     chart = slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(x_in), Inches(y_in),
                                    Inches(cx_in), Inches(cy_in), cd).chart

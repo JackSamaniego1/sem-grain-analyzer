@@ -417,8 +417,8 @@ class LotSummaryPreview(SectionPreview):
                "Not every image is calibrated, so sizes are in pixels and ASTM G is left out")
         off = "" if self.section.enabled else (
             " This section is switched off — tick it in the outline to include it.")
-        self.note.setText(f"{cal}. Trendlines are straight-line fits across the lots of each "
-                          f"part (two or more lots). Excel: the Lot Summary sheet (blue tab); "
+        self.note.setText(f"{cal}. The line on each chart simply joins the lot values in "
+                          f"lot order (no fitting). Excel: the Lot Summary sheet (blue tab); "
                           f"PowerPoint: a job summary slide and lot-vs-lot chart slides.{off}")
 
     def _fill_table(self, d: dict) -> None:

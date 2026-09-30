@@ -25,8 +25,9 @@ Return shape (all sizes already in the report's display units)::
              "categories": [{"part", "lot", "label"}], "values": [float|None],
              "trend": [float|None] | None, "multi_level": bool}
 
-``trend`` is a least-squares straight line fitted across the lots of each part
-(>= 2 lots with a value); it is ``None`` when no part has two such lots.
+``trend`` is the line joining the lot values in lot order (equal to ``values``,
+no fitting; None entries leave gaps); it is ``None`` when fewer than two lots
+have a value.
 """
 from __future__ import annotations
 
@@ -100,26 +101,13 @@ def _stats(part: str, lot: str, imgs: List[ImageSummary], calibrated: bool, am: 
     return out
 
 
-def _linear_trend(cats: List[Dict[str, str]], values: List[Optional[float]]
-                  ) -> Optional[List[Optional[float]]]:
-    """Per-part straight-line fit over lot position; None where a part has
-    fewer than two lots with a value (a single lot has no trend)."""
-    trend: List[Optional[float]] = [None] * len(values)
-    any_fit = False
-    parts: Dict[str, List[int]] = {}
-    for i, c in enumerate(cats):
-        parts.setdefault(c["part"], []).append(i)
-    for idxs in parts.values():
-        pts = [(k, values[i]) for k, i in enumerate(idxs) if values[i] is not None]
-        if len(pts) < 2:
-            continue
-        x = np.array([p[0] for p in pts], dtype=float)
-        y = np.array([p[1] for p in pts], dtype=float)
-        slope, icpt = np.polyfit(x, y, 1)
-        for k, i in enumerate(idxs):
-            trend[i] = float(slope * k + icpt)
-        any_fit = True
-    return trend if any_fit else None
+def _lot_line(values: List[Optional[float]]) -> Optional[List[Optional[float]]]:
+    """The line over the bars: simply the lot values in order (no fitting);
+    None (gap) where a lot has no value. Omitted (None) when fewer than two
+    lots have a value, since a single point draws no line."""
+    if sum(v is not None for v in values) < 2:
+        return None
+    return [None if v is None else float(v) for v in values]
 
 
 def _num_format(values: List[Optional[float]], kind: str) -> str:
@@ -195,7 +183,7 @@ def lot_summary_data(model: ReportModel,
         charts.append({
             "id": key, "title": title, "x_title": x_title, "y_title": y_title,
             "num_format": _num_format(values, kind), "categories": cats, "values": values,
-            "trend": _linear_trend(cats, values), "multi_level": multi_part,
+            "trend": _lot_line(values), "multi_level": multi_part,
         })
     return {"has_lots": has_lots, "units": {"calibrated": calibrated, "length": du, "area": au},
             "part_label": part_label, "lot_label": lot_label, "multi_part": multi_part,

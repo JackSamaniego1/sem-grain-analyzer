@@ -80,7 +80,7 @@ def test_chart_hover_tooltip_names_the_lot(themed, qtbot):
     assert ch.index_at(x) == 0
     qtbot.mouseMove(ch, QPoint(x, int(r.center().y())))
     qtbot.waitUntil(lambda: "Lot-1" in ch.toolTip(), timeout=2000)
-    assert "Trend" in ch.toolTip()
+    assert "Lot value" in ch.toolTip()
 
 
 def test_footnotes_shown_under_the_table(themed, qtbot, monkeypatch):

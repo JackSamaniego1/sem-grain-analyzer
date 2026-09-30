@@ -119,18 +119,15 @@ def test_data_units_nm_and_uncalibrated_px():
 def test_trend_rules_one_two_many_lots():
     assert all(c["trend"] is None for c in lot_summary_data(_model(_lots(1)))["charts"])
     two = lot_summary_data(_model(_lots(2)))["charts"][0]
-    assert two["trend"] is not None and all(t is not None for t in two["trend"])
+    assert two["trend"] == two["values"]
     many = lot_summary_data(_model(_lots(20)))["charts"][0]
-    y = np.array(many["values"])
-    slope = np.polyfit(np.arange(20), y, 1)[0]
-    assert abs((many["trend"][-1] - many["trend"][0]) / 19 - slope) < 1e-9
+    assert many["trend"] == many["values"]          # joins the lot values, no fit
 
 
-def test_trend_is_fitted_per_part_and_single_lot_parts_have_none():
+def test_line_joins_lot_values_across_all_parts_in_order():
     imgs = _job(parts=1, lots=3, per=1) + [_img("solo", "P9", "Only", [2.0, 3.0, 2.5], order=99)]
-    ch = lot_summary_data(_model(imgs))["charts"][0]
-    assert ch["multi_level"]
-    assert ch["trend"][:3] != [None] * 3 and ch["trend"][3] is None
+    for ch in lot_summary_data(_model(imgs))["charts"]:
+        assert ch["trend"] == ch["values"] and len(ch["trend"]) == 4
 
 
 def test_zero_grain_lot_and_missing_astm():
@@ -141,8 +138,9 @@ def test_zero_grain_lot_and_missing_astm():
     assert empty["n_grains"] == 0 and empty["mean_diameter"] is None and empty["d10"] is None
     ch = {c["id"]: c for c in d["charts"]}
     assert ch["mean_diameter"]["values"][1] is None and ch["n_grains"]["values"][1] == 0
-    # trend still fitted through the two lots that have values
-    assert ch["mean_diameter"]["trend"] is not None
+    # line joins the lot values; the empty lot is a gap
+    assert ch["mean_diameter"]["trend"] == ch["mean_diameter"]["values"]
+    assert ch["mean_diameter"]["trend"][1] is None
     for i in imgs:
         i.astm_g = None
     assert "astm_g" not in [c["id"] for c in lot_summary_data(_model(imgs))["charts"]]
@@ -196,7 +194,7 @@ def test_excel_lot_charts_are_combo_with_units_in_axes(tmp_path):
     assert len(xml) == 5
     for x in xml:
         assert "<c:barChart>" in x and "<c:lineChart>" in x
-        assert "Trend (linear fit)" in x
+        assert "Lot values" in x and "linear fit" not in x
     joined = "".join(xml)
     assert "Mean Equivalent Diameter (µm)" in joined
     assert "Mean Grain Area (µm²)" in joined

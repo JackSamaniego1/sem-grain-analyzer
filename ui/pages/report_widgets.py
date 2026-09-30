@@ -697,7 +697,7 @@ class LotTrendChart(ThemeAware, QWidget):
             tip = f"{name}\n{c.get('y_title', '')}: {fmt_num(c['values'][i], c.get('num_format'))}"
             tr = (c.get("trend") or [None] * (i + 1))[i]
             if tr is not None:
-                tip += f"\nTrend: {fmt_num(tr, c.get('num_format'))}"
+                tip += f"\nLot value: {fmt_num(tr, c.get('num_format'))}"
         self.setToolTip(tip)
         super().mouseMoveEvent(e)
 
@@ -766,11 +766,10 @@ class LotTrendChart(ThemeAware, QWidget):
         if trend:
             tcol = qcolor(t.text.primary)          # never a bar colour: reads on both
             p.setPen(QPen(tcol, 2, Qt.DashLine, Qt.RoundCap))
-            for part in parts:
-                pts = [QPointF(r.left() + (i + 0.5) * bw, ypos(trend[i]))
-                       for i in range(n) if cats[i]["part"] == part and trend[i] is not None]
-                for a, b in zip(pts, pts[1:]):
-                    p.drawLine(a, b)
+            for i in range(n - 1):       # one continuous line; a missing lot leaves a gap
+                if trend[i] is not None and trend[i + 1] is not None:
+                    p.drawLine(QPointF(r.left() + (i + 0.5) * bw, ypos(trend[i])),
+                               QPointF(r.left() + (i + 1.5) * bw, ypos(trend[i + 1])))
             p.setPen(Qt.NoPen)
             p.setBrush(tcol)
             for i in range(n):
@@ -807,7 +806,7 @@ class LotTrendChart(ThemeAware, QWidget):
         items = [("bar", qcolor(t.dataviz[0]), "Lot value" if not c.get("multi_level")
                   else "Lot value (colour = part)")]
         if trend:
-            items.append(("line", qcolor(t.text.primary), "Trend (least squares)"))
+            items.append(("line", qcolor(t.text.primary), "Lot values (line)"))
         x = r.right()
         for kind, col, text in reversed(items):
             tw = fm.horizontalAdvance(text)

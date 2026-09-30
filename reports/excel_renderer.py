@@ -891,8 +891,8 @@ def _ls_cell(ws, r, c, v, fmt_num, fmt_txt, *, integer=False):
 def _write_job_summary_and_lot_charts(ws, wb, model: ReportModel, images: List[ImageSummary],
                                       fmts, series: Dict[str, str]) -> int:
     """UPDATE 4 item 15: the job summary table (per lot, per-part subtotal,
-    JOB TOTAL) and one combo chart per metric (bars = lots, line = linear
-    trend within each part). Data comes from ``reports.lot_summary``, the
+    JOB TOTAL) and one combo chart per metric (bars = lots, line = the lot
+    values joined in order, no fitting). Data comes from ``reports.lot_summary``, the
     same source the PowerPoint slides and the on-screen preview use.
     Returns the next free row."""
     data = lot_summary_data(model, images)
@@ -942,7 +942,7 @@ def _write_job_summary_and_lot_charts(ws, wb, model: ReportModel, images: List[I
         ws.write(hdr_row, col, ch["y_title"], fmts["header"])
         has_trend = ch["trend"] is not None
         if has_trend:
-            ws.write(hdr_row, col + 1, "Trend (linear fit)", fmts["header"])
+            ws.write(hdr_row, col + 1, "Lot values", fmts["header"])
         for i in range(n):
             v = ch["values"][i]
             if v is not None:
@@ -956,7 +956,7 @@ def _write_job_summary_and_lot_charts(ws, wb, model: ReportModel, images: List[I
     ws.set_column(dc + 2, col, 18)
 
     # -- charts
-    ws.merge_range(row, 0, row, 9, "Lot-vs-lot charts (bars = lots, line = trend)", fmts["section"])
+    ws.merge_range(row, 0, row, 9, "Lot-vs-lot charts (bars = lots, line = lot values joined in order)", fmts["section"])
     row += 1
     sheet = ws.get_name()
     wide = n > _LS_MANY_LOTS
