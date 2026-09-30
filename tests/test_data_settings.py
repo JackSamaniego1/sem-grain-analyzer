@@ -1,4 +1,6 @@
 """App settings: defaults, roundtrip, recent-sessions cap."""
+import json
+
 from data.models import AppSettings
 from data.settings import add_recent_session, get_settings_path, load_settings, save_settings
 
@@ -66,3 +68,15 @@ def test_custom_palettes_default_to_empty(tmp_path):
     s = load_settings(p)
     assert s.custom_palettes == []
     assert s.default_chart_options == {}
+
+
+def test_warn_edit_during_analysis_default_roundtrip_and_old_file(tmp_path):
+    p = tmp_path / "settings.json"
+    assert AppSettings().warn_edit_during_analysis is True
+    save_settings(AppSettings(warn_edit_during_analysis=False), p)
+    assert load_settings(p).warn_edit_during_analysis is False
+    # Old settings file without the key (plus an unknown key) loads with True.
+    p.write_text(json.dumps({"theme": "dark", "future_key": 1}), encoding="utf-8")
+    s = load_settings(p)
+    assert s.warn_edit_during_analysis is True
+    assert s.theme == "dark"

@@ -511,6 +511,8 @@ class AppSettings:
     # UX-14: "Save as my default" chart options, applied to new reports
     # (reports.model.ReportModel.chart_options for the shape).
     default_chart_options: dict = field(default_factory=dict)
+    # Warn before editing an image/session while an analysis is running.
+    warn_edit_during_analysis: bool = True
 
     def to_dict(self) -> dict:
         return asdict(self)
