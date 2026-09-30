@@ -314,6 +314,11 @@ class ImageManifestEntry:
     # manifests lack both keys and load as included / no reason.
     included: bool = True
     exclusion_reason: Optional[str] = None
+    # Resolution Profile applied to this image: ``ResolutionProfile.snapshot()``
+    # (id, name, nm_per_px, unit, scan_rect, image_w/h ...). A frozen copy, so
+    # an old job still opens after the profile is edited or deleted. Old
+    # manifests lack the key and load as None.
+    resolution_profile: Optional[dict] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -410,6 +415,8 @@ class ImageEntry:
     # detector's original label image when grain_edits is non-empty (saved
     # next to the edited labels so edits stay reversible)
     detector_label_image: Optional[Any] = None
+    # profile snapshot dict, None (leave unchanged), or CLEAR (no profile)
+    resolution_profile: Optional[Any] = None
 
 
 # ======================================================================
