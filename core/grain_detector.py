@@ -22,7 +22,10 @@ contrast-based result, never override it. This prevents over-segmentation
 on clean images while still catching subtle boundaries on textured ones.
 """
 
+import copy
+import os
 import sys
+import threading
 import numpy as np
 import cv2
 from scipy import ndimage as ndi
@@ -109,6 +112,19 @@ class AnalysisResult:
     auto_crop_rect: Optional[Tuple[int, int, int, int]] = None
     info_bar_rect: Optional[Tuple[int, int, int, int]] = None
     info_bar: dict = field(default_factory=dict)
+    # AI-assisted detection compute device (UPDATE 4 item 10b).  Empty for
+    # the boundary/threshold pipelines.
+    #   ai_device_requested  "auto" | "gpu" | "cpu" as asked for
+    #   ai_device            "gpu" | "cpu" -- where SAM actually ran
+    #   ai_device_name       GPU model name, or "CPU"
+    #   ai_device_fallback   True when the GPU was used/asked for but this
+    #                        image had to be re-run on the CPU (out of GPU
+    #                        memory or a GPU error); ai_device_note explains.
+    ai_device_requested: str = ""
+    ai_device: str = ""
+    ai_device_name: str = ""
+    ai_device_fallback: bool = False
+    ai_device_note: str = ""
 
 
 @dataclass
@@ -141,6 +157,14 @@ class DetectionParams:
         SAM only: masks whose gray-level standard deviation is below this
         are near-uniform (flat black/saturated patches) and are rejected.
         Real grains carry detector noise and texture (std > ~3).
+
+    AI compute device -- UPDATE 4 item 10b
+    --------------------------------------
+    sam_device
+        "auto" (default: GPU when usable, else CPU -- the v3.0 behaviour),
+        "gpu" (NVIDIA GPU; raises core.ai_device.GpuUnavailableError when
+        none is usable) or "cpu".  Only used by the AI-assisted mode; does
+        not change measurements (same SAM settings on both devices).
     """
     blur_sigma: float = 1.5
     threshold_offset: float = -0.1
@@ -172,6 +196,7 @@ class DetectionParams:
     # sparse text / scale bar, bottom or top) and exclude it from analysis
     # even when no scan area is drawn.  See core/infobar.py.
     auto_exclude_info_bar: bool = True
+    sam_device: str = "auto"
 
 
 # ======================================================================
@@ -488,12 +513,100 @@ def run_sam_generator(mask_generator, image_rgb, total_points, progress,
                     setattr(obj, name, original)
 
 
+# ======================================================================
+# SAM model loading / device handling (UPDATE 4 item 10b)
+# ======================================================================
+
+SAM_MODEL_TYPE = "vit_b"
+SAM_CHECKPOINT_NAME = "sam_vit_b_01ec64.pth"
+# Identical sampling on GPU and CPU so the two devices give equivalent masks
+# (the device only changes speed, never the measurement).  These are the
+# v3.0 CPU settings, the only ones validated on real SEM images; the old
+# implicit CUDA path (2048 px, 64x64 points) produced different grains from
+# the same image and was never shipped (CPU-only torch).
+SAM_MAX_DIM = 1024
+SAM_POINTS_PER_SIDE = 32
+# Batching only splits the prompt points; SAM concatenates every batch
+# before NMS, so masks do not depend on it.  Bigger batches on the GPU.
+SAM_POINTS_PER_BATCH_GPU = 64
+
+_SAM_MODELS = {}                      # (abs checkpoint path, device) -> model
+_SAM_MODELS_LOCK = threading.Lock()
+_SAM_RUN_LOCK = threading.Lock()      # one SAM inference at a time per process
+
+
+def find_sam_checkpoint() -> Optional[str]:
+    """Path of the bundled SAM checkpoint, or None (never downloaded)."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_dir = os.path.dirname(script_dir)
+    frozen_dir = getattr(sys, '_MEIPASS', project_dir)
+    for p in (os.path.join(frozen_dir, "models", SAM_CHECKPOINT_NAME),
+              os.path.join(project_dir, "models", SAM_CHECKPOINT_NAME),
+              os.path.join(project_dir, SAM_CHECKPOINT_NAME),
+              os.path.join(script_dir, SAM_CHECKPOINT_NAME)):
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def _build_sam_model(checkpoint_path):
+    """Build SAM from the checkpoint on the CPU (monkeypatched in tests)."""
+    from segment_anything import sam_model_registry
+    return sam_model_registry[SAM_MODEL_TYPE](checkpoint=checkpoint_path)
+
+
+def _make_mask_generator(model, **kwargs):
+    """SamAutomaticMaskGenerator factory (monkeypatched in tests)."""
+    from segment_anything import SamAutomaticMaskGenerator
+    return SamAutomaticMaskGenerator(model=model, **kwargs)
+
+
+def get_sam_model(checkpoint_path, device):
+    """Cached SAM model on ``device`` ("cpu" | "cuda").
+
+    One instance per device is kept, so switching GPU <-> CPU between runs
+    reuses whatever was loaded before instead of re-reading the 375 MB
+    checkpoint.  A GPU copy is made from the cached CPU model when there is
+    one.  A failed move to the GPU (e.g. out of memory) caches nothing."""
+    key = (os.path.abspath(checkpoint_path), device)
+    with _SAM_MODELS_LOCK:
+        model = _SAM_MODELS.get(key)
+        if model is not None:
+            return model
+        if device == "cpu":
+            model = _build_sam_model(checkpoint_path)
+        else:
+            from core.ai_device import _import_torch, configure_cuda_determinism
+            torch = _import_torch()
+            if torch is not None:
+                configure_cuda_determinism(torch)
+            src = _SAM_MODELS.get((key[0], "cpu"))
+            model = copy.deepcopy(src) if src is not None else _build_sam_model(
+                checkpoint_path)
+        model.to(device=device)
+        if hasattr(model, "eval"):
+            model.eval()
+        _SAM_MODELS[key] = model
+        return model
+
+
+def release_sam_models(device=None) -> None:
+    """Drop cached SAM models (all, or only ``"cpu"`` / ``"cuda"``) and
+    free GPU memory."""
+    from core.ai_device import release_gpu_memory
+    with _SAM_MODELS_LOCK:
+        for k in [k for k in _SAM_MODELS if device is None or k[1] == device]:
+            del _SAM_MODELS[k]
+    release_gpu_memory()
+
+
 class GrainDetector:
 
     def __init__(self):
         self._last_result = None
         self._valid_mask = None
         self._check_cancel = make_cancel_check(None)
+        self._ai_run = {}
 
     def _ws_mask(self, shape):
         """Valid mask for watershed ``mask=`` (None when everything is valid,
@@ -517,8 +630,15 @@ class GrainDetector:
         return watershed(landscape_u8, markers, mask=vm), len(coords)
 
     def analyze(self, image_bgr, px_per_um=0.0, params=None, progress_callback=None,
-                cancel=None):
+                cancel=None, device=None):
         """Detect and measure grains.
+
+        ``device`` (UPDATE 4 item 10b): compute device for the AI-assisted
+        mode -- "auto" | "gpu" | "cpu"; None uses ``params.sam_device``
+        (default "auto").  Ignored by the other modes.  An explicit "gpu"
+        with no usable GPU raises :class:`core.ai_device.GpuUnavailableError`
+        (user-facing message).  The device actually used is recorded in
+        ``result.ai_device`` / ``ai_device_name`` / ``ai_device_fallback``.
 
         ``cancel`` (UX-07) is an optional cancel token -- a
         ``threading.Event`` or a zero-argument callable returning True.
@@ -580,8 +700,12 @@ class GrainDetector:
             labels = np.zeros((h0, w0), dtype=np.int32)
             binary = np.zeros((h0, w0), dtype=np.uint8)
         elif mode == "sam_astm":
+            dev = device if device is not None else getattr(params, "sam_device", "auto")
+            self._ai_run = {}
             labels, binary = self._sam_astm_pipeline(
-                gray, image_bgr, params, progress)
+                gray, image_bgr, params, progress, device=dev)
+            for k, v in self._ai_run.items():
+                setattr(result, k, v)
         elif mode == "boundary":
             labels, binary = self._boundary_pipeline(
                 seg_gray, image_bgr, params, progress)
@@ -1156,36 +1280,62 @@ class GrainDetector:
     # PIPELINE C: SAM + ASTM E112 (AI-assisted)
     # ==================================================================
 
-    def _sam_astm_pipeline(self, gray, image_bgr, params, progress):
+    def _run_sam_on(self, torch_device, checkpoint_path, image_rgb,
+                    min_mask_area, progress, downscale_msg=""):
+        """Load (cached) SAM on ``torch_device`` and generate masks.
+
+        SAM settings are identical on both devices (see SAM_MAX_DIM), so
+        the device changes only the speed.  Only one SAM inference runs at
+        a time in the process; a waiting run stays cancellable."""
+        label = "GPU" if torch_device == "cuda" else "CPU"
+        progress(5, f"Loading SAM weights to {label}...")
+        model = get_sam_model(checkpoint_path, torch_device)
+        self._check_cancel()
+        if downscale_msg:
+            progress(8, downscale_msg)
+        mask_generator = _make_mask_generator(
+            model,
+            points_per_side=SAM_POINTS_PER_SIDE,
+            # UX-07: smaller point batches on CPU so a cancel is noticed
+            # within ~1 s.  Batching only splits the work; SAM concatenates
+            # all batches before NMS, so the masks are identical.
+            points_per_batch=(SAM_POINTS_PER_BATCH_CPU if torch_device == "cpu"
+                              else SAM_POINTS_PER_BATCH_GPU),
+            pred_iou_thresh=0.80,
+            stability_score_thresh=0.88,
+            crop_n_layers=0,
+            min_mask_region_area=int(min_mask_area),
+        )
+        while not _SAM_RUN_LOCK.acquire(timeout=0.2):
+            self._check_cancel()
+        try:
+            return run_sam_generator(
+                mask_generator, image_rgb, SAM_POINTS_PER_SIDE ** 2, progress,
+                self._check_cancel, device_label=label)
+        finally:
+            _SAM_RUN_LOCK.release()
+
+    def _sam_astm_pipeline(self, gray, image_bgr, params, progress,
+                           device="auto"):
         """
         Uses Meta's Segment Anything Model (SAM) for instance segmentation,
         then applies ASTM E112 intercept-based validation.
+
+        ``device`` "auto" | "gpu" | "cpu" (UPDATE 4 item 10b).  An explicit
+        "gpu" with no usable GPU raises GpuUnavailableError before any work.
+        A CUDA out-of-memory (or other CUDA) error during this image frees
+        GPU memory and re-runs the image on the CPU -- same settings, so the
+        same masks -- and records it in ``self._ai_run`` (copied onto the
+        AnalysisResult by analyze()).
         """
-        from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
-        import torch
-        import os
+        from core import ai_device as aid
 
         h, w = gray.shape
 
-        # --- Step 1: Load SAM model ---
+        # --- Step 1: Locate model, choose device ---
         progress(2, "Loading SAM model...")
-        model_type = "vit_b"
-        # Look for checkpoint in a few locations (including PyInstaller bundle)
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        project_dir = os.path.dirname(script_dir)
-        frozen_dir = getattr(sys, '_MEIPASS', project_dir)
-        checkpoint_name = "sam_vit_b_01ec64.pth"
-        search_paths = [
-            os.path.join(frozen_dir, "models", checkpoint_name),
-            os.path.join(project_dir, "models", checkpoint_name),
-            os.path.join(project_dir, checkpoint_name),
-            os.path.join(script_dir, checkpoint_name),
-        ]
-        checkpoint_path = None
-        for p in search_paths:
-            if os.path.isfile(p):
-                checkpoint_path = p
-                break
+        checkpoint_name = SAM_CHECKPOINT_NAME
+        checkpoint_path = find_sam_checkpoint()
 
         if checkpoint_path is None:
             # Offline app (D-14): never point the user to a download.
@@ -1197,47 +1347,62 @@ class GrainDetector:
                 f"remain available."
             )
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        progress(5, f"Loading SAM weights to {device.upper()}...")
-        sam = sam_model_registry[model_type](checkpoint=checkpoint_path)
-        self._check_cancel()
-        sam.to(device=device)
+        requested = aid.normalize_device_choice(device)
+        info = aid.ai_devices()
+        torch_device = aid.resolve_device(requested, info)  # may raise
+        run = {"ai_device_requested": requested,
+               "ai_device": "gpu" if torch_device == "cuda" else "cpu",
+               "ai_device_name": (info.gpu_name or "GPU") if torch_device == "cuda"
+               else "CPU",
+               "ai_device_fallback": False, "ai_device_note": ""}
+        self._ai_run = run
 
         # --- Step 2: Generate masks with SAM ---
-        # Downscale large images for CPU speed
-        max_dim = 1024 if device == "cpu" else 2048
+        # Downscale large images (same limit on both devices, see SAM_MAX_DIM)
         scale = 1.0
-        if max(h, w) > max_dim:
-            scale = max_dim / max(h, w)
+        if max(h, w) > SAM_MAX_DIM:
+            scale = SAM_MAX_DIM / max(h, w)
             new_h, new_w = int(h * scale), int(w * scale)
             image_resized = cv2.resize(image_bgr, (new_w, new_h),
                                        interpolation=cv2.INTER_AREA)
-            progress(8, f"Downscaled {w}x{h} → {new_w}x{new_h} for speed...")
+            downscale_msg = f"Downscaled {w}x{h} → {new_w}x{new_h} for speed..."
         else:
             image_resized = image_bgr
+            downscale_msg = ""
 
-        # Tune SAM parameters — use 32 points for CPU, 64 for GPU
         min_area = max(params.min_grain_size_px, 50)
-        pts = 32 if device == "cpu" else 64
-        mask_generator = SamAutomaticMaskGenerator(
-            model=sam,
-            points_per_side=pts,
-            # UX-07: smaller point batches on CPU so a cancel is noticed
-            # within ~1 s.  Batching only splits the work; SAM concatenates
-            # all batches before NMS, so the masks are identical.
-            points_per_batch=SAM_POINTS_PER_BATCH_CPU if device == "cpu" else 64,
-            pred_iou_thresh=0.80,
-            stability_score_thresh=0.88,
-            crop_n_layers=0,
-            min_mask_region_area=int(min_area * scale * scale),
-        )
+        min_mask_area = int(min_area * scale * scale)
 
         # SAM expects RGB
         image_rgb = cv2.cvtColor(image_resized, cv2.COLOR_BGR2RGB)
 
-        masks = run_sam_generator(
-            mask_generator, image_rgb, pts * pts, progress, self._check_cancel,
-            device_label=device.upper())
+        try:
+            masks = self._run_sam_on(torch_device, checkpoint_path, image_rgb,
+                                     min_mask_area, progress, downscale_msg)
+        except AnalysisCancelled:
+            raise
+        except Exception as exc:
+            oom = aid.is_cuda_oom(exc)
+            if torch_device != "cuda" or not (oom or aid.is_cuda_error(exc)):
+                raise
+            logger.warning("SAM on GPU failed (%s); re-running this image on "
+                           "the CPU", exc)
+            if not oom:
+                # The CUDA context is usually broken after a non-memory
+                # error: drop the GPU model and stop offering the GPU for
+                # the rest of the process (ai_devices(refresh=True) re-probes).
+                release_sam_models("cuda")
+                aid.mark_gpu_failed()
+            aid.release_gpu_memory()
+            self._check_cancel()
+            progress(5, "GPU out of memory — continuing on the CPU..." if oom
+                     else "GPU error — continuing on the CPU...")
+            run.update(ai_device="cpu", ai_device_name="CPU",
+                       ai_device_fallback=True,
+                       ai_device_note=(aid.NOTE_OOM_FALLBACK if oom
+                                       else aid.NOTE_GPU_ERROR_FALLBACK))
+            masks = self._run_sam_on("cpu", checkpoint_path, image_rgb,
+                                     min_mask_area, progress, downscale_msg)
 
         # Scale masks back up if we downscaled
         if scale < 1.0:
