@@ -31,7 +31,7 @@ from reports.pptx_renderer import (
     render_pptx, SLIDE_H, MAX_SUMMARY_ROWS, MAX_DATA_ROWS, MAX_PARTS_COMBINED,
     MARGIN_IN, FOOTER_MAX_CHARS, _part_summary_rows, _chunk, _plan_image_table_slides,
     _max_chars_for_width, _DATA_IMAGE_COL_IN, _footer_text, _percentile_rows,
-    _lot_distribution_slide_plan,
+    _lot_distribution_slide_plan, lot_summary_slide_count,
 )
 from reports.charts import PALETTES, series_for
 
@@ -90,6 +90,9 @@ def _expected_slide_count(model, images, want_charts=True, want_methods=True):
     n = 2  # cover + contents (UPDATE 4 item 19)
     n += _overview_slide_count(model, images)
     n += (2 if want_charts else 0)
+    sec = model.get_section("lot_summary")
+    if sec is not None and sec.enabled and images:
+        n += lot_summary_slide_count(model, images)   # UPDATE 4 item 15
     n += len(images)  # one image (original + overlay) slide each
     n += (1 if want_methods else 0)
     n += 1  # appendix

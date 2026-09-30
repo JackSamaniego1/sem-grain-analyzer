@@ -46,6 +46,7 @@ from reports.charts import (
 )
 from reports.model import ReportModel, ImageSummary, Section, pooled_grain_percentiles
 from reports.excel_renderer import _resized_png, _row_size_stats
+from reports.lot_summary import lot_summary_data, table_headers, id_cells, NUMERIC_KEYS
 
 try:
     from version import __version__ as APP_VERSION
@@ -156,6 +157,9 @@ def _build_plan(model: ReportModel, images: List[ImageSummary]) -> List[Tuple[st
         if s.type == "combined_distribution":
             if s.enabled and images:
                 plan.append(("charts", s))
+        elif s.type == "lot_summary":
+            if s.enabled and images and lot_summary_data(model, images)["has_lots"]:
+                plan.append(("lot_summary", s))
         elif s.type == "lot_comparison":
             if s.enabled and s.payload.get("parts"):
                 plan.append(("lot_comparison", s))
@@ -254,6 +258,8 @@ def render_pptx(model: ReportModel, output_path: str, template_path: Optional[st
                 if opts["diameter"]["enabled"]:
                     _distribution_slide(new_slide('charts', 'Combined grain distributions'), model, images, kind="diameter", series=series,
                                         navy=navy)
+            elif kind == "lot_summary":
+                _lot_summary_slides(new_slide, model, images, series, navy)
             elif kind == "lot_comparison":
                 for part in sec.payload.get("parts") or []:
                     _lot_comparison_slide(new_slide('lot_comparison', 'Lot comparison by part'), part, navy)
@@ -1219,6 +1225,170 @@ def _lot_distribution_slide_plan(model: ReportModel, images: List[ImageSummary],
             slide, c, units, edges_by_kind, labels_by_kind, colors, i, len(chunks),
             omitted, kinds, navy), True))
     return plan
+
+
+# ---------------------------------------------------------------------------
+# Lot Summary (UPDATE 4 item 15): job summary table (per lot, per-part
+# subtotal, JOB TOTAL; 14 rows/slide like the percentile slide) + lot-vs-lot
+# combo charts (bars = lots, line = linear trend within each part). All
+# numbers come from ``reports.lot_summary.lot_summary_data`` -- the same
+# source as the Excel sheet and the on-screen preview.
+# ---------------------------------------------------------------------------
+
+LOT_SUMMARY_TITLE = "Job Summary by Part and Lot"
+LOT_CHART_TITLE = "Lot-vs-Lot Summary Charts"
+MAX_LOTS_PER_CHART = 24          # more lots -> the charts continue on further slides
+ROTATE_LABELS_OVER = 6           # lots per chart above which category labels tilt
+_LS_COL_WIDTHS_IN = [1.6, 1.5, 0.8, 0.9, 1.35, 1.6, 1.0, 1.0, 1.35, 1.233]
+_LS_TABLE_TOP_IN = 1.1
+_LS_HEADER_ROW_IN = 0.55
+_LS_BAR_KEY = {"n_grains": "count_bar", "mean_area": "area_bar"}
+
+
+def _fmt_ls(key: str, v: Optional[float]) -> str:
+    if v is None:
+        return _NO_VALUE
+    if key in ("n_images", "n_grains"):
+        return f"{int(v):,}"
+    if key == "astm_g":
+        return f"{v:.2f}"
+    return _fmt_adaptive(v)
+
+
+def _lot_summary_table_slide(slide, rows: List[Dict[str, Any]], data: Dict[str, Any],
+                             navy: RGBColor, idx: int, total: int) -> None:
+    title = LOT_SUMMARY_TITLE if total <= 1 else f"{LOT_SUMMARY_TITLE} (continued {idx}/{total})"
+    _slide_heading(slide, title, navy)
+    headers = table_headers(data)
+    n_rows = len(rows) + 1
+    shape = slide.shapes.add_table(n_rows, len(headers), Inches(CONTENT_LEFT_IN), Inches(_LS_TABLE_TOP_IN),
+                                   Inches(CONTENT_WIDTH_IN),
+                                   Inches(_LS_HEADER_ROW_IN + TABLE_ROW_IN * len(rows)))
+    table = shape.table
+    for c, w in enumerate(_LS_COL_WIDTHS_IN):
+        table.columns[c].width = Inches(w)
+    table.rows[0].height = Inches(_LS_HEADER_ROW_IN)
+    for r in range(1, n_rows):
+        table.rows[r].height = Inches(TABLE_ROW_IN)
+    for c, h in enumerate(headers):
+        cell = table.cell(0, c)
+        cell.text = h
+        _style_header_cell(cell, navy, size=10)
+    truncated: Dict[str, str] = {}
+    for r, row in enumerate(rows, start=1):
+        p, l = id_cells(row)
+        shown = []
+        for txt, w in ((p, _LS_COL_WIDTHS_IN[0]), (l, _LS_COL_WIDTHS_IN[1])):
+            s = _truncate_to_fit(txt, w, 10)
+            if s != txt:
+                truncated[s] = txt
+            shown.append(s)
+        vals = shown + [_fmt_ls(k, row[k]) for k in NUMERIC_KEYS]
+        for c, v in enumerate(vals):
+            table.cell(r, c).text = v
+        _style_data_row(table, r, text_col_count=2, size=10)
+        if row["kind"] != "lot":
+            for c in range(len(vals)):
+                for para in table.cell(r, c).text_frame.paragraphs:
+                    for run in para.runs:
+                        run.font.bold = True
+    if truncated:
+        slide.notes_slide.notes_text_frame.text = "Full names: " + "; ".join(
+            f"{k} = {v}" for k, v in truncated.items())
+
+
+def _tilt_category_labels(chart, degrees: int = -45) -> None:
+    ns = {"c": nsuri("c"), "a": nsuri("a")}
+    cat_ax = chart._chartSpace.find(".//c:catAx", ns)
+    body = cat_ax.find("c:txPr/a:bodyPr", ns) if cat_ax is not None else None
+    if body is not None:
+        body.set("rot", str(degrees * 60000))
+        body.set("vert", "horz")
+
+
+def _draw_lot_metric_chart(slide, x_in: float, y_in: float, cx_in: float, cy_in: float,
+                           ch: Dict[str, Any], lo: int, hi: int, series: Dict[str, str]):
+    """One native combo chart for lots ``lo:hi`` of chart spec ``ch``."""
+    cats = ch["categories"][lo:hi]
+    cd = CategoryChartData()
+    if ch["multi_level"]:
+        cur, node = None, None
+        for c in cats:
+            if c["part"] != cur:
+                node = cd.add_category(c["part"])
+                cur = c["part"]
+            node.add_sub_category(c["label"])
+    else:
+        cd.categories = [c["label"] for c in cats]
+    cd.add_series(ch["y_title"], ch["values"][lo:hi], number_format=ch["num_format"])
+    trend = ch["trend"][lo:hi] if ch["trend"] is not None else None
+    has_trend = trend is not None and any(t is not None for t in trend)
+    if has_trend:
+        cd.add_series("Trend (linear fit)", [None if t is None else round(t, 4) for t in trend],
+                      number_format=ch["num_format"])
+    chart = slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(x_in), Inches(y_in),
+                                   Inches(cx_in), Inches(cy_in), cd).chart
+    chart.font.size = Pt(10)
+    chart.has_title = True
+    chart.chart_title.text_frame.text = ch["title"]
+    chart.chart_title.text_frame.paragraphs[0].runs[0].font.size = Pt(13)
+    chart.has_legend = has_trend
+    if has_trend:
+        chart.legend.position = XL_LEGEND_POSITION.BOTTOM
+        chart.legend.include_in_layout = False
+    cat_axis, val_axis = chart.category_axis, chart.value_axis
+    cat_axis.axis_title.text_frame.text = ch["x_title"]
+    val_axis.axis_title.text_frame.text = ch["y_title"]
+    cat_axis.tick_labels.font.size = Pt(8 if len(cats) <= 12 else 7)
+    val_axis.tick_labels.number_format = ch["num_format"]
+    val_axis.tick_labels.number_format_is_linked = False
+    val_axis.has_major_gridlines = True
+    val_axis.major_gridlines.format.line.color.rgb = _GRID_GREY
+    plot = chart.plots[0]
+    plot.gap_width = 60
+    bar = plot.series[0]
+    bar.format.fill.solid()
+    bar.format.fill.fore_color.rgb = _hexrgb(series[_LS_BAR_KEY.get(ch["id"], "diameter_bar")])
+    if has_trend:
+        _convert_series_to_lines(chart, 1, [series["normal_fit"].lstrip("#")], legend=False)
+    if len(cats) > ROTATE_LABELS_OVER:
+        _tilt_category_labels(chart)
+    return chart
+
+
+def lot_summary_slide_count(model: ReportModel, images: List[ImageSummary]) -> int:
+    """Slides the ``lot_summary`` section adds (0 when it has no lot values)."""
+    data = lot_summary_data(model, images)
+    if not data["has_lots"]:
+        return 0
+    spans = max(1, -(-len(data["lots"]) // MAX_LOTS_PER_CHART))
+    return len(_chunk(data["rows"], MAX_DATA_ROWS)) + spans * ((len(data["charts"]) + 1) // 2)
+
+
+def _lot_summary_slides(new_slide, model: ReportModel, images: List[ImageSummary],
+                        series: Dict[str, str], navy: RGBColor) -> None:
+    data = lot_summary_data(model, images)
+    pages = _chunk(data["rows"], MAX_DATA_ROWS)
+    for i, chunk in enumerate(pages, start=1):
+        _lot_summary_table_slide(new_slide("lot_summary_table", "Job summary by part and lot"),
+                                 chunk, data, navy, i, len(pages))
+    n = len(data["lots"])
+    spans = [(a, min(a + MAX_LOTS_PER_CHART, n)) for a in range(0, n, MAX_LOTS_PER_CHART)] or [(0, 0)]
+    charts = data["charts"]
+    gap = 0.2
+    top, height = 1.1, SLIDE_H.inches - 0.6 - 1.1
+    slide_no, total = 0, len(spans) * ((len(charts) + 1) // 2)
+    for lo, hi in spans:
+        for k in range(0, len(charts), 2):
+            pair = charts[k:k + 2]
+            slide_no += 1
+            suffix = "" if total <= 1 else f" ({slide_no}/{total})"
+            slide = new_slide("lot_summary_charts", "Lot-vs-lot summary charts")
+            _slide_heading(slide, LOT_CHART_TITLE + suffix, navy)
+            cw = CONTENT_WIDTH_IN if len(pair) == 1 else (CONTENT_WIDTH_IN - gap) / 2
+            for j, ch in enumerate(pair):
+                _draw_lot_metric_chart(slide, CONTENT_LEFT_IN + j * (cw + gap), top, cw, height,
+                                       ch, lo, hi, series)
 
 
 def _three_chart_geometry() -> Tuple[float, List[float]]:

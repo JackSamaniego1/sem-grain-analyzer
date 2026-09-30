@@ -960,12 +960,14 @@ def test_lot_summary_one_chart_per_lot_titled_with_the_lot_name(tmp_path):
     out = str(tmp_path / "report.xlsx")
     render_excel(model, out)
     ws = openpyxl.load_workbook(out)["Lot Summary"]
-    assert len(ws._charts) == 3
-    titles = sorted(c.title.tx.rich.p[0].r[0].t for c in ws._charts)
+    # + the 5 lot-vs-lot summary charts (item 15, tests/test_report_lot_summary.py)
+    assert len(ws._charts) == 3 + 5
+    per_lot = [c for c in ws._charts if not c.title.tx.rich.p[0].r[0].t.endswith("by Lot")]
+    titles = sorted(c.title.tx.rich.p[0].r[0].t for c in per_lot)
     assert titles == ["L-1", "L-2", "L-3"]
     # axis titles still carry units, like every other chart in the report
-    assert all("Diameter" in c.x_axis.title.tx.rich.p[0].r[0].t for c in ws._charts)
-    assert all("Number of Grains" in c.y_axis.title.tx.rich.p[0].r[0].t for c in ws._charts)
+    assert all("Diameter" in c.x_axis.title.tx.rich.p[0].r[0].t for c in per_lot)
+    assert all("Number of Grains" in c.y_axis.title.tx.rich.p[0].r[0].t for c in per_lot)
 
 
 def test_lot_summary_stats_block_matches_the_model(tmp_path):
@@ -987,7 +989,7 @@ def test_lot_summary_uses_legacy_lot_number_without_a_hierarchy(tmp_path):
     wb = openpyxl.load_workbook(out)
     assert "Lot Summary" in wb.sheetnames
     ws = wb["Lot Summary"]
-    assert len(ws._charts) == 2
+    assert len(ws._charts) == 2 + 5     # per-lot histograms + lot-vs-lot summary charts
     assert _label_values(ws, "Lot") == ["L-1", "L-2"]
 
 

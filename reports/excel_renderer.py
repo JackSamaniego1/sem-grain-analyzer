@@ -51,6 +51,7 @@ from reports.charts import (
     resolve_chart_options, resolve_units, series_for,
 )
 from reports.model import ReportModel, ImageSummary, Section
+from reports.lot_summary import lot_summary_data, table_headers, id_cells, NUMERIC_KEYS
 
 try:
     from version import __version__ as APP_VERSION
@@ -821,7 +822,9 @@ def _write_lot_summary(wb, model: ReportModel, images: List[ImageSummary], fmts,
     color = diam_opt["color"] or series["diameter_bar"]
     n_bins = model.bins.get("diameter", 0)
 
-    row = 2
+    row = _write_job_summary_and_lot_charts(ws, wb, model, images, fmts, series)
+    ws.merge_range(row, 0, row, 9, "Grain diameter distribution per lot", fmts["section"])
+    row += 2
     for lot, imgs in groups:
         grains = [g for img in imgs for g in img.grains]
         calibrated = all(i.has_calibration for i in imgs) and bool(imgs)
@@ -867,6 +870,144 @@ def _write_lot_summary(wb, model: ReportModel, images: List[ImageSummary], fmts,
 
     ws.set_column(0, 0, 22)
     ws.set_column(1, 2, 16)
+    ws.set_column(3, 9, 15)
+
+
+_LS_CHART_ROWS = 17            # 320 px chart / 20 px default row
+_LS_MANY_LOTS = 10             # beyond this: one full-width chart per row
+_LS_ROTATE_LOTS = 8            # beyond this: rotate the lot labels 45 degrees
+_LS_DATA_COL = 12              # chart-data block (Part, Lot, then value/trend pairs)
+
+
+def _ls_cell(ws, r, c, v, fmt_num, fmt_txt, *, integer=False):
+    if v is None:
+        ws.write(r, c, "–", fmt_txt)
+    elif integer:
+        ws.write_number(r, c, int(v), fmt_txt)
+    else:
+        ws.write_number(r, c, round(float(v), 4), fmt_num)
+
+
+def _write_job_summary_and_lot_charts(ws, wb, model: ReportModel, images: List[ImageSummary],
+                                      fmts, series: Dict[str, str]) -> int:
+    """UPDATE 4 item 15: the job summary table (per lot, per-part subtotal,
+    JOB TOTAL) and one combo chart per metric (bars = lots, line = linear
+    trend within each part). Data comes from ``reports.lot_summary``, the
+    same source the PowerPoint slides and the on-screen preview use.
+    Returns the next free row."""
+    data = lot_summary_data(model, images)
+    row = 2
+    ws.merge_range(row, 0, row, 9, "Job summary (per part and lot)", fmts["section"])
+    row += 1
+    hdr_row = row
+    ws.write_row(row, 0, table_headers(data), fmts["header"])
+    ws.set_row(row, 32)
+    row += 1
+    for i, r in enumerate(data["rows"]):
+        kind = r["kind"]
+        txt = fmts["total_label"] if kind != "lot" else _band(fmts, i)
+        num = fmts["total"] if kind != "lot" else _band(fmts, i, "num2")
+        cell = fmts["total"] if kind != "lot" else _band(fmts, i)
+        p, l = id_cells(r)
+        ws.write(row, 0, p, txt)
+        ws.write(row, 1, l, txt)
+        for c, key in enumerate(NUMERIC_KEYS, start=2):
+            _ls_cell(ws, row, c, r[key], num, cell, integer=key in ("n_images", "n_grains"))
+        row += 1
+    row += 1
+
+    charts = data["charts"]
+    lots = data["lots"]
+    n = len(lots)
+
+    # -- chart data block (right of the table): Part, Lot, then value + trend per chart
+    dc = _LS_DATA_COL
+    ws.write(hdr_row - 1, dc, "Chart data (lot order)", fmts["label"])
+    ws.write(hdr_row, dc, data["part_label"], fmts["header"])
+    ws.write(hdr_row, dc + 1, data["lot_label"], fmts["header"])
+    first = hdr_row + 1
+    seen = None
+    for i, lot in enumerate(lots):
+        if lot["part"] != seen:
+            ws.write(first + i, dc, lot["part"], fmts["value"])
+            seen = lot["part"]
+        ws.write(first + i, dc + 1, charts[0]["categories"][i]["label"], fmts["value"])
+    last = first + n - 1
+    cols: Dict[str, Tuple[int, Optional[int]]] = {}
+    col = dc + 2
+    for ch in charts:
+        ws.write(hdr_row, col, ch["y_title"], fmts["header"])
+        has_trend = ch["trend"] is not None
+        if has_trend:
+            ws.write(hdr_row, col + 1, "Trend (linear fit)", fmts["header"])
+        for i in range(n):
+            v = ch["values"][i]
+            if v is not None:
+                ws.write_number(first + i, col, round(float(v), 4), fmts["value"])
+            t = ch["trend"][i] if has_trend else None
+            if t is not None:
+                ws.write_number(first + i, col + 1, round(float(t), 4), fmts["value"])
+        cols[ch["id"]] = (col, col + 1 if has_trend else None)
+        col += 2
+    ws.set_column(dc, dc + 1, 16)
+    ws.set_column(dc + 2, col, 18)
+
+    # -- charts
+    ws.merge_range(row, 0, row, 9, "Lot-vs-lot charts (bars = lots, line = trend)", fmts["section"])
+    row += 1
+    sheet = ws.get_name()
+    wide = n > _LS_MANY_LOTS
+    width = min(1400, 160 + 38 * n) if wide else 600
+    per_row = 1 if wide else 2
+    # two-level (Part / Lot) categories when the job has several parts
+    cat_ref = [sheet, first, dc if data["multi_part"] else dc + 1, last, dc + 1]
+    cat_data = None
+    if data["multi_part"]:
+        part_lvl, prev = [], None
+        for lot in lots:
+            part_lvl.append(lot["part"] if lot["part"] != prev else None)
+            prev = lot["part"]
+        cat_data = [part_lvl, [c["label"] for c in charts[0]["categories"]]]
+    bar_fill = {"n_grains": series["count_bar"], "mean_area": series["area_bar"]}
+    for k, ch in enumerate(charts):
+        vcol, tcol = cols[ch["id"]]
+        bar = wb.add_chart({"type": "column"})
+        bar.add_series({
+            "name": [sheet, hdr_row, vcol], "categories": cat_ref, "categories_data": cat_data,
+            "values": [sheet, first, vcol, last, vcol],
+            "fill": {"color": bar_fill.get(ch["id"], series["diameter_bar"])},
+            "gap": 60,
+        })
+        if tcol is not None:
+            line = wb.add_chart({"type": "line"})
+            line.add_series({
+                "name": [sheet, hdr_row, tcol], "categories": cat_ref, "categories_data": cat_data,
+                "values": [sheet, first, tcol, last, tcol],
+                "line": {"color": series["normal_fit"], "width": 2.25},
+                "marker": {"type": "circle", "size": 5,
+                           "border": {"color": series["normal_fit"]},
+                           "fill": {"color": series["normal_fit"]}},
+            })
+            bar.combine(line)
+        bar.set_title({"name": ch["title"]})
+        xa = {"name": ch["x_title"]}
+        if n > _LS_ROTATE_LOTS:
+            xa["num_font"] = {"rotation": -45}
+        bar.set_x_axis(xa)
+        bar.set_y_axis({"name": ch["y_title"], "num_format": ch["num_format"],
+                        "major_gridlines": {"visible": True, "line": {"color": series["gridline"]}}})
+        if tcol is not None:
+            bar.set_legend({"position": "bottom"})
+        else:
+            bar.set_legend({"none": True})
+        bar.set_chartarea({"border": {"none": True}})
+        bar.set_size({"width": width, "height": 320})
+        r0 = row + (k // per_row) * _LS_CHART_ROWS
+        c0 = 0 if k % per_row == 0 else 6
+        ws.insert_chart(r0, c0, bar, {"x_offset": 2, "y_offset": 2})
+    n_chart_rows = (len(charts) + per_row - 1) // per_row
+    row += n_chart_rows * _LS_CHART_ROWS + 1
+    return row
 
 
 # ---------------------------------------------------------------------------
