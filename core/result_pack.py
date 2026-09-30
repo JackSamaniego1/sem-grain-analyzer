@@ -85,7 +85,13 @@ def is_packed(res: Any) -> bool:
 def pack_result(res: Any, memo: Optional[dict] = None, drop_overlay: bool = True) -> bool:
     """Compress ``res``'s image-sized arrays in place.  ``memo`` shares one
     packed copy between results that share an array (raw and filtered
-    results often do).  Returns True when anything changed."""
+    results often do).  Returns True when anything changed.
+
+    Reader-safe ordering (item 7): the packed dict is built completely
+    first, then published (``is_packed`` becomes True), and only then are
+    the live arrays dropped.  A concurrent reader therefore sees either the
+    live arrays or the packed flag - never an unpacked result with
+    ``label_image=None``.  The published dict is never mutated."""
     if res is None or is_packed(res):
         return False
     memo = {} if memo is None else memo
@@ -94,29 +100,38 @@ def pack_result(res: Any, memo: Optional[dict] = None, drop_overlay: bool = True
         a = getattr(res, name, None)
         if isinstance(a, np.ndarray):
             packed[name] = pack_array(a, memo)
-            setattr(res, name, None)
+    setattr(res, _ATTR, packed)               # publish: result now "packed"
+    for name in packed:
+        setattr(res, name, None)
     if drop_overlay and getattr(res, "overlay_image", None) is not None:
         res.overlay_image = None
-    setattr(res, _ATTR, packed)
     return True
 
 
 def unpack_result(res: Any, memo: Optional[dict] = None) -> bool:
     """Restore the arrays packed by :func:`pack_result` (the overlay stays
     None until something regenerates it).  Returns True when anything
-    changed."""
-    if not is_packed(res):
+    changed.
+
+    Reader-safe ordering (mirror of :func:`pack_result`): every array is
+    decompressed first, then all are rebound, and only then is the packed
+    flag cleared - a reader never sees "not packed" with arrays missing."""
+    packed = getattr(res, _ATTR, None) if res is not None else None
+    if packed is None:
         return False
     memo = {} if memo is None else memo
-    for name, p in getattr(res, _ATTR).items():
+    restored: Dict[str, np.ndarray] = {}
+    for name, p in packed.items():
         if p is None:
             continue
         arr = memo.get(id(p))
         if arr is None:
             arr = p.unpack()
             memo[id(p)] = arr
+        restored[name] = arr
+    for name, arr in restored.items():
         setattr(res, name, arr)
-    setattr(res, _ATTR, None)
+    setattr(res, _ATTR, None)                 # un-publish last
     return True
 
 
@@ -127,8 +142,9 @@ def unpacked_copy(res: Any) -> Any:
     if res is None:
         return None
     r = copy.copy(res)
-    if is_packed(res):
-        setattr(r, _ATTR, dict(getattr(res, _ATTR)))
+    packed = getattr(r, _ATTR, None)          # read once: res may change
+    if packed is not None:
+        setattr(r, _ATTR, dict(packed))
         unpack_result(r)
     return r
 

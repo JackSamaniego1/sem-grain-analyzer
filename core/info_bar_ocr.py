@@ -245,7 +245,18 @@ def _load_engine():
     except Exception:
         pass
     from rapidocr_onnxruntime import RapidOCR
-    ocr = RapidOCR()
+    # item 7: 1-2 onnxruntime threads (the default is one per core, which
+    # starves the UI on weak PCs); see core.perf.  Fall back to defaults if
+    # this RapidOCR build rejects the options.
+    try:
+        from core.perf import ocr_threads
+        n = ocr_threads()
+    except Exception:
+        n = 1
+    try:
+        ocr = RapidOCR(intra_op_num_threads=n, inter_op_num_threads=1)
+    except TypeError:
+        ocr = RapidOCR()
 
     def run(img):
         res, _ = ocr(img, use_cls=False)

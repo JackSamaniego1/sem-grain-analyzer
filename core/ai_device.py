@@ -108,9 +108,14 @@ def _import_torch():
     package, broken DLLs (``OSError``) -- is reported as ``None``."""
     try:
         import torch  # noqa: WPS433 (lazy on purpose: slow import)
-        return torch
     except Exception:  # ImportError, OSError (DLL load failed), ...
         return None
+    try:                   # item 7: cap torch threads the moment it loads
+        from core.perf import apply_torch_threads
+        apply_torch_threads(torch)
+    except Exception:
+        pass
+    return torch
 
 
 def _reason_from_text(text: str) -> str:

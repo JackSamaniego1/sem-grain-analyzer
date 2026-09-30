@@ -376,12 +376,25 @@ def add_grain(labels: np.ndarray, outline, valid_mask: Optional[np.ndarray] = No
     """
     if labels is None or getattr(labels, "ndim", 0) < 2 or labels.size == 0:
         return _nothing(labels, "This image has no grain map to edit - analyse it first.")
-    pts = np.asarray(outline if outline is not None else [], dtype=np.float64)
-    pts = pts.reshape(-1, 2) if pts.size % 2 == 0 else np.empty((0, 2))
+    try:
+        pts = np.asarray(outline if outline is not None else [], dtype=np.float64)
+    except (TypeError, ValueError):           # ragged / non-numeric points
+        pts = np.empty((0, 2))
+    if pts.size == 0:
+        pts = np.empty((0, 2))
+    # only an (N, 2) list of (x, y) points is an outline; anything else
+    # (e.g. (N, 3) or a flat list) would be misread by a reshape
+    if not (pts.ndim == 2 and pts.shape[1] == 2):
+        return _nothing(labels, "The outline could not be read - draw around "
+                                "the grain again.")
     pts = pts[np.isfinite(pts).all(axis=1)]
     if len(pts) < 3:
         return _nothing(labels, "Draw around the grain you want to add.")
     H, W = labels.shape[:2]
+    if valid_mask is not None and (getattr(valid_mask, "ndim", 0) < 2
+                                   or valid_mask.shape[:2] != labels.shape[:2]):
+        return _nothing(labels, "The scan area does not match this image's grain "
+                                "map - analyse the image again, then add the grain.")
     # keep int32 safe; vertices far outside only matter up to the image edge
     ipts = _int_pts(np.clip(pts, [-4 * W - 4, -4 * H - 4], [5 * W + 4, 5 * H + 4]))
     x0, y0 = max(0, int(ipts[:, 0].min())), max(0, int(ipts[:, 1].min()))
@@ -402,7 +415,7 @@ def add_grain(labels: np.ndarray, outline, valid_mask: Optional[np.ndarray] = No
         return _nothing(labels, "The outline is outside the analysed area.")
     region = drawn & (labels[y0:y1, x0:x1] == 0)
     in_field = region
-    if valid_mask is not None and valid_mask.shape[:2] == labels.shape[:2]:
+    if valid_mask is not None:
         in_field = region & valid_mask[y0:y1, x0:x1].astype(bool)
     if not region.any():
         return _nothing(labels, "The outline lies entirely on grains that are "
@@ -424,10 +437,12 @@ def add_grain(labels: np.ndarray, outline, valid_mask: Optional[np.ndarray] = No
         gid = int(labels.max()) + 1
     else:
         gid = int(new_id)
-        if gid <= 0 or bool((labels == gid).any()):
-            return _nothing(labels, f"Grain number {gid} is already in use.", n_drawn)
+    # range check first: comparing a uint8/uint16 map with an id beyond its
+    # range must never wrap around
     if np.issubdtype(labels.dtype, np.integer) and gid > np.iinfo(labels.dtype).max:
         return _nothing(labels, "Too many grains in this image to add another.", n_drawn)
+    if new_id is not None and (gid <= 0 or bool((labels == gid).any())):
+        return _nothing(labels, f"Grain number {gid} is already in use.", n_drawn)
     out = labels.copy()
     out[y0:y1, x0:x1][pieces == best] = gid
     rounded = [[round(float(x), 1), round(float(y), 1)] for x, y in pts]

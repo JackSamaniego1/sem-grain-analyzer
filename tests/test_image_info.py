@@ -360,6 +360,27 @@ def test_bar_fallback_flag_adds_note(tmp_path, monkeypatch):
     assert not any("No data bar was found" in n for n in info.notes)
 
 
+def test_notes_not_repeated(tmp_path, monkeypatch):
+    """Item 7 review: the reinstall note and the bar-fallback note each
+    appear at most once, also when the same image is read again."""
+    info = _no_engine(monkeypatch, tmp_path, _sidecar(wd=""))
+    assert sum("reinstall" in n.lower() for n in info.notes) == 1
+    info2 = _no_engine(monkeypatch, tmp_path, _sidecar(wd=""))
+    assert sum("reinstall" in n.lower() for n in info2.notes) == 1
+
+    def fake(image, metadata=None, **k):
+        r = ibo.InfoBarReading(status="ok", bar_fallback=True)
+        r.magnification = ibo.ReadingField(30000.0, "x", 0.95, True)
+        return r
+    monkeypatch.setattr(ibo, "read_info_bar", fake)
+    (tmp_path / "fb").mkdir()
+    p, _ = _jeol_png(tmp_path / "fb")
+    for _ in range(2):
+        notes = read_image_info(p).notes
+        assert sum("No data bar was found" in n for n in notes) == 1
+        assert not any("reinstall" in n.lower() for n in notes)
+
+
 def test_wd_printed_in_micrometres(tmp_path, engine):
     toks = [t if not t[0].startswith("WD") else ("WD9700µm",) + t[1:]
             for t in JEOL_STRIP]

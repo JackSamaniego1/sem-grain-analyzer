@@ -154,6 +154,49 @@ def test_outline_is_clipped_to_the_scan_area():
     _nothing_added(add_grain(lab, _square(100, 100, 140, 140)), lab)
 
 
+# ---------------------------------------------------------------- hardening (item 7 review)
+def test_outline_must_be_n_by_2():
+    lab = np.zeros((50, 60), np.int32)
+    # (N, 3) points must not be reshaped into a different (x, y) outline
+    xyz = np.array([(10, 10, 0), (40, 10, 0), (40, 40, 0), (10, 40, 0)], float)
+    _nothing_added(add_grain(lab, xyz), lab)
+    flat = [10, 10, 40, 10, 40, 40, 10, 40]                  # flat list, (8,)
+    _nothing_added(add_grain(lab, flat), lab)
+    _nothing_added(add_grain(lab, np.zeros((2, 4, 2))), lab)  # 3-D
+    _nothing_added(add_grain(lab, [(1, 2), (3, 4, 5), (6, 7)]), lab)  # ragged
+    assert add_grain(lab, np.asarray(_square(10, 10, 40, 40))).added
+
+
+def test_valid_mask_shape_mismatch_adds_nothing():
+    lab = np.zeros((50, 60), np.int32)
+    for bad in (np.ones((60, 50), bool), np.ones((25, 30), bool), np.ones(10, bool)):
+        out = add_grain(lab, _square(10, 10, 40, 40), valid_mask=bad)
+        _nothing_added(out, lab)
+        assert "scan area" in out.reason
+    ok = add_grain(lab, _square(10, 10, 40, 40), valid_mask=np.ones((50, 60), bool))
+    assert ok.added
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+def test_label_image_at_max_id(dtype):
+    top = int(np.iinfo(dtype).max)
+    lab = np.zeros((50, 60), dtype)
+    lab[0:5, 0:5] = top                                  # max id already used
+    out = add_grain(lab, _square(20, 20, 40, 40))
+    _nothing_added(out, lab)
+    assert "Too many grains" in out.reason
+    assert out.labels.dtype == dtype
+    # one below the maximum: the new grain takes the maximum id, no overflow
+    lab2 = np.zeros((50, 60), dtype)
+    lab2[0:5, 0:5] = top - 1
+    out2 = add_grain(lab2, _square(20, 20, 40, 40))
+    assert out2.added and out2.grain_id == top and out2.labels.dtype == dtype
+    assert int(out2.labels.max()) == top and (out2.labels == top - 1).sum() == 25
+    # an explicit new_id beyond the dtype range is refused, not wrapped
+    over = add_grain(lab2, _square(20, 20, 40, 40), new_id=top + 1)
+    _nothing_added(over, lab2)
+
+
 def test_cropped_labels_with_canvas_coordinates():
     lab = np.zeros((50, 60), np.int32)                # analysed crop
     crop = (40, 25, 90, 85)                           # r0, c0, r1, c1 in a 120x100 frame

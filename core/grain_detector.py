@@ -569,6 +569,11 @@ def get_sam_model(checkpoint_path, device):
     checkpoint.  A GPU copy is made from the cached CPU model when there is
     one.  A failed move to the GPU (e.g. out of memory) caches nothing."""
     key = (os.path.abspath(checkpoint_path), device)
+    try:        # item 7: torch thread caps (no-op if torch not loaded / done)
+        from core.perf import apply_torch_threads
+        apply_torch_threads()
+    except Exception:
+        pass
     with _SAM_MODELS_LOCK:
         model = _SAM_MODELS.get(key)
         if model is not None:
