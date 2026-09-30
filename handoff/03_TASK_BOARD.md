@@ -159,7 +159,7 @@ See handoff/UPDATE_4.md: 19 items, 3 batches, execution checklist.
 | 14 | Display mode persists across images | ui-designer | done | 7a70d74 |
 | 10a | Remove CPU tile from Analyze | detection-engineer | done | 7a70d74 |
 | 17 | PPTX distribution slides per lot + lot-to-lot | report-engineer | done | 83a864e; area+diameter bars+KDE; comparison slide stacked |
-| 4 | Scale-bar label OCR (JEOL + Thermo) | detection-engineer | doing | e634d33 core done; follow-up in progress (vendor logo, bar join, curr parse) |
+| 4 | Scale-bar label OCR (JEOL + Thermo) | detection-engineer | done | 8a059e0 core reviewed; JEOL 100 nm (32 px, 0.94 conf), Thermo 100 µm (279 px, 0.97 conf), vendor logo + beam current parsed; UI wiring queued after 9/13 |
 | 9 | Overlay opacity slider (top-right image) | ui-designer | doing | Analyze + Review tabs |
 | 13 | Review image list grouped Job › Part › Lot | ui-designer | doing | Reuse ImageTree component |
 | 19 | PPTX contents page as slide 2 with links | report-engineer | doing | Page numbers/ranges, clickable links; do after 17+18 |

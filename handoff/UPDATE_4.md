@@ -75,19 +75,15 @@ Rules: Fable coordinates only and implements nothing except #12 (one-time except
 - [x] 14 Display mode (Original/Overlay) persists across images (7a70d74)
 - [x] 10a Remove the "AI runs on CPU" tile (7a70d74)
 - [x] 17 PPTX distribution slides: per-lot area + diameter bars with trendline; lot-to-lot comparison (83a864e)
+- [x] 4  Read scale-bar label (value + unit) with bundled offline OCR (core 8a059e0 reviewed: JEOL 100 nm, Thermo 100 µm, vendor logo + beam current; UI wiring queued after 9/13)
 - [ ] 9  Overlay opacity slider (top-right of image, Analyze + Review) — in progress
 - [ ] 13 Review image list grouped Job › Part › Lot like Analyze — in progress
 - [ ] 19 PPTX contents page as slide 2 with links — in progress
 
-**Batch 1 partial:**
-- [ ] 4  Read scale-bar label (value + unit) with bundled offline OCR (core + packaging done e634d33; UI wiring + test images validation pending)
-
-**Batch 2 onwards:**
-- [ ] 11 Auto-fill magnification / instrument / kV / WD from JEOL + Thermo metadata
-- [ ] 5  Resolution Profiles sidebar card (manual selection)
+**Batch 2 onwards / batch 3:**
+- [ ] 11 Auto-fill magnification / instrument / kV / WD from JEOL + Thermo metadata (after item 4 UI wiring)
+- [ ] 5  Resolution Profiles sidebar card (manual selection) (after item 15)
 - [ ] 15 Lot Summary page: fix blank preview; bar+trendline lot charts + job summary (unblocked D-31: build now, user reviews when testing)
-- [ ] 17 PPTX distribution slides: per-lot area + size bars with trendline; lot-to-lot stacked comparison
-- [ ] 19 PPTX contents page as slide 2: every section with page numbers/ranges and links (do after 17 + 18)
 - [ ] 7  Stability during analysis on weak CPUs; lock with "Continue anyway"
 - [ ] 8  Review: "Add grain" tool (split-tool drawing style)
 - [ ] 10b AI-Assisted (GPU) / (CPU) modes + CUDA installer (unblocked D-32: NVIDIA confirmed)

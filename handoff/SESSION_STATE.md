@@ -1,7 +1,7 @@
 # SESSION STATE - read this first when resuming
 
-**Last updated:** 2026-09-30 (UPDATE 4 items 6,14,10a,17 done; item 4/9/13/19 in progress)  
-**Branch:** `v3-dev` | **Last commit:** `7a70d74` (scale-length units + display mode persist + remove CPU tile) | **Phase:** UPDATE 4 batch 2 mid-execution  
+**Last updated:** 2026-09-30 (UPDATE 4 items 6,14,10a,17,4-core done; items 9/13/19 in progress)  
+**Branch:** `v3-dev` | **Last commit:** `8a059e0` (item 4 core follow-up: JEOL/Thermo OCR + vendor logo + beam current) | **Phase:** UPDATE 4 batch 2 continuing  
 **Resume with:** read this file only, then handoff/UPDATE_4.md and handoff/02_TEAM_ROSTER.md.
 
 ## Done and committed
@@ -27,10 +27,10 @@
 - Installer builds locally: GrainAnalyzer_Setup.exe 644 MB
 
 ## In-progress tasks (uncommitted, agents running)
-- **Item 4 follow-up** (detection-engineer): JEOL bar mis-pick, Thermo split scale line, vendor logo detection. Touches core/info_bar_ocr.py, core/scale_bar.py, core/vendor_logo.py, tests/sem_infobar_fixtures.py, tests/test_info_bar_ocr.py.
-- **Item 9** (ui-designer): Overlay opacity slider.
-- **Item 13** (ui-designer): Review image list grouped Job › Part › Lot.
-- **Item 19** (report-engineer): PPTX contents page as slide 2 with links.
+- **Item 9** (ui-designer): Overlay opacity slider (Analyze + Review tabs, top-right of image).
+- **Item 13** (ui-designer): Review image list grouped Job › Part › Lot (reuse ImageTree).
+- **Item 19** (report-engineer): PPTX contents page as slide 2 with page numbers/ranges and links.
+- **Item 4 UI wiring** (ui-designer, queued): Fill scale-length box + unit dropdown in Automatic mode worker thread; confirmation flag when scale-bar is flagged.
 
 ## NEXT 3 ACTIONS
 
@@ -74,5 +74,11 @@ cd "C:\Users\saman\GRAIN ANALYSIS TOOL"
 - `handoff/05_DECISIONS.md` — ADR-style decision log (D-01..D-30)
 - `handoff/07_IDEAS_BACKLOG.md` — ideas (top 25 active; rest archived)
 
-## ITEM 4 FOLLOW-UP (real images & logo detection)
-User added JEOL file (scratch/real_sem/1A-1-GS-BM1.jpg, 1280x1024, 100 nm bar, x30,000, 7.0 kV). Expected.json updated. Detection-engineer now working on: (1) JEOL bar mis-pick (bar rect 678,963,32,15; expected 100 nm); (2) Thermo split scale-line join (thin line, end ticks, centred "100 µm" label; expected ≈278 px); (3) Offline vendor logo detection in data bar (no new dependency); (4) Parse `curr` (beam current). New file core/vendor_logo.py created. Still wanted: Phenom-style Thermo file ("15 µm" under tick-marked line).
+## ITEM 4 CORE FOLLOW-UP (real images, reviewed & committed 8a059e0)
+- JEOL 1A-1-GS-BM1.jpg (1280×1024, 100 nm, x30k, 7.0 kV, WD 9.7 mm): scale bar 32 px at (678,963), confidence 0.94; label read correctly.
+- Thermo thermo_databar_logo_100um.png (1080×717, 100 µm): split scale line joined via end-tick detection, 279 px, confidence 0.97; vendor "Thermo Fisher" detected from logo shape (core/vendor_logo.py); beam current 1.1 nA parsed.
+- New core APIs: `find_scale_bar_candidates(..., text_boxes=)`, `beam_current`/`beam_current_na` fields on read_info_bar result.
+- Regression test: glyph rejection broke fallback bottom-strip search; fixed to run only inside detected info bar.
+- Logo thresholds tuned on one real image (0.85/0.45); thin margin vs look-alikes (0.84/0.47); false logo match mislabels vendor only, never scale.
+- Tests: 172 passed in scale/info-bar/offline files; full run before fixes was 1041 passed.
+- Remaining: UI wiring in Automatic mode (queued after items 9/13). Still wanted: Phenom-style Thermo image ("15 µm" under tick-marked line).
