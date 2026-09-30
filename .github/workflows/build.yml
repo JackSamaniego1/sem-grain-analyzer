@@ -113,6 +113,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          # A release has two Windows assets: GrainAnalyzer_Setup.exe and the
+          # optional GrainAnalyzer_GPU_Pack.exe (copy both to the same flash
+          # drive folder; the setup offers the GPU option automatically).
           # The GPU pack is only present when the optional steps above ran.
           # Keep fail_on_unmatched_files at its default (false) so a run
           # without the pack still publishes GrainAnalyzer_Setup.exe.

@@ -5,7 +5,11 @@ The pack is an OPTIONAL second installer that overlays the NVIDIA CUDA build
 of torch onto an existing Grain Analyzer installation. It is fully offline:
 all files come from <pack_dir> (built by make_gpu_pack.py) at build time.
 It refuses to run unless the same version of the base app is installed and
-the app is closed.
+the app is closed. Supports /S (silent); the exit code is 0 only on success.
+
+A release has two assets: GrainAnalyzer_Setup.exe and this optional
+GrainAnalyzer_GPU_Pack.exe. GrainAnalyzer_Setup.exe offers to run the pack
+(it calls it with /S after installing the app). Fully offline.
 
     python create_gpu_pack_nsis.py [pack_dir]
 """
@@ -45,9 +49,14 @@ Function .onInit
   StrCmp $INSTDIR "" notinstalled
   IfFileExists "$INSTDIR\${APP_EXE}" 0 notinstalled
   StrCmp $1 "${APP_VERSION}" versionok
+  ; Every refusal sets a NON-ZERO exit code (3 = wrong version, 4 = not
+  ; installed, 5 = app running) so GrainAnalyzer_Setup.exe (which runs this
+  ; with /S) can report the failure. All message boxes have /SD defaults.
+  SetErrorLevel 3
   MessageBox MB_OK|MB_ICONSTOP "This GPU pack is for version ${APP_VERSION}, but version $1 is installed. Use the matching pack, or reinstall ${APP_NAME}." /SD IDOK
   Abort
 notinstalled:
+  SetErrorLevel 4
   MessageBox MB_OK|MB_ICONSTOP "${APP_NAME} ${APP_VERSION} is not installed. Run GrainAnalyzer_Setup.exe first, then this GPU pack." /SD IDOK
   Abort
 versionok:
@@ -59,6 +68,7 @@ versionok:
   FileClose $2
   Goto done
 appisrunning:
+  SetErrorLevel 5
   MessageBox MB_OK|MB_ICONSTOP "Close SEM Grain Analyzer, then run this again." /SD IDOK
   Abort
 done:

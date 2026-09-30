@@ -107,3 +107,81 @@ def test_long_path_prefix_on_windows(make_mod):
         assert p.startswith("\\\\?\\")
     else:
         assert p == os.getcwd()
+
+
+# ---- GPU option page in the main installer (decision D-32 follow-up) --------
+
+@pytest.fixture(scope="module")
+def main_nsi():
+    return _load("create_nsis_script").nsis_content
+
+
+def test_importing_main_script_does_not_write_installer(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _load("create_nsis_script")
+    assert not (tmp_path / "installer.nsi").exists()
+
+
+def test_main_defines_well_formed(main_nsi):
+    for line in main_nsi.splitlines():
+        if line.startswith("!define "):
+            assert re.match(r'^!define \w+( ".*")?$', line), line
+
+
+def test_main_installer_has_gpu_page_before_install_page(main_nsi):
+    assert "Page custom GpuPageCreate GpuPageLeave" in main_nsi
+    assert (main_nsi.index("MUI_PAGE_DIRECTORY")
+            < main_nsi.index("Page custom GpuPageCreate")
+            < main_nsi.index("MUI_PAGE_INSTFILES"))
+    assert "Install the NVIDIA GPU option (much faster AI-assisted detection)" in main_nsi
+    assert "GPU option file not found next to this installer." in main_nsi
+    assert "GPU option found next to this installer" in main_nsi
+    assert "No NVIDIA graphics card was found on this PC. The app will use the CPU." in main_nsi
+    assert "nsDialogs::SelectFileDialog" in main_nsi
+    assert "It is a separate file, GrainAnalyzer_GPU_Pack.exe, supplied with this installer." in main_nsi
+
+
+def test_main_installer_nvidia_detection_and_silent_switch(main_nsi):
+    assert "nvcuda.dll" in main_nsi and "nvml.dll" in main_nsi
+    assert '"/GPU="' in main_nsi and "IfSilent" in main_nsi
+    assert r'$EXEDIR\GrainAnalyzer_GPU_Pack.exe' in main_nsi
+    assert "/GPU=1" in _base_nsi_text()  # documented in the script header
+
+
+def test_pack_runs_after_registry_keys_and_reports_failure(main_nsi):
+    sect = main_nsi.split('Section "Main Application"')[1].split("SectionEnd")[0]
+    assert sect.index('"UninstallString"') < sect.index("ExecWait")
+    assert "ExecWait '\"$GpuPackPath\" /S' $0" in sect
+    assert "The GPU option could not be installed. The app is installed and will use the CPU." in sect
+    assert "You can run GrainAnalyzer_GPU_Pack.exe later." in sect
+    # the "pack replaced" notice is suppressed when re-applying in this run
+    assert "StrCmp $GpuApply \"1\" nogpupack" in sect
+
+
+def test_pack_file_sanity_checks_present(main_nsi):
+    for needle in ('"GrainAnalyzer_GPU_Pack.exe" 0 gcf_end', "IntCmp $4 50000", 'StrCmp $8 "MZ"'):
+        assert needle in main_nsi
+
+
+def test_pack_installer_exit_codes_and_sd_defaults(pack_mod):
+    text = pack_mod.generate("x", [])
+    for code in ("SetErrorLevel 3", "SetErrorLevel 4", "SetErrorLevel 5"):
+        assert code in text
+    # every Abort is preceded by an explicit non-zero error level
+    lines = [l.strip() for l in text.splitlines()]
+    for i, l in enumerate(lines):
+        if l == "Abort" and "MUI_PAGE" not in lines[i - 2]:
+            assert any(x.startswith("SetErrorLevel") for x in lines[max(0, i - 3):i]), lines[i - 3:i]
+    for l in lines:
+        if l.startswith("MessageBox"):
+            assert "/SD " in l, l
+
+
+def test_no_network_strings_in_either_script(main_nsi, pack_mod):
+    texts = [main_nsi, pack_mod.generate("x", [])]
+    texts += [open(os.path.join(ROOT, f), encoding="utf-8").read()
+              for f in ("create_nsis_script.py", "create_gpu_pack_nsis.py")]
+    for t in texts:
+        low = t.lower()
+        for bad in ("http", "www.", "inetc", "nsisdl", "ftp:", "inetload"):
+            assert bad not in low, bad
