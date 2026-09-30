@@ -232,7 +232,7 @@ def test_pptx_one_lot_comparison_slide_per_part_right_after_exec_summary(tmp_pat
     assert "7718-A" in titles[lc_indices[0]]
     assert "7718-B" in titles[lc_indices[1]]
     assert lc_indices[1] == lc_indices[0] + 1  # contiguous, no other slide in between
-    dist_idx = next(i for i, t in enumerate(titles) if "Distribution" in t)
+    dist_idx = next(i for i, t in enumerate(titles) if t.startswith("Combined") and "Distribution" in t)
     assert lc_indices[-1] < dist_idx
 
 

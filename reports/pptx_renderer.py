@@ -242,6 +242,13 @@ def render_pptx(model: ReportModel, output_path: str, template_path: Optional[st
                     for part, idx, total, page_rows in _plan_image_table_slides(model, images):
                         _image_data_table_slide(new_slide(), model, part, idx, total, page_rows, navy)
                         _add_footer(prs.slides[-1], model, page[0], navy)
+
+                    # UPDATE 4 item 17: per-lot area + size distribution slides,
+                    # then the lot-to-lot comparison (after the data tables,
+                    # before the per-image slides).
+                    for draw in _lot_distribution_slide_plan(model, images, series):
+                        draw(new_slide(), navy)
+                        _add_footer(prs.slides[-1], model, page[0], navy)
             elif kind == "charts":
                 opts = resolve_chart_options(model.chart_options)
                 if opts["area"]["enabled"]:
@@ -844,6 +851,289 @@ def _percentile_slide(slide, rows: List[Dict[str, Any]], au: str, du: str,
         for c, v in enumerate(vals):
             table.cell(r, c).text = v
         _style_data_row(table, r, text_col_count=2, size=11)
+
+
+# ---------------------------------------------------------------------------
+# Per-lot distribution slides + lot-to-lot comparison (UPDATE 4 item 17).
+# Native combo charts: histogram bars (shared ``charts.build_bins`` edges, the
+# item-16 equal-width binner) + a smoothed-density trendline drawn as a line.
+# ---------------------------------------------------------------------------
+
+MIN_GRAINS_FOR_DISTRIBUTION = 2     # build_bins needs >= 2 values
+MAX_LOTS_PER_COMPARISON = 6         # more lots -> continuation slides
+NOT_ENOUGH_GRAINS_NOTE = "Not enough grains for a distribution chart (need at least 2)."
+_GRID_GREY = RGBColor(0xD9, 0xD9, 0xD9)
+_KIND_LABEL = {"area": "Grain Area", "diameter": "Grain Size"}
+_KIND_AXIS = {"area": "Grain Area", "diameter": "Equivalent Diameter"}
+
+
+def _lot_groups(model: ReportModel, images: List[ImageSummary]
+                ) -> List[Tuple[str, str, List[ImageSummary]]]:
+    """``[(part, lot, images), ...]`` in the same order as the percentile table."""
+    return [(part, lot, imgs) for part, lots in _group_by_part(model, images).items()
+            for lot, imgs in lots.items()]
+
+
+def _lot_values(imgs: List[ImageSummary], kind: str, calibrated: bool, mult: float) -> List[float]:
+    key = {("area", True): "area_um2", ("diameter", True): "diameter_um",
+           ("area", False): "area_px", ("diameter", False): "diameter_px"}[(kind, calibrated)]
+    m = mult if calibrated else 1.0
+    out: List[float] = []
+    for img in imgs:
+        for g in img.grains:
+            v = g.get(key)
+            if v is None:
+                continue
+            v = float(v)
+            if np.isfinite(v):
+                out.append(v * m)
+    return out
+
+
+def _filtered_values(model: ReportModel, imgs: List[ImageSummary], all_images: List[ImageSummary],
+                     kind: str) -> Tuple[List[float], str]:
+    """Lot values in the report's display unit, honouring the chart's min/max."""
+    au, am, du, dm, calibrated = _global_unit(model, all_images)
+    unit, mult = (au, am) if kind == "area" else (du, dm)
+    opt = resolve_chart_options(model.chart_options)[kind]
+    vals = _lot_values(imgs, kind, calibrated, mult)
+    lo = convert_bound(opt.get("min"), opt.get("bound_unit"), unit, kind)
+    hi = convert_bound(opt.get("max"), opt.get("bound_unit"), unit, kind)
+    return filter_range(vals, lo, hi), unit
+
+
+def _trend_counts(values: List[float], edges: List[float]) -> List[float]:
+    """Smooth trendline: Gaussian KDE of ``values`` evaluated at the bin
+    midpoints, scaled so it sums to the number of grains (the same total as
+    the bars, i.e. expected grains per bin). Falls back to a Gaussian-smoothed
+    histogram when the KDE is undefined (e.g. all values identical)."""
+    v = np.asarray(values, dtype=float)
+    e = np.asarray(edges, dtype=float)
+    mids = (e[:-1] + e[1:]) / 2.0
+    dens = None
+    try:
+        from scipy.stats import gaussian_kde
+        if len(v) >= 2 and np.ptp(v) > 0:
+            dens = gaussian_kde(v)(mids)
+    except Exception:
+        dens = None
+    if dens is None or not np.all(np.isfinite(dens)) or dens.sum() <= 0:
+        from scipy.ndimage import gaussian_filter1d
+        counts, _ = np.histogram(v, bins=e)
+        dens = gaussian_filter1d(counts.astype(float), sigma=1.0, mode="constant")
+    if dens.sum() <= 0:
+        return [0.0] * len(mids)
+    return (dens / dens.sum() * len(v)).tolist()
+
+
+def _convert_series_to_lines(chart, first_index: int, color_hexes: List[str],
+                             width_pt: float = 2.25, legend: bool = True) -> None:
+    """Move every bar series from ``first_index`` on into ONE smoothed
+    ``<c:lineChart>`` sharing the bar chart's axes (combo chart). Their
+    legend entries are deleted so only the bars (one per lot) are listed."""
+    ns = {"c": nsuri("c")}
+    plot_area = chart._chartSpace.find(".//c:plotArea", ns)
+    bar_chart = plot_area.find("c:barChart", ns)
+    sers = bar_chart.findall("c:ser", ns)[first_index:]
+    ax_ids = [el.get("val") for el in bar_chart.findall("c:axId", ns)]
+    line_chart = parse_xml('<c:lineChart %s><c:grouping val="standard"/><c:varyColors val="0"/></c:lineChart>'
+                           % nsdecls("c"))
+    bar_chart.addnext(line_chart)
+    for ser, col in zip(sers, color_hexes):
+        bar_chart.remove(ser)
+        for tag in ("c:invertIfNegative", "c:spPr"):
+            el = ser.find(tag, ns)
+            if el is not None:
+                ser.remove(el)
+        sp_pr = parse_xml('<c:spPr %s><a:ln w="%d" cap="rnd"><a:solidFill><a:srgbClr val="%s"/></a:solidFill>'
+                          '<a:round/></a:ln></c:spPr>' % (nsdecls("c", "a"), int(width_pt * 12700),
+                                                          col.lstrip("#")))
+        marker = parse_xml('<c:marker %s><c:symbol val="none"/></c:marker>' % nsdecls("c"))
+        cat_el = ser.find("c:cat", ns)
+        at = list(ser).index(cat_el)
+        ser.insert(at, marker)
+        ser.insert(at, sp_pr)
+        ser.append(parse_xml('<c:smooth %s val="1"/>' % nsdecls("c")))
+        line_chart.append(ser)
+    for v in ax_ids:
+        line_chart.append(parse_xml('<c:axId %s val="%s"/>' % (nsdecls("c"), v)))
+    legend_el = chart._chartSpace.find(".//c:legend", ns)
+    if legend_el is not None and legend:
+        anchor = legend_el.find("c:legendPos", ns)
+        for i in reversed(range(first_index, first_index + len(sers))):
+            entry = parse_xml('<c:legendEntry %s><c:idx val="%d"/><c:delete val="1"/></c:legendEntry>'
+                              % (nsdecls("c"), i))
+            if anchor is not None:
+                anchor.addnext(entry)
+            else:
+                legend_el.insert(0, entry)
+
+
+def _darken(hex_color: str, f: float = 0.6) -> str:
+    h = hex_color.lstrip("#")
+    return "".join(f"{int(int(h[i:i + 2], 16) * f):02X}" for i in (0, 2, 4))
+
+
+def _lot_colors(series: Dict[str, str], n: int) -> List[str]:
+    base = [series["area_bar"], series["diameter_bar"], series["normal_fit"], series["count_bar"],
+            series.get("accent2", "#00796B"), "#E0A030", "#8E5EA2", "#7F7F7F"]
+    return [base[i % len(base)].lstrip("#") for i in range(n)]
+
+
+def _draw_hist_trend_chart(slide, x_in, y_in, cx_in, cy_in, title: str, x_title: str, y_title: str,
+                           categories: List[str], bars: List[Tuple[str, List[float]]],
+                           trends: List[List[float]], bar_colors: List[str],
+                           line_colors: List[str], legend: bool, value_fmt: str = "0"):
+    cd = CategoryChartData()
+    cd.categories = categories
+    for name, vals in bars:
+        cd.add_series(name, vals)
+    for i, t in enumerate(trends):
+        cd.add_series(f"{bars[i][0]} trend", [round(v, 3) for v in t])
+    gframe = slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(x_in), Inches(y_in),
+                                    Inches(cx_in), Inches(cy_in), cd)
+    chart = gframe.chart
+    chart.font.size = Pt(10)
+    chart.has_title = True
+    chart.chart_title.text_frame.text = title
+    chart.chart_title.text_frame.paragraphs[0].runs[0].font.size = Pt(13)
+    chart.has_legend = legend
+    if legend:
+        chart.legend.position = XL_LEGEND_POSITION.BOTTOM
+        chart.legend.include_in_layout = False
+    cat_axis, val_axis = chart.category_axis, chart.value_axis
+    cat_axis.axis_title.text_frame.text = x_title
+    val_axis.axis_title.text_frame.text = y_title
+    cat_axis.tick_labels.font.size = Pt(8)
+    val_axis.tick_labels.number_format = value_fmt
+    val_axis.tick_labels.number_format_is_linked = False
+    val_axis.has_major_gridlines = True
+    val_axis.major_gridlines.format.line.color.rgb = _GRID_GREY
+    plot = chart.plots[0]
+    plot.gap_width = 40 if len(bars) > 1 else 15
+    plot.overlap = 0
+    for i, col in enumerate(bar_colors):
+        ser = plot.series[i]
+        ser.format.fill.solid()
+        ser.format.fill.fore_color.rgb = _hexrgb(col)
+    _convert_series_to_lines(chart, len(bars), line_colors, legend=legend)
+    return chart
+
+
+def _short(text: str, n: int = 60) -> str:
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def _lot_label(part: str, lot: str) -> str:
+    return f"{part} / Lot {lot}"
+
+
+def _lot_slide(slide, model, images, part: str, lot: str, imgs: List[ImageSummary],
+               series: Dict[str, str], kinds: List[str], navy: RGBColor) -> None:
+    _slide_heading(slide, _short(f"Grain Distributions — {_lot_label(part, lot)}"), navy)
+    gap = 0.2
+    cw = (CONTENT_WIDTH_IN - gap) / 2
+    top, height = 1.1, SLIDE_H.inches - 0.6 - 1.1
+    for k, kind in enumerate(kinds):
+        x = CONTENT_LEFT_IN + k * (cw + gap)
+        vals, unit = _filtered_values(model, imgs, images, kind)
+        labels, counts, edges = build_bins(vals, model.bins.get(kind, 0))
+        if len(vals) < MIN_GRAINS_FOR_DISTRIBUTION or not labels:
+            _textbox(slide, Inches(x), Inches(top + 0.3), Inches(cw), Inches(1.0),
+                     f"{_KIND_LABEL[kind]}: {NOT_ENOUGH_GRAINS_NOTE}", size=14, color=GREY)
+            continue
+        bar_col = series["area_bar" if kind == "area" else "diameter_bar"]
+        _draw_hist_trend_chart(
+            slide, x, top, cw, height,
+            f"{_KIND_LABEL[kind]} Distribution — {_lot_label(part, lot)} (n={len(vals)})",
+            f"{_KIND_AXIS[kind]} ({unit})", "Number of Grains", labels,
+            [("Count", counts)], [_trend_counts(vals, edges)],
+            [bar_col], [series["normal_fit"]], legend=False)
+
+
+MAX_OMITTED_NAMES = 3
+
+
+def _omitted_note(omitted: List[str]) -> str:
+    """One-line footnote: first few lot names, then "+N more" (never wraps)."""
+    names = [_short(n, 28) for n in omitted[:MAX_OMITTED_NAMES]]
+    more = len(omitted) - len(names)
+    return ("Not shown (not enough grains): " + ", ".join(names)
+            + (f" +{more} more" if more > 0 else ""))
+
+
+def _comparison_slide(slide, chunk, units, edges_by_kind, labels_by_kind, colors, page: int,
+                      pages: int, omitted: List[str], kinds: List[str], navy: RGBColor) -> None:
+    suffix = "" if pages <= 1 else f" ({page}/{pages})"
+    _slide_heading(slide, f"Lot-to-Lot Distribution Comparison{suffix}", navy)
+    gap = 0.2
+    cw = (CONTENT_WIDTH_IN - gap) / 2
+    top = 1.1
+    height = 5.4 if omitted else SLIDE_H.inches - 0.6 - 1.1
+    for k, kind in enumerate(kinds):
+        x = CONTENT_LEFT_IN + k * (cw + gap)
+        edges = edges_by_kind[kind]
+        bars, trends, bcols, lcols = [], [], [], []
+        for lot in chunk:
+            vals = lot["values"][kind]
+            counts, _ = np.histogram(np.asarray(vals, dtype=float), bins=np.asarray(edges))
+            n = len(vals)
+            bars.append((lot["label"], [round(float(c) / n * 100.0, 2) for c in counts]))
+            trends.append([t / n * 100.0 for t in _trend_counts(vals, edges)])
+            bcols.append(colors[lot["index"]])
+            lcols.append(_darken(colors[lot["index"]]))
+        _draw_hist_trend_chart(slide, x, top, cw, height,
+                               f"{_KIND_LABEL[kind]} Distribution — All Lots",
+                               f"{_KIND_AXIS[kind]} ({units[kind]})", "Share of Grains (%)",
+                               labels_by_kind[kind], bars, trends, bcols, lcols, legend=True)
+    if omitted:
+        _textbox(slide, Inches(CONTENT_LEFT_IN), Inches(6.55), Inches(CONTENT_WIDTH_IN), Inches(0.5),
+                 _omitted_note(omitted), size=11, color=GREY)
+
+
+def _lot_distribution_slide_plan(model: ReportModel, images: List[ImageSummary],
+                                 series: Dict[str, str]):
+    """Closures ``draw(slide, navy)``: one slide per lot (area + size charts),
+    then the lot-to-lot comparison slide(s). Empty when both distributions are
+    disabled in the report's chart options."""
+    opts = resolve_chart_options(model.chart_options)
+    kinds = [k for k in ("area", "diameter") if opts[k]["enabled"]]
+    if not kinds:
+        return []
+    groups = _lot_groups(model, images)
+    plan = []
+    for part, lot, imgs in groups:
+        plan.append(lambda slide, navy, p=part, l=lot, i=imgs:
+                    _lot_slide(slide, model, images, p, l, i, series, kinds, navy))
+
+    multi_part = len({g[0] for g in groups}) > 1
+    lots, omitted, units = [], [], {}
+    for part, lot, imgs in groups:
+        label = _lot_label(part, lot) if multi_part else f"Lot {lot}"
+        vals = {}
+        for kind in kinds:
+            vals[kind], units[kind] = _filtered_values(model, imgs, images, kind)
+        if all(len(v) >= MIN_GRAINS_FOR_DISTRIBUTION for v in vals.values()):
+            lots.append({"label": label, "values": vals, "index": len(lots)})
+        else:
+            omitted.append(label)
+    # Comparison slide(s) are skipped when fewer than 2 lots are plottable.
+    if len(groups) < 2 or len(lots) < 2:
+        return plan
+    # ONE set of edges per chart, from the pooled values of all lots via the
+    # shared binner, so every lot (and every continuation slide) bins alike.
+    edges_by_kind, labels_by_kind = {}, {}
+    for kind in kinds:
+        pooled = [v for lot in lots for v in lot["values"][kind]]
+        labels, _, edges = build_bins(pooled, model.bins.get(kind, 0))
+        edges_by_kind[kind], labels_by_kind[kind] = edges, labels
+    colors = _lot_colors(series, len(lots))
+    chunks = _chunk(lots, MAX_LOTS_PER_COMPARISON)
+    for i, chunk in enumerate(chunks, start=1):
+        plan.append(lambda slide, navy, c=chunk, i=i: _comparison_slide(
+            slide, c, units, edges_by_kind, labels_by_kind, colors, i, len(chunks),
+            omitted, kinds, navy))
+    return plan
 
 
 def _three_chart_geometry() -> Tuple[float, List[float]]:
