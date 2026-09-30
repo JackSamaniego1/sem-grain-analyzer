@@ -1,6 +1,6 @@
 # UPDATE 4 — user change list (2026-09-29)
 
-Status: **STORED, NOT STARTED.** Don't start until the user says go and has answered the open questions below.
+Status: **IN PROGRESS (batch 1 running).** Item 1 committed as 42e44a2 (2026-09-29). Batch 1 items dispatched to agents.
 The user numbered two items "8"; they are renumbered 1–12 here.
 
 | # | Item (user's words, condensed) | Owner / model | Est. | Batch |
@@ -42,9 +42,14 @@ The user numbered two items "8"; they are renumbered 1–12 here.
 ## User answers (2026-09-29)
 - A1. SEMs: **JEOL and Thermo Fisher**. Both are already supported by `core/sem_metadata.py`: JEOL through the `<stem>.txt` sidecar (must sit next to the image), Thermo through TIFF tag 34682/34680. The user will supply real images for testing; OCR tuning waits for them.
 - A2. The work PC **has a graphics card**; a bigger installer is fine. *To confirm when starting #10: NVIDIA, since CUDA needs it (if Intel/AMD, use DirectML).*
+- A2b. **Graphics card is NVIDIA** → use the CUDA torch build (D-32).
 - A3. **Fable is allowed ONE time, for #12 only** (optimisation + clean-up). The "never Fable agents" rule stays in force otherwise.
 - A4. Dragged-in images are **copied into the job folder** (into the lot's folder inside the job).
 - A5. Resolution profiles are **always picked by hand**; no auto-suggest.
+- A15. **Item 15 (Lot summary charts): do NOT wait for mock-up approval — build it.** The user reviews it when testing the new report (D-31).
+- A4-images. **Item 4: user provided two sample images**: 
+  - JEOL 1280×1024: black bar bottom ~64 px, "100nm JEOL 9/14/2026" / "X 30,000 7.0kV LEI SEM WD 9.7mm 13:42:09", small solid scale rectangle left of the label.
+  - Thermo (Phenom-style) 1080×717: bottom data bar, long tick-marked scale line with "15 µm" under it, then Mag. 10 000 × / FW 51.8 µm / HV 15 kV / Int. Image / Det. BSD Full / WD 8.947 mm / Vac. 0.10 Pa / 2025-04-21. **Requested: copy files to scratch/real_sem/** (D-33).
 - #7 lock: not asked in chat. Default: always lock grain editing during analysis, with "Continue anyway" + "don't warn again".
 
 ## Open questions for the user (original)
@@ -58,7 +63,7 @@ The user numbered two items "8"; they are renumbered 1–12 here.
 ## Execution checklist (coordinator keeps this current; user gets a copy after every finished item)
 Rules: Fable coordinates only and implements nothing except #12 (one-time exception, last). Every item = agent on its pinned model → tests → code-reviewer → commit → `/save-handoff` → checklist to user.
 
-- [ ] 1  New Lot/Part: multiple boxes, stay on page, keep data
+- [x] 1  New Lot/Part: multiple boxes, stay on page, keep data (42e44a2)
 - [ ] 2  Drag images from a folder into a lot (copied into the job folder)
 - [ ] 3  Image checkboxes + "Analyze selected"
 - [ ] 6  Unit dropdown for scale length + highlight the length box after auto-find

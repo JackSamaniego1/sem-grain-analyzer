@@ -1,7 +1,7 @@
 # SESSION STATE - read this first when resuming
 
-**Last updated:** 2026-09-29 (PPTX redesign and Excel fix delivered; UPDATE 4 ready to start)  
-**Branch:** `v3-dev` | **Last commit:** `8c5b728` (PPTX part-level summary slide 2 and per-part data table slides) | **Phase:** UPDATE 4 execution (batch 1 ready)  
+**Last updated:** 2026-09-29 (UPDATE 4 batch 1 execution started; item 1 done; 4 agents running)  
+**Branch:** `v3-dev` | **Last commit:** `42e44a2` (Projects: New Lot/Part adds multiple entry boxes; one Create adds all and stays on page) | **Phase:** UPDATE 4 batch 1 in progress  
 **Resume with:** read this file only, then handoff/UPDATE_4.md and handoff/02_TEAM_ROSTER.md.
 
 ## Done and committed
@@ -17,30 +17,33 @@
 - Offline guard clean (no network egress)
 - Installer builds locally: GrainAnalyzer_Setup.exe 644 MB
 
-## In-progress tasks
-None actively running (awaiting UPDATE 4 dispatch).
+## In-progress tasks (UPDATE 4 batch 1)
+- **Item 16 (Units/bins)**: report-engineer fixed `build_bins` (equal-width, min/max), bin_labels() in reports/charts.py; ui/pages/charts.py wired; tests/test_report_bins_units.py added. Pending: code-reviewer, commit.
+- **Item 2 data half**: data-architect added `add_images_to_lot(lot_path, paths, *, catalog=None, image_name_template=None, name_context=None) -> AddImagesResult(.added/.skipped/.rejected, .summary())` + tests/test_data_add_images.py. Pending: code-reviewer, commit. UI half (drop handler + app_state.py wiring) still to do.
+- **Item 3 (Image checkboxes + Analyze selected)**: ui-designer running (ui/pages/analyze_page.py, ui/pages/image_tree.py, tests/test_ui_analyze_selected.py).
+- **Item 4 core (Offline OCR, RapidOCR, info-bar text)**: detection-engineer running; user supplied 2 real SEM images (JEOL + Thermo, now D-33); tests/sem_infobar_fixtures.py prepped.
 
-## Next 3 actions (UPDATE 4, batch 1)
+## Next 3 actions (UPDATE 4, batch 1 in progress)
 
-1. **Read handoff/UPDATE_4.md** (16-item checklist with batches, execution order, and user answers)
-2. **Delegate batch 1 items** (1, 2, 3, 6, 9, 13, 14, 16, 10a) to team agents per roster
-3. **After each item:** tests → code-reviewer → commit → save handoff → tick box
+1. **Code-review item 16** (reports/charts.py, ui/pages/charts.py, tests/test_report_bins_units.py) → commit → save handoff → tick.
+2. **Code-review item 2 data** (data/session_io.py, tests/test_data_add_images.py) → commit → save handoff → UI half ready.
+3. **Monitor items 3, 4** (ui-designer, detection-engineer running). When each completes: review → commit → save handoff → tick.
 
-**Batch 1 items** (handoff/UPDATE_4.md):
-- Item 1: Lot filter (Status, Exclude, Baseline)
-- Item 2: Grain size chart legend (Part / Lot / None)
-- Item 3: Scale-bar snapping tolerance / skip-snap dialog
-- Item 6: Calibration UI polish (clarity labels, uncertainty ranges)
-- Item 9: Column width persistence (Settings → ui_state.json)
-- Item 13: Duplicate images detection (UI + core)
-- Item 14: Part tags / free-text field (model + UI + export)
-- Item 16: Units/bins default (Median area/ASTM G bug fix)
-- Item 10a: Remove CPU tile from Analyze page
+**Batch 1 status** (handoff/UPDATE_4.md):
+- [x] Item 1: New Lot/Part: multiple boxes, stay on page, keep data (42e44a2)
+- [ ] Item 2: Drag images from a folder into a lot (committed: data half; UI half pending)
+- [ ] Item 3: Image checkboxes + "Analyze selected" (running)
+- [ ] Item 6: Unit dropdown for scale length + highlight
+- [ ] Item 9: Overlay opacity slider
+- [ ] Item 13: Review image list grouped Job › Part › Lot
+- [ ] Item 14: Display mode persists across images
+- [ ] Item 16: Units & bins bug (running: review pending)
+- [ ] Item 10a: Remove CPU tile
 
-**Blocked / awaits user:**
-- Item 4 (OCR): awaits user's JEOL/Thermo test images
-- Item 15 (Lot summary charts): awaits user approval of mockups before coding
-- Item 10b (GPU/CUDA): awaits confirmation that GPU is NVIDIA
+**Unblocked (decisions D-31/D-32/D-33):**
+- Item 15 (Lot summary charts): build now, user reviews during testing (D-31)
+- Item 10b (GPU/CUDA): NVIDIA GPU confirmed, use CUDA torch build (D-32)
+- Item 4 (OCR): 2 real SEM images supplied to scratch/real_sem/ (D-33)
 
 ## How to run
 ```powershell

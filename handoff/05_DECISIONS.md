@@ -86,13 +86,24 @@ Context: FB-02 implemented new "Lot Summary" sheet (per-lot distribution chart +
 ### D-29 · 2026-09-25 · accepted — v3.0.0 published; no more retagging
 Context: v3.0.0 tag (annotated, on commit 5e99278) pushed to origin (GitHub). From this point, v3.0.0 is public and immutable. Any further fixes or features must be released as v3.0.1, v3.1.0, etc. (semantic versioning). Decision: **No retagging of v3.0.0 after push.** If a bug is found post-release, create a new version tag and release. Consequences: GitHub Release v3.0.0 is stable; changelog and version.py must advance for next release; handoff board removes any "retag" tasks for v3.0.0.
 
-### D-30 · 2026-09-29 · pending (user final approval) — Report design: Option A (modified) spec
+### D-30 · 2026-09-29 · accepted — Report design: Option A (modified) spec
 Context: REP-DESIGN-01 (report redesign). User reviewed 4 mockup options (artifact MiCcw4BV5AgFyfUNEQ4Y52) for PPTX summary slide (slide 2) and long-table pagination. User selected **Option A (modified)** with revised mockup v2, awaiting final approval. Decision: **Implement Option A (modified) summary slide** per spec:
   - **PPTX slide 2 (summary)**: single table with ONE ROW PER PART (averaged over all lots in the part). Columns: Part, Lots (count of lots), Images (total images across the part's lots), ASTM G ± 95% CI, mean diameter ± SD, mean area ± SD. NO Grains column. NO KPI tiles at top. NO "higher = finer" hint text. NO red row highlighting.
   - **Three bar charts**: G by part, diameter by part, area by part. One bar per PART. x-axis title "Part Number" with part names as tick labels.
   - **Per-image data table slides**: restyled in same table format as summary. Max 14 rows per slide with "(continued n/m)" and repeated header. All existing columns kept; Median area and ASTM G added. NO red rows.
   - **Long-table pagination rule**: max 14 rows per slide, break at part boundaries, truncate part/lot/image names >14 chars (applied to both Excel and PPTX).
 Consequences: v3.0.1 implementation via report-engineer with tests; python-pptx XML injection for bar charts; Excel-only Lot Summary pagination matching. **Still open: user's Excel complaints** (asked which sheet/column issues matter most; no answer yet). Next: implement after final mockup approval.
+
+### D-31 · 2026-09-29 · accepted (user) — Item 15 (Lot summary charts): build without wait for mock-up approval
+Context: UPDATE 4 item 15 requests lot-vs-lot charts (combo bar+line). User feedback 2026-09-29: "do NOT wait for mock-up approval — build it; the user reviews it when testing the new report." Decision: **Item 15 is unblocked and ready for coding.** Lot summary charts (bar+trendline per lot, plus job summary) implemented with tests; user approves during testing. Consequences: faster dispatch to report-engineer; no mock-up gate; acceptance via user's test workflow.
+
+### D-32 · 2026-09-29 · accepted (user) — Item 10b (GPU/CUDA): graphics card is NVIDIA
+Context: UPDATE 4 item 10b depends on GPU confirmation. User feedback 2026-09-29: work PC has **NVIDIA GPU**. Decision: **Use CUDA torch build** (not DirectML). Installer is ~2.5 GB larger; build-engineer adds CUDA torch to build.yml and requirements. Consequences: GrainAnalyzer_Setup.exe will be ~2.5 GB (up from 644 MB); item 10b unblocked for GPU-mode implementation.
+
+### D-33 · 2026-09-29 · accepted (user) — Item 4 sample images supplied; copy to scratch/real_sem/
+Context: UPDATE 4 item 4 (OCR of scale-bar label) requires real SEM images for tuning RapidOCR. User supplied two images 2026-09-29: (1) JEOL 1280×1024 with black bar bottom ~64 px, "100nm JEOL" label, small solid scale rectangle; (2) Thermo Phenom-style 1080×717 with tick-marked scale "15 µm". Decision: **Copy both files to C:\Users\saman\GRAIN ANALYSIS TOOL\scratch\real_sem\.** detection-engineer tunes RapidOCR on these images for item 4 implementation. Consequences: item 4 (OCR) unblocked; real-image validation test data in place.
+
+
 
 
 

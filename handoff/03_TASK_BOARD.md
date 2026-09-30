@@ -140,5 +140,20 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 | UX-15 | Custom palettes: create from 3 hex/colour-wheel colours, save locally, selectable next to 4 built-in, drives report colours | report-engineer | done | 560deed: palette editor (hex input + wheel); palette_library.json; selectable in report UI |
 | UX-16 | Overlay opacity in report export — use ReportModel.overlay_opacity (UX-05) | report-engineer | done | 1e0a895: export respects ReportModel.overlay_opacity; Excel & PPTX apply opacity |
 
-## UPDATE 4 (stored 2026-09-29, not started)
-See handoff/UPDATE_4.md: 12 items, 3 batches, open questions Q1-Q6. Do not execute until the user says go.
+## UPDATE 4 (IN PROGRESS, batch 1 running)
+See handoff/UPDATE_4.md: 16 items (renumbered 1–19 from user's list), 3 batches, execution checklist.
+
+| # | Item | Owner | Status | Notes |
+|---|------|-------|--------|-------|
+| 1 | New Lot/Part: multiple boxes, stay on page | ui-designer (sonnet) | done | 42e44a2 |
+| 2 | Drag images into lot (copy into job folder) | ui-designer + data-architect | doing | data half (add_images_to_lot) pending review; UI half pending |
+| 3 | Image checkboxes + "Analyze selected" button | ui-designer | doing | checkboxes + button in Analyze page |
+| 4 | Scale-bar label OCR (JEOL + Thermo) | detection-engineer | doing | RapidOCR offline; 2 real SEM images supplied (D-33) |
+| 6 | Scale length units dropdown + highlight | ui-designer | todo | |
+| 9 | Overlay opacity slider (top-right image) | ui-designer | todo | Analyze + Review pages |
+| 10a | Remove CPU tile from Analyze | detection-engineer | todo | unblocked; paired with 10b GPU modes |
+| 13 | Review image list grouped Job › Part › Lot | ui-designer | todo | reuse ImageTree component |
+| 14 | Display mode persists across images | ui-designer | todo | Original/Overlay stays same when switching images |
+| 15 | Lot summary charts (bar+trendline) | report-engineer | todo | **Unblocked (D-31)**: build now, user reviews when testing |
+| 16 | Units & bins bug (nm²↔µm² rescale) | report-engineer | doing | build_bins() equal-width fix; bin_labels() wired; review pending |
+| 10b | GPU/CUDA torch build + AI-Assisted modes | detection-engineer + build-engineer | todo | **Unblocked (D-32)**: NVIDIA GPU confirmed |

@@ -207,3 +207,18 @@
 - **Handoff prepared**: SESSION_STATE.md refreshed; UPDATE_4.md execution checklist armed; team roster ready; next action on resume: read UPDATE_4.md and delegate batch 1.
 - **Full suite**: 862 tests pass / 0 fail. Offline guard clean. Windows installer builds locally.
 - **Next**: Coordinator resumes → reads UPDATE_4.md → dispatches batch 1 agents → after each item: tests → review → commit → save-handoff → tick box.
+
+## 2026-09-29 (evening) — UPDATE 4 batch 1 execution started
+- **UPDATE 4 STARTED**: Batch 1 execution launched (items 1,2,3,6,9,13,14,16,10a).
+- **Item 1 DONE (42e44a2)**: New Lot/Part dialog adds multiple entry boxes; filled boxes keep data; "Create all N" button adds all to job and stays on page. Files: ui/pages/projects_page.py, tests/test_ui_multi_lot_part.py. Code-reviewed. Behaviour: duplicates/missing names block the whole create with plain message. UPDATE_4.md execution checklist ticked.
+- **New user answers received (D-31, D-32, D-33)**:
+  - D-31: Item 15 (Lot summary charts) unblocked — build now, user reviews during testing (do NOT wait for mock-up approval).
+  - D-32: Item 10b confirmed NVIDIA GPU → use CUDA torch build (~2.5 GB larger installer).
+  - D-33: Item 4 (OCR) — user supplied 2 real SEM images (JEOL 1280×1024 + Thermo 1080×717); requested copy to scratch/real_sem/.
+- **4 agents running in parallel** (batch 1):
+  - Item 16 (report-engineer): units/bins fix in reports/charts.py, ui/pages/charts.py, tests/test_report_bins_units.py — review pending.
+  - Item 2 data (data-architect): add_images_to_lot() in data/session_io.py + tests/test_data_add_images.py — review pending; UI half pending.
+  - Item 3 (ui-designer): image checkboxes + "Analyze selected" button.
+  - Item 4 core (detection-engineer): RapidOCR offline info-bar text reader (JEOL + Thermo tuning).
+- **Process notes**: Agents not committing; no full-suite run while others mid-work. Coordinator commits after code-reviewer per explicit path. Full-suite run owed at end of batch 1.
+- **Full suite**: 862 tests pass / 0 fail (last confirmed at 42e44a2; 4 new test files staged, awaiting review).
