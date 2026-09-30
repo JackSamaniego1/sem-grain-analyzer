@@ -9,7 +9,7 @@ then stalls for seconds and Windows may report the app as "not responding".
 :func:`configure_threads` caps them:
 
 * OpenCV: ``logical cores - 1`` (min 1) - leaves one core for the UI.
-* torch (SAM on CPU): intra-op ``max(1, physical cores - 1)``; inter-op 1.
+* torch (SAM on CPU): intra-op ``physical cores - 1`` (all of them on a 1-2 core PC); inter-op 1.
   torch's compute threads gain nothing from hyper-threading siblings.
 * OCR (onnxruntime session inside RapidOCR): 1-2 intra-op threads, 1
   inter-op.  The info bar is a thin strip; more threads only add overhead.
@@ -76,7 +76,12 @@ def _compute_caps(logical_cores: Optional[int],
         "logical_cores": logical,
         "physical_cores": physical,
         "opencv_threads": max(1, logical - 1),
-        "torch_threads": max(1, physical - 1),
+        # AI-assisted detection on CPU scales steeply at low thread counts
+        # (measured on a 1280x1024 SEM image: 2 threads 80 s, 4 threads
+        # 52 s, 8 threads 37 s, 15 threads 31 s; identical grains at every
+        # count), so a PC with 1-2 physical cores keeps them all -- giving
+        # one up would double the wait.  From 3 cores up one is left free.
+        "torch_threads": physical if physical <= 2 else physical - 1,
         "torch_interop_threads": 1,
         "ocr_threads": 2 if logical >= 4 else 1,
     }

@@ -32,8 +32,11 @@ def test_caps_values():
     assert one["opencv_threads"] == 1 and one["torch_threads"] == 1
     assert one["ocr_threads"] == 1 and perf.ocr_threads() == 1
     two = perf.configure_threads(logical_cores=2)
-    assert two["physical_cores"] == 2 and two["torch_threads"] == 1
+    assert two["physical_cores"] == 2 and two["torch_threads"] == 2
     assert perf.current_caps()["logical_cores"] == 2
+    four = perf.configure_threads(logical_cores=4)      # 2 cores + SMT
+    assert four["physical_cores"] == 2 and four["torch_threads"] == 2
+    assert perf.configure_threads(logical_cores=6, physical_cores=3)["torch_threads"] == 2
 
 
 def test_physical_estimate_and_garbage_never_raise():
@@ -98,7 +101,7 @@ def test_torch_cap_applied_on_load_once(monkeypatch):
     # re-configuring re-applies intra-op; inter-op is one-shot in torch
     monkeypatch.setitem(sys.modules, "torch", t)
     c = perf.configure_threads(logical_cores=4, physical_cores=2)
-    assert c["torch_applied"] is True and t.calls[-1] == ("intra", 1)
+    assert c["torch_applied"] is True and t.calls[-1] == ("intra", 2)
     assert sum(1 for k, _ in t.calls if k == "inter") == 1
 
 
