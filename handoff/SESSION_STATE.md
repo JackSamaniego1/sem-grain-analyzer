@@ -78,3 +78,9 @@ cd "C:\Users\saman\GRAIN ANALYSIS TOOL"
 - **Item 7** (opus): Stability lock during analysis on weak CPUs.
 - **Item 8** (ui-designer + detection-engineer): Review "Add grain" tool (split-tool style).
 - **Item 12** (Fable): Speed & usability optimisation, faster detection (LAST item).
+
+## ADDED 2026-09-30 (after handoff 17451ba)
+- Installer GPU page COMMITTED and reviewed (see `git log -1 -- create_nsis_script.py`): both .nsi scripts compile with makensis 3.10; page NOT clicked through yet.
+- Follow-ups for build-engineer (minor, from review): strip trailing backslash from `$EXEDIR` (flash drive root `D:\`), `SetErrorLevel` when the pack fails in a silent `/S /GPU=1` run, a test that runs `makensis /V1` when installed (skip otherwise), Back→Next loses a fresh tick (cosmetic).
+- Manual checks before release: pack beside installer with/without NVIDIA driver, Browse with a wrong file name, path with spaces, run from a drive root, real pack overlay, "app running" refusal.
+- Working tree clean; no agents running. NEXT = item 2 of the NEXT list above (ui-designer: item 4 UI wiring + item 11 + item 10b UI modes).
