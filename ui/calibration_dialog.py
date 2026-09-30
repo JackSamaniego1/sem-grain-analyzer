@@ -91,12 +91,26 @@ def suggest_bar_length_um(length_px: float, px_per_um: float) -> float | None:
     return float(f"{raw:.3g}")
 
 
+LENGTH_UNITS = ("nm", "µm", "mm")      # UPDATE 4 item 6: unit dropdown order
+
+
 def _to_um(length: float, unit: str) -> float:
     if unit == "nm":
         return length / 1000.0
     if unit == "mm":
         return length * 1000.0
     return length
+
+
+def split_length_um(length_um: float) -> tuple:
+    """(value, unit) that reads naturally for a length in µm: below 1 µm in
+    nm, 1000 µm and above in mm, else µm (e.g. 0.5 -> (500, "nm"))."""
+    um = float(length_um)
+    if 0 < um < 1.0:
+        return round(um * 1000.0, 3), "nm"
+    if um >= 1000.0:
+        return round(um / 1000.0, 6), "mm"
+    return round(um, 3), "µm"
 
 
 class CalibrationDialog(QDialog):
@@ -202,7 +216,8 @@ class CalibrationDialog(QDialog):
         self.length_spin.setToolTip("The length printed on the scale-bar label.")
         ctrl_lay.addWidget(self.length_spin)
         self.unit_combo = QComboBox()
-        self.unit_combo.addItems(["µm", "nm", "mm"])
+        self.unit_combo.addItems(list(LENGTH_UNITS))
+        self.unit_combo.setCurrentText("µm")
         self.unit_combo.setFixedWidth(86)
         self.unit_combo.setToolTip("Unit printed on the label.")
         ctrl_lay.addWidget(self.unit_combo)
@@ -276,12 +291,9 @@ class CalibrationDialog(QDialog):
         msg = (f"Scale bar found automatically ({w} px) — check the {shape}, "
                "then enter the length printed on the label.")
         if length_um and length_um > 0:
-            if length_um < 1.0:
-                self.unit_combo.setCurrentText("nm")
-                self.length_spin.setValue(round(length_um * 1000.0, 3))
-            else:
-                self.unit_combo.setCurrentText("µm")
-                self.length_spin.setValue(round(length_um, 3))
+            value, unit = split_length_um(length_um)
+            self.unit_combo.setCurrentText(unit)
+            self.length_spin.setValue(value)
             msg = (f"Scale bar found automatically ({w} px); its length was filled in from "
                    "the image metadata — check it against the label, then Apply.")
         self.lbl_auto.setText(msg)

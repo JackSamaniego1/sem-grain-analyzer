@@ -176,7 +176,8 @@ def test_ux02_autofind_info_bar_scale_bar_and_length_entry(env, qtbot):
         assert st.setup_issues(im) == ["scale"]
     im0 = st.current_image()
     assert a.setup_tile.bar_row.isVisibleTo(a.setup_tile)
-    a.setup_tile.bar_um.setValue(20.0)
+    a.setup_tile.bar_len.setValue(20.0)                     # unit dropdown defaults to µm
+    assert a.setup_tile.bar_unit.currentText() == "µm"
     a.setup_tile.bar_same.setChecked(True)
     a.setup_tile.btn_bar.click()
     for im in st.images():                                  # same bar -> same scale
@@ -413,18 +414,15 @@ def test_ux10_nav_labels_fast_and_rail_expansion_remembered(env, qtbot):
     shell2.close()
 
 
-def test_ux11_device_chip_plain_words():
-    from ui.app_shell import device_chip_text
-    text, tip, kind = device_chip_text("CPU")
-    assert text == "AI runs on: CPU" and "processor" in tip and kind == "neutral"
-    text, tip, kind = device_chip_text("GPU · NVIDIA RTX A2000")
-    assert text == "AI runs on: GPU (NVIDIA RTX A2000)" and "graphics card" in tip
-
-
-def test_ux11_shell_chip_text(env, qtbot):
+def test_update4_10a_no_ai_device_chip(env, qtbot):
+    """UPDATE 4 item 10a: the "AI runs on: CPU" status tile is gone."""
+    import ui.app_shell as app_shell
+    from ui.widgets import Badge
     shell = _shell(qtbot)
-    assert shell.chip_device.text() == "AI runs on: CPU"
-    assert "processor" in shell.chip_device.toolTip()
+    assert not hasattr(shell, "chip_device")
+    assert not hasattr(app_shell, "device_chip_text")
+    texts = [b.text() for b in shell.statusBar().findChildren(Badge)]
+    assert not any("AI runs on" in t or t == "CPU" for t in texts)
     shell.close()
 
 

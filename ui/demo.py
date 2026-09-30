@@ -199,7 +199,6 @@ def capture(out_dir: str) -> List[str]:
         win.resize(1600, 960)
         win.show()
         _pump(app, 500)
-        win.chip_device.set_text("CPU")
 
         # ---- Projects (dark + light)
         win.go("projects")

@@ -23,16 +23,18 @@ and saving run on the thread pool.
 """
 from __future__ import annotations
 
+import re
 from typing import Dict, List, Optional
 
 from PySide6.QtCore import SIGNAL, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QSizePolicy, QSlider, QSpinBox,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QSizePolicy, QSlider, QSpinBox,
     QVBoxLayout, QWidget,
 )
 
 from core.grain_detector import DetectionParams
 from ui.app_state import params_from_dict
+from ui.calibration_dialog import LENGTH_UNITS, _to_um, split_length_um
 from ui.canvas import GrainCanvas
 from ui.canvas.edit_actions import GrainEditController
 from ui.design import icons
@@ -46,7 +48,7 @@ from ui.pages.image_tree import ImageTree
 from ui.pages.results_table import ResultsTable
 from ui.widgets import (
     AnimatedButton, Badge, Card, CollapsibleSection, EmptyState, FadeStackedWidget,
-    IconButton, KeyValueList, ProgressRing, SegmentedControl, label,
+    IconButton, KeyValueList, ProgressRing, SegmentedControl, label, pulse_attention,
 )
 from ui.widgets.layout import ResponsiveToolbar, group as tool_group
 from ui.workers import AnalysisJob, AnalysisQueue
@@ -287,13 +289,17 @@ class ParamPanel(QWidget):
         return p
 
 
+ANALYZE_VIEWS = ("original", "overlay", "excluded")     # order of the view segments
+
+
 class SetupTile(Card):
     """UX-02: scan area + scale of the images, shown under the canvas.
 
     Row 1: readiness of every image + "Auto-find scan area & scale bar
     (all images)".  Row 2: the current image's scan area and scale with
     where they came from and Edit.  Row 3 (when a scale bar was found but
-    its length is unknown): type the bar's length in µm."""
+    its length is unknown): type the bar's length and pick its unit
+    (nm / µm / mm) in the dropdown beside it."""
 
     auto_find_requested = Signal()
     edit_scan_requested = Signal()
@@ -346,14 +352,24 @@ class SetupTile(Card):
         br.setSpacing(SPACE.sm)
         self.bar_lbl = label("", "caption")
         br.addWidget(self.bar_lbl)
-        self.bar_um = QDoubleSpinBox()
-        self.bar_um.setRange(0.0, 100000.0)
-        self.bar_um.setDecimals(3)
-        self.bar_um.setSuffix(" µm")
-        self.bar_um.setSpecialValueText("length?")
-        self.bar_um.setToolTip("The length printed next to the scale bar in the info bar")
-        self.bar_um.setMinimumWidth(110)
-        br.addWidget(self.bar_um)
+        # UPDATE 4 item 6: the number and its unit are separate controls
+        self.bar_len = QDoubleSpinBox()
+        self.bar_len.setObjectName("barLengthValue")
+        self.bar_len.setRange(0.0, 100000.0)
+        self.bar_len.setDecimals(3)
+        self.bar_len.setSpecialValueText("length?")
+        self.bar_len.setToolTip("The number printed next to the scale bar in the info bar "
+                                "(choose its unit on the right)")
+        self.bar_len.setAccessibleName("Scale-bar length")
+        self.bar_len.setMinimumWidth(96)
+        br.addWidget(self.bar_len)
+        self.bar_unit = QComboBox()
+        self.bar_unit.setObjectName("barLengthUnit")
+        self.bar_unit.addItems(list(LENGTH_UNITS))
+        self.bar_unit.setCurrentText("µm")
+        self.bar_unit.setToolTip("Unit printed on the scale-bar label")
+        self.bar_unit.setAccessibleName("Scale-bar length unit")
+        br.addWidget(self.bar_unit)
         self.bar_same = QCheckBox("Also images with the same scale bar")
         self.bar_same.setChecked(True)
         self.bar_same.setToolTip("Use this length for every image whose scale bar has the same "
@@ -363,11 +379,53 @@ class SetupTile(Card):
         br.addStretch(1)
         self.btn_bar = AnimatedButton("Apply", "check", "primary", "sm")
         self.btn_bar.setToolTip("Scale = scale-bar pixels ÷ the length you entered")
-        self.btn_bar.clicked.connect(lambda: self.bar_um.value() > 0 and self.bar_length_entered
-                                     .emit(float(self.bar_um.value()), self.bar_same.isChecked()))
+        self.btn_bar.clicked.connect(self._apply_bar_length)
+        self.bar_len.lineEdit().returnPressed.connect(self._apply_bar_length)
         br.addWidget(self.btn_bar)
         self.bar_row.hide()
         b.addWidget(self.bar_row)
+
+    # UPDATE 4 item 6 ----------------------------------------------------
+    def bar_length_um(self) -> float:
+        """Entered scale-bar length converted to µm (0 = not entered)."""
+        return _to_um(float(self.bar_len.value()), self.bar_unit.currentText())
+
+    def set_bar_length_um(self, length_um: float) -> None:
+        """Show a length (µm) as number + natural unit; 0 clears the number
+        and keeps the unit the user last chose."""
+        self.bar_len.blockSignals(True)
+        self.bar_unit.blockSignals(True)
+        if length_um and length_um > 0:
+            value, unit = split_length_um(length_um)
+            self.bar_unit.setCurrentText(unit)
+            self.bar_len.setValue(value)
+        else:
+            self.bar_len.setValue(0.0)
+        self.bar_len.blockSignals(False)
+        self.bar_unit.blockSignals(False)
+
+    def set_bar_length_text(self, text: str) -> bool:
+        """Accept "500 nm" / "2.5 µm" / "1 mm" / "20" (µm) and split it into
+        the number box and the unit dropdown.  False if it cannot be read."""
+        m = re.fullmatch(r"\s*([0-9]*[.,]?[0-9]+)\s*(nm|µm|μm|um|mm)?\s*", text or "")
+        if not m:
+            return False
+        value = float(m.group(1).replace(",", "."))
+        unit = {"um": "µm", "μm": "µm"}.get(m.group(2) or "µm", m.group(2) or "µm")
+        self.set_bar_length_um(_to_um(value, unit))
+        return True
+
+    def _apply_bar_length(self) -> None:
+        um = self.bar_length_um()
+        if um > 0:
+            self.bar_length_entered.emit(um, self.bar_same.isChecked())
+
+    def draw_attention_to_length(self) -> bool:
+        """Pulse the length box and focus it (after Auto-find) when the
+        scale-bar row is showing.  True if it did."""
+        if not self.bar_row.isVisible():
+            return False
+        return pulse_attention(self.bar_len) is not None
 
     def _column(self, title: str, tip: str):
         col = QVBoxLayout()
@@ -468,9 +526,7 @@ class SetupTile(Card):
         show_bar = im.bar_px > 0 and (px <= 0 or im.scale_source == "auto")
         if show_bar:
             self.bar_lbl.setText(f"Scale bar found: {im.bar_px:.0f} px. Its length:")
-            self.bar_um.blockSignals(True)
-            self.bar_um.setValue(im.bar_um if im.bar_um > 0 else 0.0)
-            self.bar_um.blockSignals(False)
+            self.set_bar_length_um(im.bar_um if im.bar_um > 0 else 0.0)
         self.bar_row.setVisible(show_bar)
 
     def set_progress(self, done: int, total: int) -> None:
@@ -502,7 +558,8 @@ class AnalyzePage(QWidget):
         self._batch_total = 0
         self._batch_uids: List = []
         self._run_btn: Optional[AnimatedButton] = None
-        self._rec = "session"            # HIER-01: "lot" when images live in the lot
+        self._view_pref = "overlay"      # UPDATE 4 item 14: user's display mode
+        self._rec = "session"           # HIER-01: "lot" when images live in the lot
         self._scale_key = "Session scale"
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
@@ -793,8 +850,7 @@ class AnalyzePage(QWidget):
         self.centre_seg.current_changed.connect(self._on_centre_view)
         self.table.open_image.connect(self._open_from_table)
         self.table.report_requested.connect(self.report_requested)
-        self.view_seg.current_changed.connect(
-            lambda i: self.canvas.set_view(("original", "overlay", "excluded")[i]))
+        self.view_seg.current_changed.connect(self._on_view_seg)
         self.canvas.view_changed.connect(self._sync_view_seg)
         self.canvas.delete_requested.connect(
             lambda ids: st.delete_grains(st.current_uid, ids))
@@ -907,7 +963,7 @@ class AnalyzePage(QWidget):
             self.canvas.set_placeholder("Select an image in the list")
             self.state.touch_pixels(im)
             self.canvas.set_image(im.image_bgr, im.result, raw=im.raw, excluded=im.excluded)
-        self.canvas.set_view("overlay" if im.result is not None else "original")
+        self.canvas.set_view(self._view_for(im))
         self.canvas.set_scan_rect(self.state.scan_for(im))
         self._update_title(im)
         self._refresh_calibration()
@@ -918,13 +974,20 @@ class AnalyzePage(QWidget):
         im = self.state.current_image()
         if im is None:
             return
-        had = self.canvas.result() is not None
         self.canvas.set_result(im.result, raw=im.raw, excluded=im.excluded)
-        if im.result is not None and not had:
-            self.canvas.set_view("overlay")
+        self.canvas.set_view(self._view_for(im))
         self._update_title(im)
         self._refresh_filters()
         self._refresh_info_bar()
+
+    # UPDATE 4 item 14: the display mode the user picked survives image
+    # switches; an image without results shows "original" for itself only.
+    def _on_view_seg(self, i: int) -> None:
+        self._view_pref = ANALYZE_VIEWS[i]
+        self.canvas.set_view(self._view_pref)
+
+    def _view_for(self, im) -> str:
+        return self._view_pref if im is not None and im.result is not None else "original"
 
     def _sync_view_seg(self, view: str) -> None:
         idx = {"original": 0, "overlay": 1, "excluded": 2}.get(view)
@@ -1261,6 +1324,7 @@ class AnalyzePage(QWidget):
                     "warning" if need else "success")
         if need and self.state.current_image() not in need:
             self.state.set_current_image(need[0].uid)
+        self.setup_tile.draw_attention_to_length()      # UPDATE 4 item 6
 
     def _on_bar_length(self, um: float, same: bool) -> None:
         im = self.state.current_image()

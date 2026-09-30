@@ -5,6 +5,7 @@ All widgets read colours from ``ui.design.theme.current_tokens()`` and
 repaint on ``theme_manager().theme_changed``; all motion honours
 ``ui.design.theme.set_reduced_motion(True)`` (animations complete instantly).
 """
+from ui.widgets.attention import AttentionRing, pulse_attention
 from ui.widgets.badges import STATUS_KINDS, Badge, Chip
 from ui.widgets.buttons import AnimatedButton, IconButton
 from ui.widgets.cards import Card, Sparkline, StatCard, label
@@ -25,5 +26,5 @@ __all__ = [
     "Toast", "ToastManager", "Skeleton", "Spinner", "ProgressRing",
     "Breadcrumb", "SearchBox", "EmptyState", "NavRail", "FadeStackedWidget",
     "Divider", "KeyValueList", "ShortcutOverlay", "SelectionBar",
-    "ResponsiveToolbar", "WrapLabel", "wrap_elide",
+    "ResponsiveToolbar", "WrapLabel", "wrap_elide", "AttentionRing", "pulse_attention",
 ]

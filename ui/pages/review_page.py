@@ -138,6 +138,7 @@ class ReviewPage(QWidget):
         self.state = state
         self.toasts = toasts
         self._syncing = False
+        self._view_pref = "overlay"      # UPDATE 4 item 14: user's display mode
         # UX-09: a streaming load updates images one by one; the comparison
         # table (O(n) rebuild) is refilled once per throttle window instead.
         self._cmp_timer = QTimer(self)
@@ -402,7 +403,7 @@ class ReviewPage(QWidget):
             lambda uid, busy: uid == st.current_uid and self.filters.set_busy(busy))
         self.film.current_changed.connect(st.set_current_image)
         self.film.files_dropped.connect(st.add_images)
-        self.view_seg.current_changed.connect(lambda i: self.canvas.set_view(VIEW_KEYS[i]))
+        self.view_seg.current_changed.connect(self._on_view_seg)
         self.canvas.view_changed.connect(self._sync_view)
         self.canvas.selection_changed.connect(self._on_canvas_selection)
         self.canvas.delete_requested.connect(self.delete_selected)
@@ -484,9 +485,17 @@ class ReviewPage(QWidget):
             self.state.touch_pixels(im)
             self.canvas.set_image(im.image_bgr, im.result, raw=im.raw, excluded=im.excluded)
         self.canvas.set_scan_rect(self.state.scan_for(im))
-        self.canvas.set_view(VIEW_KEYS[self.view_seg.current_index()]
-                             if im.result is not None else "original")
+        self.canvas.set_view(self._view_for(im))
         self._show_current(keep_view=True, image_changed=True)
+
+    # UPDATE 4 item 14: the display mode the user picked survives image
+    # switches; an image without results shows "original" for itself only.
+    def _on_view_seg(self, i: int) -> None:
+        self._view_pref = VIEW_KEYS[i]
+        self.canvas.set_view(self._view_pref)
+
+    def _view_for(self, im) -> str:
+        return self._view_pref if im is not None and im.result is not None else "original"
 
     def _show_current(self, keep_view=True, image_changed=False) -> None:
         im = self.state.current_image()
@@ -494,6 +503,7 @@ class ReviewPage(QWidget):
             return
         if not image_changed:
             self.canvas.set_result(im.result, raw=im.raw, excluded=im.excluded)
+            self.canvas.set_view(self._view_for(im))
         self.img_title.setText(im.display_name)
         self.img_title.setToolTip(im.tooltip())
         kind, text = status_text(im)

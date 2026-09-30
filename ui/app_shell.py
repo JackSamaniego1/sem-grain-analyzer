@@ -69,33 +69,6 @@ SHORTCUTS = {
 }
 
 
-DEVICE_TIP_CPU = ("AI-assisted detection runs on this computer's processor (CPU). "
-                  "A supported NVIDIA graphics card (GPU) would make it faster. Boundary and "
-                  "Threshold modes always use the processor. Everything runs on this PC; "
-                  "nothing is sent anywhere.")
-DEVICE_TIP_GPU = ("AI-assisted detection runs on the graphics card (GPU): {name}. This is "
-                  "much faster than the processor. Everything runs on this PC; nothing is "
-                  "sent anywhere.")
-
-
-def device_chip_text(probe: str) -> tuple:
-    """(chip text, tooltip, badge kind) for a ``_probe_device`` result."""
-    if probe.startswith("GPU"):
-        name = probe.split("·", 1)[1].strip() if "·" in probe else "GPU"
-        return f"AI runs on: GPU ({name})", DEVICE_TIP_GPU.format(name=name), "accent"
-    return "AI runs on: CPU", DEVICE_TIP_CPU, "neutral"
-
-
-def _probe_device() -> str:
-    try:
-        import torch  # heavy; imported lazily and off the GUI thread
-        if torch.cuda.is_available():
-            return "GPU · " + torch.cuda.get_device_name(0)
-    except Exception:
-        pass
-    return "CPU"
-
-
 class SearchPopup(Card):
     """Results list shown under the top-bar search box (child widget, not a
     popup window, so typing never loses focus)."""
@@ -144,7 +117,9 @@ class AppShell(QMainWindow):
                  tour: Optional[bool] = None) -> None:
         """``tour``: auto-start the first-run guided tour when the window is
         first shown.  ``None`` = yes, except under pytest / offscreen renders /
-        ``GRAIN_NO_TOUR=1`` (the tour must never block headless runs)."""
+        ``GRAIN_NO_TOUR=1`` (the tour must never block headless runs).
+        ``probe_device`` is accepted for compatibility and ignored (UPDATE 4
+        item 10a removed the "AI runs on" status chip)."""
         super().__init__()
         self._tour_autostart = _tour_env_allows() if tour is None else bool(tour)
         self._tour_checked = False
@@ -170,8 +145,6 @@ class AppShell(QMainWindow):
         from ui.tour import TourController, tag_anchors
         tag_anchors(self)
         self.tour = TourController(self)
-        if probe_device:
-            QTimer.singleShot(1500, lambda: run_task(_probe_device, on_done=self._set_device))
 
     # ------------------------------------------------------------------ build
     def _build(self) -> None:
@@ -223,9 +196,6 @@ class AppShell(QMainWindow):
         self.progress.setToolTip("Overall analysis progress")
         self.progress.hide()
         sb.addPermanentWidget(self.progress)
-        # UX-11: say in plain words where the AI-assisted detection runs
-        self.chip_device = Badge("AI runs on: CPU", "neutral", icon="cpu")
-        self.chip_device.setToolTip(DEVICE_TIP_CPU)
         self.chip_cal = Badge("Not calibrated", "warning", dot=True)
         self.chip_cal.setToolTip("Scale of the current image (Ctrl+K to set)")
         self.chip_save = Badge("No session", "neutral", icon="save")
@@ -238,7 +208,7 @@ class AppShell(QMainWindow):
         self._calcheck_timer.setSingleShot(True)
         self._calcheck_timer.setInterval(300)
         self._calcheck_timer.timeout.connect(self._update_calcheck_chip)
-        for c in (self.chip_device, self.chip_cal, self.chip_calcheck, self.chip_save):
+        for c in (self.chip_cal, self.chip_calcheck, self.chip_save):
             sb.addPermanentWidget(c)
         self.overlay = ShortcutOverlay(self, SHORTCUTS)
 
@@ -843,13 +813,6 @@ class AppShell(QMainWindow):
     # ------------------------------------------------------------------ chrome state
     def _status(self, msg: str) -> None:
         self.status_msg.setText(msg)
-
-    def _set_device(self, probe: str) -> None:
-        text, tip, kind = device_chip_text(probe or "CPU")
-        self.chip_device.set_text(text)
-        self.chip_device.setToolTip(tip)
-        self.chip_device.set_kind(kind)
-        self.chip_device.updateGeometry()
 
     def _update_cal_chip(self) -> None:
         im = self.state.current_image()

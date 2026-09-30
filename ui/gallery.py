@@ -100,7 +100,6 @@ class GalleryWindow(QMainWindow):
         self.setStatusBar(sb)
         sb.addWidget(QLabel("Ready"))
         sb.addPermanentWidget(Badge("Calibrated 0.412 µm/px", "success", dot=True))
-        sb.addPermanentWidget(Badge("CPU", "neutral", icon="cpu"))
         sb.addPermanentWidget(QLabel("Operator: A. Operator"))
 
         self.toasts = ToastManager(central)
