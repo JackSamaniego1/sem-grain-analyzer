@@ -44,7 +44,7 @@ from reports.charts import (
     SERIES, build_bins, convert_bound, filter_range, normal_fit, resolve_chart_options,
     resolve_units, resolve_palette, series_for,
 )
-from reports.model import ReportModel, ImageSummary, Section
+from reports.model import ReportModel, ImageSummary, Section, pooled_grain_percentiles
 from reports.excel_renderer import _resized_png, _row_size_stats
 
 try:
@@ -229,6 +229,14 @@ def render_pptx(model: ReportModel, output_path: str, template_path: Optional[st
                             _part_summary_slide(new_slide(), chunk, au, du, navy, heading_suffix=suffix)
                             _add_footer(prs.slides[-1], model, page[0], navy)
                         _charts_only_slide(new_slide(), rows, au, du, part_label, navy, series)
+                        _add_footer(prs.slides[-1], model, page[0], navy)
+
+                    # Slide ordering: cover -> summary (+charts) -> percentiles
+                    # -> per-image data tables. Insert new slides here.
+                    prows, pau, pdu = _percentile_rows(model, images)
+                    ppages = _chunk(prows, MAX_DATA_ROWS)
+                    for i, chunk in enumerate(ppages, start=1):
+                        _percentile_slide(new_slide(), chunk, pau, pdu, navy, idx=i, total=len(ppages))
                         _add_footer(prs.slides[-1], model, page[0], navy)
 
                     for part, idx, total, page_rows in _plan_image_table_slides(model, images):
@@ -696,8 +704,8 @@ def _part_summary_rows(model: ReportModel,
 
 def _fmt_mean_sd(mean: float, sd: Optional[float], unit: str) -> str:
     if sd is None:
-        return f"{mean:.2f} {unit}"
-    return f"{mean:.2f} ± {sd:.2f} {unit}"
+        return f"{_fmt_adaptive(mean)} {unit}"
+    return f"{_fmt_adaptive(mean)} ± {_fmt_adaptive(sd)} {unit}"
 
 
 def _fmt_g_ci(mean: Optional[float], ci: Optional[float]) -> str:
@@ -775,6 +783,67 @@ def _part_summary_slide(slide, rows: List[Dict[str, Any]], au: str, du: str, nav
     for c, w in enumerate(_SUMMARY_COL_WIDTHS_IN):
         table.columns[c].width = Inches(w)
     _fill_summary_table(table, rows, au, du, navy, header_size=11, body_size=11)
+
+
+PERCENTILE_TITLE = "Grain Size Percentiles (D10 / D50 / D90)"
+PERCENTILE_DEFINITION = ("D10: 10 % of grains are smaller than this size. "
+                         "D50: half are smaller (the median). D90: 90 % are smaller.")
+_PCT_COL_WIDTHS_IN = [2.4, 2.2, 1.2, 1.6, 1.9, 1.5, 1.533]
+_NO_VALUE = "–"
+PCT_TABLE_TOP_IN = 1.5  # 1.5 + 15 rows * 0.37 = 7.05 in < footer bar top 7.18 in
+
+
+def _percentile_rows(model: ReportModel, images: List[ImageSummary]
+                     ) -> Tuple[List[Dict[str, Any]], str, str]:
+    """One row per part+lot (same grouping/order as the per-image data
+    tables; no subtotal rows): pooled number-based D10/D50/D90 of grain
+    diameter plus median grain area, in the report's display units."""
+    au, am, du, dm, calibrated = _global_unit(model, images)
+    rows: List[Dict[str, Any]] = []
+    for part, lots in _group_by_part(model, images).items():
+        for lot, imgs in lots.items():
+            stats = pooled_grain_percentiles(imgs, calibrated, am, dm)
+            rows.append({"part": part, "lot": lot, **stats})
+    return rows, au, du
+
+
+def _fmt_adaptive(v: float) -> str:
+    """``.2f`` for |v| >= 1 (or exactly 0); below 1, 3 significant digits so a
+    non-zero value never prints as "0.00"."""
+    if v == 0 or abs(v) >= 1 or not math.isfinite(v):
+        return f"{v:.2f}"
+    decimals = 2 - math.floor(math.log10(abs(v)))
+    return f"{v:.{decimals}f}"
+
+
+def _fmt_pct(v: Optional[float]) -> str:
+    return _NO_VALUE if v is None else _fmt_adaptive(v)
+
+
+def _percentile_slide(slide, rows: List[Dict[str, Any]], au: str, du: str,
+                      navy: RGBColor = NAVY, idx: int = 1, total: int = 1) -> None:
+    title = PERCENTILE_TITLE if total <= 1 else f"{PERCENTILE_TITLE} (continued {idx}/{total})"
+    _slide_heading(slide, title, navy)
+    _textbox(slide, Inches(CONTENT_LEFT_IN), Inches(0.95), Inches(CONTENT_WIDTH_IN), Inches(0.5),
+             PERCENTILE_DEFINITION, size=12, color=GREY)  # word-wrapped; room for 2 lines
+    headers = ["Part", "Lot", "Grains", f"D10 ({du})", f"D50 (median) ({du})",
+               f"D90 ({du})", f"Median Area ({au})"]
+    n_rows = len(rows) + 1
+    shape = slide.shapes.add_table(n_rows, len(headers), Inches(CONTENT_LEFT_IN), Inches(PCT_TABLE_TOP_IN),
+                                   Inches(CONTENT_WIDTH_IN), Inches(TABLE_ROW_IN) * n_rows)
+    table = shape.table
+    for c, w in enumerate(_PCT_COL_WIDTHS_IN):
+        table.columns[c].width = Inches(w)
+    for c, h in enumerate(headers):
+        cell = table.cell(0, c)
+        cell.text = h
+        _style_header_cell(cell, navy, size=11)
+    for r, row in enumerate(rows, start=1):
+        vals = [row["part"], row["lot"], str(row["n"]), _fmt_pct(row["d10"]),
+                _fmt_pct(row["d50"]), _fmt_pct(row["d90"]), _fmt_pct(row["median_area"])]
+        for c, v in enumerate(vals):
+            table.cell(r, c).text = v
+        _style_data_row(table, r, text_col_count=2, size=11)
 
 
 def _three_chart_geometry() -> Tuple[float, List[float]]:

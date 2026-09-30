@@ -30,7 +30,7 @@ from reports.model import ReportModel, ReportImageInput, Section
 from reports.pptx_renderer import (
     render_pptx, SLIDE_H, MAX_SUMMARY_ROWS, MAX_DATA_ROWS, MAX_PARTS_COMBINED,
     MARGIN_IN, FOOTER_MAX_CHARS, _part_summary_rows, _chunk, _plan_image_table_slides,
-    _max_chars_for_width, _DATA_IMAGE_COL_IN, _footer_text,
+    _max_chars_for_width, _DATA_IMAGE_COL_IN, _footer_text, _percentile_rows,
 )
 from reports.charts import PALETTES
 
@@ -78,6 +78,7 @@ def _overview_slide_count(model, images):
         n = 1
     else:
         n = len(_chunk(rows, MAX_SUMMARY_ROWS)) + 1
+    n += len(_chunk(_percentile_rows(model, images)[0], MAX_DATA_ROWS))
     n += len(_plan_image_table_slides(model, images))
     return n
 

@@ -660,3 +660,36 @@ class ReportModel:
                     problems.append(f"Section {s.id} references unknown image_id {iid!r}.")
 
         return problems
+
+
+def pooled_grain_percentiles(images: List["ImageSummary"], calibrated: bool = True,
+                             area_mult: float = 1.0, length_mult: float = 1.0
+                             ) -> Dict[str, Any]:
+    """Number-based grain-size percentiles pooled over ``images``.
+
+    Every grain counts once: the equivalent diameters of all grains of all
+    given images are concatenated and ``np.percentile`` is applied to that
+    pool (NOT an average of per-image percentiles). Returns ``{"n", "d10",
+    "d50", "d90", "median_area"}``; the values are ``None`` when there are no
+    grains. ``calibrated`` selects the um columns (scaled by ``length_mult`` /
+    ``area_mult`` -- pure rescaling) or the px columns (multipliers ignored).
+    """
+    dkey, akey = ("diameter_um", "area_um2") if calibrated else ("diameter_px", "area_px")
+    dm, am = (length_mult, area_mult) if calibrated else (1.0, 1.0)
+    diams: List[float] = []
+    areas: List[float] = []
+    for img in images:
+        for g in img.grains:
+            d, a = g.get(dkey), g.get(akey)
+            if d is None or a is None:
+                continue
+            d, a = float(d), float(a)
+            if not (np.isfinite(d) and np.isfinite(a)):
+                continue
+            diams.append(d * dm)
+            areas.append(a * am)
+    if not diams:
+        return {"n": 0, "d10": None, "d50": None, "d90": None, "median_area": None}
+    p10, p50, p90 = np.percentile(np.asarray(diams), [10, 50, 90])
+    return {"n": len(diams), "d10": float(p10), "d50": float(p50), "d90": float(p90),
+            "median_area": float(np.median(areas))}
