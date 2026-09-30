@@ -80,11 +80,11 @@ Rules: Fable coordinates only and implements nothing except #12 (one-time except
 - [x] 13 Review image list grouped Job › Part › Lot like Analyze (4127728)
 - [x] 19 PPTX contents page as slide 2 with links (1c3eec9)
 
-**Batch 3 (in progress, 2026-09-30 night):**
-- [~] 15 Lot Summary page: bar+trendline lot charts + job summary in Excel + PPTX (b4e38a5 reviewed; user must open sample to verify; minor follow-up: ASTM G avg label)
-- [ ] 11 Auto-fill magnification / instrument / kV / WD from JEOL + Thermo metadata on image load (UI wiring in progress; core 959ffe0 done)
-- [ ] 5  Resolution Profiles sidebar card (manual selection) (data layer + UI; fixes on review findings in progress)
-- [~] 7  Stability during analysis on weak CPUs; lock with "Continue anyway" — core a51a2d2 done; **UI wiring pending** (call configure_threads at startup, add lock to analysis, undo cleanup)
-- [ ] 8  Review: "Add grain" tool (split-tool drawing style) — core 273750b done; **UI wiring in progress**
-- [x] 10b AI-Assisted (GPU) / (CPU) modes + CUDA installer — 822bfb3 core + fcf57cc packaging + c4b2584 installer page + 455e548 UI modes done; **trial GPU build + manual checks pending** (D-35, D-36: NVIDIA confirmed)
-- [ ] 12 Fable: speed & usability optimisation, faster detection without accuracy loss — LAST
+**Batch 3 (parallel: 2026-09-30 night update 2):**
+- [x] 15 Lot Summary page: bar+trendline lot charts + job summary in Excel + PPTX (b4e38a5 reviewed; user must open sample to verify; minor follow-up: ASTM G avg label). **DONE**
+- [x] 11 Auto-fill magnification / instrument / kV / WD from JEOL + Thermo metadata on image load (37e6040 UI done; core 959ffe0). **DONE**
+- [~] 5  Resolution Profiles sidebar card (manual selection) (a21da9d data done; UI sidebar card TBD; data layer review fixes in progress)
+- [ ] 7  Stability during analysis on weak CPUs; lock with "Continue anyway" — core a51a2d2 done; **UI wiring in progress** (call configure_threads at startup, add lock to analysis, undo cleanup)
+- [x] 8  Review: "Add grain" tool (split-tool drawing style) (37e6040 UI done; core 273750b). **DONE**
+- [x] 10b AI-Assisted (GPU) / (CPU) modes + CUDA installer — 822bfb3 core + fcf57cc packaging + c4b2584 installer page + 455e548 UI modes. **DONE** (trial GPU build + manual checks pending D-35, D-36)
+- [~] 12 Fable: speed & usability optimisation (b5b1e7b step 1 done: thread cap keeps both cores on 1–2 core PCs; measurements recorded; UI-side optimisation TBD). **IN PROGRESS**

@@ -1,7 +1,7 @@
 # SESSION STATE - read this first when resuming
 
-**Last updated:** 2026-09-30 (night, cont: items 15 reports, 4 UI, 10b UI, 7 core committed; 3 agents still running on items 11 UI, 8 UI, 5, 7 UI)  
-**Branch:** `v3-dev` | **Last commit:** `a51a2d2` (item 7 core: thread caps, atomic pack_result, add_grain hardening; NOT yet called by UI) | **Phase:** UPDATE 4 batch 3: items 4, 10b UI, 15 reports, 7 core done; items 11, 8, 5 UI + item 7 UI wiring in progress  
+**Last updated:** 2026-09-30 (night, update 2: items 8, 11, 15 UI done; item 5 data half done; item 12 first step done; item 7 UI wiring running now)  
+**Branch:** `v3-dev` | **Last commit:** `37e6040` (UI pass 2: items 8, 11, 15 UI done + GPU-check review fixes) | **Phase:** UPDATE 4 batch 3: items 8, 11, 15, 5 data, 12 step-1 done; item 7 UI wiring in progress  
 **Resume with:** read this file only, then handoff/UPDATE_4.md and handoff/02_TEAM_ROSTER.md. **Note:** User overnight: keep working through UPDATE 4 tonight; ignore context-size warning when it fires.
 
 ## Done and committed
@@ -31,16 +31,21 @@
 - Installer builds locally: GrainAnalyzer_Setup.exe 644 MB
 
 ## In-progress tasks (uncommitted, agents running)
-- **Item 11 UI wiring** (detection-engineer): Auto-fill magnification/instrument/kV/WD on image load from metadata. Core read_image_info() done (959ffe0). Fills fields in Analyze card on image load.
-- **Item 8 UI half** (ui-designer + detection-engineer): Review "Add grain" tool UI wiring (split-tool style, mirror core logic). Core add_grain done (273750b).
-- **Item 5 data layer** (data-architect): ProfileStore, ResolutionProfile, check_fit, import/export; session field `resolution_profile`. Fixing review findings on unit spelling, save-failure rollback, NaN/inf checks.
-- **Item 7 UI wiring** (opus): Call core/perf.py `configure_threads()` at startup in main.py; AnalysisQueue generation fix; analysis lock with "Continue anyway"/"Don't warn again" per ITEM_7_STABILITY_PLAN.md.
+- **Item 7 UI wiring** (ui-designer): Call core/perf.py `configure_threads()` at startup in main.py; AnalysisQueue generation fix; close-while-analysing check; crash log; analysis lock with "Continue anyway"/"Don't warn again" per ITEM_7_STABILITY_PLAN.md.
 
 ## NEXT 3 ACTIONS
 
 1. **Review + commit ui/data layer branches** (detection-engineer: items 11, 7 UI + item 8 UI). Code-reviewer on each diff, full test suite after review/commit.
 2. **Item 5 Resolution Profiles** (data layer + UI sidebar card) → item 7 UI wiring (thread caps lock during analysis) → item 12 Fable last (speed optimisation).
 3. **Final full suite + smoke-app** → summary for user: manual checks needed (installer GPU page, real JEOL/Thermo images, sample Excel/PowerPoint, NSIS build on installer PC).
+
+**Batch 3 status (parallel reports, data, core, UI; 2026-09-30 night):**
+- [x] Item 15 DONE & REVIEWED (b4e38a5): Lot Summary in Excel (per-lot distribution chart + subtotals) + PowerPoint (job summary table + bar+trendline charts). Minor follow-up: ASTM G in subtotal rows label as average.
+- [x] Item 11 DONE & REVIEWED (37e6040): Auto-fill mag/instrument/kV/WD on image load (core 959ffe0 + UI 37e6040). Fills Analyze card fields on image load.
+- [~] Item 5 HALF DONE (data layer: a21da9d): ProfileStore, ResolutionProfile, check_fit, import/export, snapshot in session. UI sidebar card TBD (data layer review fixes in progress).
+- [x] Item 8 DONE & REVIEWED (37e6040): Add grain lasso tool on Review canvas (split-tool style; core 273750b + UI 37e6040). Shortcut A.
+- [x] Item 12 STEP 1 DONE (b5b1e7b): Thread cap keeps both cores for AI on 1–2 core PCs. Measurements recorded: standard modes 0.6–1.5 s; AI on CPU 31–80 s (thread-independent results); no lossless speed-up exists.
+- [ ] Item 7 UI WIRING IN PROGRESS (ui-designer): configure_threads at startup, AnalysisQueue fix, close-while-analysing, crash log, analysis lock with "Continue anyway"/"Don't warn again".
 
 **Batch 2 status** ✓ complete:
 - [x] Item 6: Unit dropdown + pulse (7a70d74)
@@ -82,10 +87,10 @@ cd "C:\Users\saman\GRAIN ANALYSIS TOOL"
 - **Item 8** (ui-designer + detection-engineer): Review "Add grain" tool (split-tool style).
 - **Item 12** (Fable): Speed & usability optimisation, faster detection (LAST item).
 
-## NIGHT SESSION — 2026-09-30 (update 3)
-- **Item 15 DONE & REVIEWED (b4e38a5)**: reports/lot_summary.py `lot_summary_data(model, images=None) -> dict` is the single data source. Lot Summary in Excel (per-lot distribution chart + subtotals) + PowerPoint (job summary table + bar+trendline charts for mean diameter, D50, mean area, grain count, ASTM G). New tests in test_report_lot_summary.py. **User must open sample Excel/PowerPoint to verify**. Minor follow-up: ASTM G in subtotal rows should be labeled as average (not just the number).
-- **Item 4 DONE & REVIEWED (455e548)**: Auto-find now reads scale-bar label in Automatic mode (worker thread, non-blocking). Unsure readings get "Please check" badge; auto-apply disabled until user confirms. Reuses OCR from item 4 core (8a059e0).
-- **Item 10b UI DONE & REVIEWED (455e548)**: "AI-Assisted (GPU)" / "AI-Assisted (CPU)" mode cards (ui/ai_probe.py background GPU check). GPU greyed with reason if unavailable. **Trial GPU build + manual checks pending** (D-35, D-36).
-- **Item 7 core DONE & REVIEWED (a51a2d2)**: core/perf.py `configure_threads()` (OpenCV, torch, OCR thread caps), atomic pack_result, add_grain hardening. **NOT yet called by app**: UI-side item 7 pass must call configure_threads() at startup in main.py. Caveat: AI-assisted (SAM) results on CPU may differ by a few pixels with different thread count (untested; standard modes identical).
-- **Agents running** (uncommitted): detection-engineer (items 11 UI + 7 UI wiring + 8 UI), data-architect (item 5 data layer). Modified: data/, ui/, tests/. New files staged.
-- **Upcoming**: review/commit each → full test suite → item 5 sidebar (profiles UI) → batch 3 final (item 12 Fable speed optimisation).
+## NIGHT SESSION — 2026-09-30 (update 2: batch 3 continues)
+- **a21da9d (item 5 data)**: data/resolution_profiles.py (ProfileStore, ResolutionProfile, check_fit, nm_per_px_from, export/import, read-only mode on newer schema, ProfileError). Session image entry field `resolution_profile` (snapshot dict; CLEAR removes). 37 tests passing.
+- **b5b1e7b (item 12 step 1)**: core/perf.py thread cap keeps both cores for AI on 1–2 core PCs. Measurements: standard modes 0.6 s (JEOL 1280×1024) & 1.5–2 s (synthetic 2048×1536); AI on CPU 31–80 s (2, 4, 8, 15 threads) with identical grains; no lossless speed-up via adaptive skip (rejected: -8 grains, +2% diameter). UI-side work pending (overlay copies, grain edits, batch overhead, startup).
+- **37e6040 (UI pass 2)**: Item 11 UI (read-only "Image details" under image; ui/image_details.py; details in image_info.json), Item 15 UI (Lot Summary preview in report editor), Item 8 UI (Add grain lasso tool; shortcut A; Review+Analyze). GPU-check review fixes. 1287 tests passed.
+- **User hand-checks pending**: Add grain on real image; details line with real JEOL/Thermo files; Lot Summary with many lots; 150/200% scaling; sample deck/workbook in PowerPoint/Excel; trendline = straight-line fit.
+- **Agents running** (uncommitted): ui-designer on item 7 UI wiring per ITEM_7_STABILITY_PLAN.md.
+- **Upcoming**: review/commit item 7 → full test suite → item 5 sidebar (profiles UI) → item 12 UI-side Fable optimisation → final suite + /smoke-app.

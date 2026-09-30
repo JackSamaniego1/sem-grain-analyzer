@@ -28,6 +28,12 @@
 ## 2026-09-24 — Opus coordinator (cont.), saved before usage limit
 - Committed: REP-08 exports honour designer edits (fb09964); DET-05 info-bar + INN-05 metadata calibration core (e6d0e1d); HIER-01 reports (b50751d) and data layer (a916add) — user request: Job # › Part Number › Lot, images in the lot, user-editable naming; session trash undo (19a20be); context/usage discipline rules in CLAUDE.md (17855db).
 - User set autoContinueAtUsageLimit=true (user settings) and asked for frequent handoff saves + context clears.
+
+## 2026-09-30 — UPDATE 4 batch 3 progress (night session, update 2)
+- **a21da9d (2026-09-30)**: Item 5 data done — data/resolution_profiles.py (ProfileStore, ResolutionProfile, check_fit, export/import, read-only mode, 37 tests). Session resolution_profile field snapshots on image.
+- **b5b1e7b (2026-09-30)**: Item 12 step 1 done — core/perf.py thread cap (both cores on 1–2 core PCs). Measurements: AI on CPU 31–80 s (identical at 2,4,8,15 threads); adaptive skip rejected (-8 grains, +2% diameter).
+- **37e6040 (2026-09-30)**: UI pass 2 done — items 11, 15, 8 UI complete (1287 tests). Item 11: auto-fill mag/instrument/kV/WD on image load. Item 15: Lot Summary preview in report editor. Item 8: Add grain lasso tool (A shortcut). GPU-check fixes.
+- **Running (uncommitted)**: ui-designer on item 7 UI wiring (configure_threads, AnalysisQueue fix, close-while-analysing, crash log, analysis lock). Next: review/commit → item 5 sidebar UI → item 12 Fable optimisation → final suite.
 - HIER-01 UI agent hit the usage limit; partial work checkpointed as 93937b1 (tests may fail). Resume per SESSION_STATE.md.
 
 ## 2026-09-24 — HIER-01 UI completion (scribe commit)

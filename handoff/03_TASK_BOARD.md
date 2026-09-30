@@ -164,13 +164,13 @@ See handoff/UPDATE_4.md: 19 items, 3 batches, execution checklist.
 | 13 | Review image list grouped Job › Part › Lot | ui-designer | done | 4127728; reused ImageTree component, folder nesting, image stepping |
 | 19 | PPTX contents page as slide 2 with links | report-engineer | done | 1c3eec9; page numbers, collapsed ranges, clickable links, Grain Size Summary now slide 3 |
 
-**Batch 3 (parallel: reports + core + UI; 2026-09-30 night update):**
+**Batch 3 (parallel: 2026-09-30 night update 2):**
 | # | Item | Owner | Status | Notes |
 |---|------|-------|--------|-------|
-| 15 | Lot summary charts (bar+trendline) | report-engineer | review | b4e38a5: job summary table + bar/trendline charts in Excel/PPTX; user must open sample to verify |
-| 11 | Auto-fill mag/instrument/kV/WD from metadata | detection-engineer | doing | 959ffe0: core read_image_info done; UI wiring in progress (fill fields on Analyze card on image load) |
-| 5 | Resolution Profiles sidebar card | ui-designer + data-architect | doing | Data layer fixes in progress (unit spelling, save rollback, NaN/inf); then UI sidebar |
-| 10b | GPU/CUDA torch build + AI-Assisted modes | ui-designer + build-engineer | review | 822bfb3 core + fcf57cc packaging + c4b2584 installer page + 455e548 UI modes (DONE); trial build + manual checks pending |
-| 7 | Stability on weak CPUs during analysis | opus | doing | a51a2d2: core perf.py configure_threads done; UI wiring in progress (startup call, analysis lock, undo cleanup) |
-| 8 | Review: "Add grain" tool | ui-designer + detection-engineer | doing | 273750b: core add_grain done; UI wiring in progress (split-tool logic, Review page) |
-| 12 | Fable: speed & usability optimisation | fable | todo | LAST item |
+| 15 | Lot summary charts (bar+trendline) | report-engineer | done | b4e38a5: job summary table + bar/trendline charts in Excel/PPTX; user must open sample to verify; minor: ASTM G avg label |
+| 11 | Auto-fill mag/instrument/kV/WD from metadata | detection-engineer | done | 37e6040: core (959ffe0) + UI done; fills Analyze card fields on image load |
+| 5 | Resolution Profiles sidebar card | ui-designer + data-architect | doing | a21da9d: data layer done (ProfileStore, import/export); UI sidebar TBD; data layer review fixes in progress |
+| 10b | GPU/CUDA torch build + AI-Assisted modes | ui-designer + build-engineer | done | 822bfb3 core + fcf57cc packaging + c4b2584 installer page + 455e548 UI modes; trial build + manual checks pending |
+| 7 | Stability on weak CPUs during analysis | ui-designer | doing | a51a2d2: core perf.py configure_threads done; UI wiring in progress (startup call, analysis lock, undo cleanup) |
+| 8 | Review: "Add grain" tool | ui-designer + detection-engineer | done | 37e6040: core (273750b) + UI done; split-tool lasso on Review page, shortcut A |
+| 12 | Fable: speed & usability optimisation | fable | doing | b5b1e7b: step 1 done (thread cap, measurements); UI-side speed/usability optimisation TBD |
