@@ -181,3 +181,10 @@
   - Lot Summary preview widget in report designer (future v3.1+).
   - PowerPoint Lot Summary slide export (future v3.1+).
 - **Next**: User downloads GrainAnalyzer_Setup.exe to flash drive, installs on work PC, and tests. If bugs found: fix on v3-dev, rebuild locally, re-tag v3.0.0 (safe before push). On approval: all commits already pushed to origin.
+
+## 2026-09-29 — User feedback: report redesign requested (mockups, awaiting choice)
+- **User feedback on v3.0.0 reports**: PowerPoint and Excel exports "very messy"; tables overflow with many entries. User requests: SUMMARY slide as slide 2 of PowerPoint (tables + graphs, quick lot-comparison overview across all parts of grain diameter, ASTM G, and area).
+- **REP-DESIGN-01 opened**: Report-engineer created 4 mockup options (Artifact MiCcw4BV5AgFyfUNEQ4Y52): **A** (Dashboard layout: KPI strip + lot table + G/diameter/area charts on single lot axis), **B** (Side-by-side lot rows: one row per lot, three mean±95%CI panels + auto findings, scales best, **recommended**), **C** (Heat-map table: colour-scaled cells + diameter distribution by part + per-part roll-ups, simplest), **D** (Lot scorecards: big G, ΔG chips, mini histograms, scales worst). **Feasibility**: python-pptx lacks error-bar API → A/B need XML injection; B requires chart points aligned to table rows (fallback: image if alignment fails).
+- **Long-table pagination rule proposed**: max 14 rows per PPTX slide, continued slides with repeated header + "(continued n/m)", break at part boundaries, truncate names >14 chars. Applied to Excel and PPTX.
+- **User blockers**: (1) Pick mockup option (A/B/C/D) or sketch custom design; (2) Specify which Excel problems matter most (awaiting answer). No code written pending user input.
+- **Next**: Await user decision on mockup + Excel priorities; then implement SUMMARY slide + table pagination for v3.0.1 (report-engineer task).
