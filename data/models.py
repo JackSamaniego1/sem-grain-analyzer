@@ -319,6 +319,9 @@ class ImageManifestEntry:
     # an old job still opens after the profile is edited or deleted. Old
     # manifests lack the key and load as None.
     resolution_profile: Optional[dict] = None
+    # Scan area [x, y, w, h] the saved result was measured on (drives the
+    # "out of date" flag across save + reopen). Old manifests: None.
+    result_scan: Optional[list] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -417,6 +420,8 @@ class ImageEntry:
     detector_label_image: Optional[Any] = None
     # profile snapshot dict, None (leave unchanged), or CLEAR (no profile)
     resolution_profile: Optional[Any] = None
+    # [x, y, w, h], None (leave unchanged), or CLEAR
+    result_scan: Optional[Any] = None
 
 
 # ======================================================================

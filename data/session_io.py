@@ -413,6 +413,8 @@ def _build_manifest_images(images_dir: Path, results_dir: Path, thumbs_dir: Path
                          if isinstance(entry.grain_edits, (list, tuple)) else []),
             resolution_profile=(dict(entry.resolution_profile)
                                 if isinstance(entry.resolution_profile, dict) else None),
+            result_scan=(list(entry.result_scan)
+                         if isinstance(entry.result_scan, (list, tuple)) else None),
         ))
     return manifest_images
 
@@ -509,6 +511,11 @@ def _merge_image_entry(existing: ImageManifestEntry, entry: ImageEntry, session_
         existing.resolution_profile = None
     elif isinstance(entry.resolution_profile, dict):
         existing.resolution_profile = dict(entry.resolution_profile)
+
+    if entry.result_scan is CLEAR:
+        existing.result_scan = None
+    elif isinstance(entry.result_scan, (list, tuple)):
+        existing.result_scan = [int(v) for v in entry.result_scan]
 
 
 def _detector_labels(entry: ImageEntry) -> Optional[np.ndarray]:

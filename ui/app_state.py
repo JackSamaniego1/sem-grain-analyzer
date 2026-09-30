@@ -438,7 +438,8 @@ def _image_dict(si, bgr, legacy: Optional[dict] = None, opts: Optional[PostFilte
                 edits=edits, detector_labels=base,
                 thumb=thumb_qimage(bgr), scan_rect=entry.scan_rect,
                 px=float(entry.px_per_um or 0.0), notes=entry.notes,
-                profile=getattr(entry, "resolution_profile", None))
+                profile=getattr(entry, "resolution_profile", None),
+                result_scan=getattr(entry, "result_scan", None))
 
 
 def _load_session_bundle(path: Path, keep_n: int = PIXEL_CACHE_MAX_IMAGES) -> dict:
@@ -1443,10 +1444,16 @@ class AppState(QObject):
                 im.scale_source = im.scan_source = "profile"
             else:                               # changed by hand since: no label
                 im.profile = None
-        # the manifest does not keep the scan area a saved result was measured
-        # on: taken as the current one (a changed SCALE is still caught -- the
-        # result keeps its own px_per_um)
-        im.result_scan = self._norm_scan(im, self.scan_for(im)) if res is not None else None
+        # the scan area the saved result was measured on comes from the
+        # manifest; older manifests lack it -> taken as the current one (a
+        # changed SCALE is still caught -- the result keeps its own px_per_um)
+        saved = d.get("result_scan")
+        if res is None:
+            im.result_scan = None
+        elif saved and len(saved) == 4:
+            im.result_scan = tuple(int(v) for v in saved)
+        else:
+            im.result_scan = self._norm_scan(im, self.scan_for(im))
         im.stale = self.stale_reason(im)
         return im
 
@@ -2931,7 +2938,8 @@ class AppState(QObject):
                                       if im.filter_override is not None else CLEAR),
                     manual_excluded=sorted(int(i) for i in im.manual),
                     grain_edits=[dict(op) for op in im.edits] if im.edits else CLEAR,
-                    resolution_profile=dict(im.profile) if im.profile else CLEAR)
+                    resolution_profile=dict(im.profile) if im.profile else CLEAR,
+                    result_scan=list(im.result_scan) if im.result_scan else CLEAR)
 
     def save_now(self) -> None:
         """Flush pending changes to disk off-thread (Ctrl+S / autosave)."""

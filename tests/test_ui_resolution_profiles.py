@@ -442,3 +442,18 @@ def test_read_only_store_and_profile_error_text(env, qtbot):
     assert not card.rename_selected("Y")
     assert toasts.msgs[-1] == ("Profile not renamed", reason, "danger")
     assert json.loads(f.read_text(encoding="utf-8"))["schema_version"] == 999
+
+
+def test_scan_area_only_out_of_date_survives_reopen(env, qtbot):
+    path = _session(env)
+    st = _state(qtbot, path, analyse=(0,))
+    a, _b = _ims(st)
+    assert st.stale_reason(a) == "" and a.result_scan is not None
+    st.set_scan_rect((0, 0, 100, 100), a.uid)             # ONLY the scan area
+    assert st.stale_reason(a) == "scan area"
+    st2 = _reopen(qtbot, st, path)
+    a2, _ = _ims(st2)
+    assert a2.result is not None and a2.result_scan != st2._norm_scan(a2, st2.scan_for(a2))
+    assert st2.stale_reason(a2) == "scan area" and a2.stale
+    st2.reset_image_scan_rect(a2.uid)                      # back -> current again
+    assert st2.stale_reason(a2) == ""

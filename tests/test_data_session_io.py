@@ -163,3 +163,19 @@ def test_import_loose_images_creates_hierarchy_and_session(tmp_path, mosaic_bgr)
     assert loaded.images[0].entry.source_path.endswith("img1.png")
     projects = ws.list_projects()
     assert any(p.name == "NewProj" for p in projects)
+
+
+def test_result_scan_roundtrip_missing_and_clear(tmp_path, mosaic_bgr):
+    from data.models import CLEAR
+    ws = Workspace(tmp_path)
+    proj = ws.create_project("P1")
+    sample = ws.create_sample(proj, "S1")
+    lot = ws.create_lot(proj, sample, "L1")
+    ref = save_session(lot, {}, [ImageEntry(image_bgr=mosaic_bgr, filename="a.png")])
+    assert load_session(ref.path).images[0].entry.result_scan is None   # missing -> None
+    update_session(ref.path, images=[ImageEntry(filename="a.png", result_scan=(1, 2, 30, 40))])
+    assert load_session(ref.path).images[0].entry.result_scan == [1, 2, 30, 40]
+    update_session(ref.path, images=[ImageEntry(filename="a.png")])      # leave unchanged
+    assert load_session(ref.path).images[0].entry.result_scan == [1, 2, 30, 40]
+    update_session(ref.path, images=[ImageEntry(filename="a.png", result_scan=CLEAR)])
+    assert load_session(ref.path).images[0].entry.result_scan is None
