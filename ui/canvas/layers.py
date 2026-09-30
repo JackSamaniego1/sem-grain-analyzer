@@ -52,6 +52,50 @@ def _id_mask(labels: np.ndarray, ids) -> np.ndarray:
     return lut[labels]
 
 
+def _overlay_rgba(lab: np.ndarray, excluded, show_excluded: bool, fill_alpha: int,
+                  edge_alpha: int, origin=(0, 0)) -> np.ndarray:
+    """RGBA pixels of :func:`overlay_layer` (UPDATE 4 item 12: one gather
+    through a per-grain lookup table instead of several whole-image passes).
+
+    ``origin`` = (y, x) of ``lab[0, 0]`` in the full image so the hatch of
+    the excluded grains keeps its phase when only a patch is redrawn."""
+    h, w = lab.shape[:2]
+    n = int(lab.max()) if lab.size else 0
+    rgb = label_palette(n)
+    fill = np.zeros((n + 1, 4), dtype=np.uint8)
+    fill[:, :3] = rgb
+    fill[1:, 3] = fill_alpha
+    edge_lut = np.zeros((n + 1, 4), dtype=np.uint8)
+    edge_lut[:, :3] = np.minimum(255, rgb.astype(np.int16) + 40)
+    edge_lut[1:, 3] = edge_alpha
+    ex_ids = np.asarray([int(i) for i in excluded if 0 < int(i) <= n], dtype=np.int64)
+    if ex_ids.size:
+        if show_excluded:
+            fill[ex_ids] = (150, 150, 150, 120)
+            edge_lut[ex_ids] = (200, 200, 200, 200)
+        else:
+            fill[ex_ids] = 0
+            edge_lut[ex_ids] = 0
+    # one pixel = one uint32 (the 4 bytes are only ever viewed, never read as
+    # a number, so byte order does not matter); flat 1-D gathers are the
+    # fastest numpy offers
+    flat = np.ascontiguousarray(lab, dtype=np.intp).ravel()
+    out = fill.view(np.uint32).ravel()[flat]
+    edge = boundaries(lab).ravel()
+    out[edge] = edge_lut.view(np.uint32).ravel()[flat[edge]]
+    if ex_ids.size and show_excluded:
+        y0, x0 = origin
+        yy, xx = np.ogrid[y0:y0 + h, x0:x0 + w]
+        stripe = (((xx - yy) // 5) % 2 == 0).ravel()
+        ex_lut = np.zeros(n + 1, dtype=bool)
+        ex_lut[ex_ids] = True
+        off = ex_lut[flat] & ~edge & ~stripe
+        keep_rgb = np.array([255, 255, 255, 0], np.uint8).view(np.uint32)[0]
+        alpha_60 = np.array([0, 0, 0, 60], np.uint8).view(np.uint32)[0]
+        out[off] = (out[off] & keep_rgb) | alpha_60
+    return out.view(np.uint8).reshape(h, w, 4)
+
+
 def overlay_layer(labels: Optional[np.ndarray], excluded=(), show_excluded: bool = True,
                   fill_alpha: int = 78, edge_alpha: int = 235) -> QImage:
     """Translucent per-grain tint + crisp boundaries, as an RGBA QImage.
@@ -60,29 +104,53 @@ def overlay_layer(labels: Optional[np.ndarray], excluded=(), show_excluded: bool
     neutral grey hatch when ``show_excluded`` is on, and omitted otherwise."""
     if labels is None or labels.size == 0:
         return QImage()
-    lab = labels.astype(np.int64, copy=False)
-    lut = label_palette(int(lab.max()) if lab.size else 0)
-    rgba = np.zeros(lab.shape + (4,), dtype=np.uint8)
-    rgba[..., :3] = lut[lab]
-    inside = lab > 0
-    rgba[..., 3] = np.where(inside, fill_alpha, 0).astype(np.uint8)
-    edge = boundaries(lab)
-    rgba[edge, 3] = edge_alpha
-    rgba[edge, :3] = np.minimum(255, rgba[edge, :3].astype(np.int16) + 40).astype(np.uint8)
-    if excluded:
-        ex = _id_mask(lab, excluded)
-        if show_excluded:
-            h, w = lab.shape
-            yy, xx = np.ogrid[:h, :w]
-            stripe = ((xx - yy) // 5) % 2 == 0
-            rgba[ex, 0:3] = 150
-            rgba[ex, 3] = np.where(stripe, 120, 60)[ex] if ex.any() else 0
-            exe = ex & edge
-            rgba[exe, 0:3] = 200
-            rgba[exe, 3] = 200
-        else:
-            rgba[ex] = 0
-    return _rgba_qimage(rgba)
+    return _rgba_qimage(_overlay_rgba(labels, excluded, show_excluded, fill_alpha, edge_alpha))
+
+
+def overlay_patch(labels: np.ndarray, rect, excluded=(), show_excluded: bool = True,
+                  fill_alpha: int = 78, edge_alpha: int = 235):
+    """The overlay of one rectangle ``(y0, y1, x0, x1)`` of ``labels`` only,
+    identical to that region of :func:`overlay_layer` (the rectangle is
+    computed with a 1-px margin so the boundaries at its edge are right).
+    Returns ``(QImage, x0, y0)`` for painting at that spot."""
+    H, W = labels.shape[:2]
+    y0, y1, x0, x1 = (int(v) for v in rect)
+    y0, x0 = max(0, y0), max(0, x0)
+    y1, x1 = min(H, y1), min(W, x1)
+    if y1 <= y0 or x1 <= x0:
+        return QImage(), x0, y0
+    py0, px0 = max(0, y0 - 1), max(0, x0 - 1)
+    py1, px1 = min(H, y1 + 1), min(W, x1 + 1)
+    rgba = _overlay_rgba(labels[py0:py1, px0:px1], excluded, show_excluded,
+                         fill_alpha, edge_alpha, origin=(py0, px0))
+    rgba = rgba[y0 - py0:y1 - py0, x0 - px0:x1 - px0]
+    return _rgba_qimage(rgba), x0, y0
+
+
+def changed_rect(old: Optional[np.ndarray], new: Optional[np.ndarray],
+                 ids=()) -> Optional[tuple]:
+    """Bounding box ``(y0, y1, x0, x1)`` of the pixels whose label differs
+    between ``old`` and ``new`` plus every pixel of the grains in ``ids``
+    (their drawing changed); ``None`` when nothing changed.  Falls back to
+    the whole image (its full rect) when the two cannot be compared."""
+    if new is None or new.size == 0:
+        return None
+    H, W = new.shape[:2]
+    if old is None or old.shape != new.shape:
+        return 0, H, 0, W
+    dirty = None
+    if old is not new:
+        dirty = old != new
+    if ids:
+        m = _id_mask(new, ids)
+        dirty = m if dirty is None else (dirty | m)
+    if dirty is None:
+        return None
+    rows = np.flatnonzero(dirty.any(axis=1))
+    if rows.size == 0:
+        return None
+    cols = np.flatnonzero(dirty.any(axis=0))
+    return int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1
 
 
 def kept_labels(labels: Optional[np.ndarray], excluded=()) -> Optional[np.ndarray]:

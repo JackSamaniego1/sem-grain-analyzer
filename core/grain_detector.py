@@ -29,10 +29,6 @@ import threading
 import numpy as np
 import cv2
 from scipy import ndimage as ndi
-from skimage.segmentation import watershed
-from skimage.feature import peak_local_max
-from skimage.measure import regionprops
-from skimage.filters import threshold_otsu, gaussian
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 import logging
@@ -42,6 +38,34 @@ from core.astm import update_astm
 from core.infobar import detect_info_bar
 from core.overlay_compose import compose_full_overlay, rc_to_xywh
 from core.cancel import AnalysisCancelled, make_cancel_check  # noqa: F401 (re-export)
+
+
+# UPDATE 4 item 12: scikit-image is loaded on the first detection, not when
+# the app starts (this module is imported by the UI at launch; skimage costs
+# ~0.15 s warm and much more from a cold disk).  Same names, same calls.
+def watershed(*args, **kwargs):
+    from skimage.segmentation import watershed as _f
+    return _f(*args, **kwargs)
+
+
+def peak_local_max(*args, **kwargs):
+    from skimage.feature import peak_local_max as _f
+    return _f(*args, **kwargs)
+
+
+def regionprops(*args, **kwargs):
+    from skimage.measure import regionprops as _f
+    return _f(*args, **kwargs)
+
+
+def threshold_otsu(*args, **kwargs):
+    from skimage.filters import threshold_otsu as _f
+    return _f(*args, **kwargs)
+
+
+def gaussian(*args, **kwargs):
+    from skimage.filters import gaussian as _f
+    return _f(*args, **kwargs)
 
 logger = logging.getLogger(__name__)
 
@@ -635,8 +659,12 @@ class GrainDetector:
         return watershed(landscape_u8, markers, mask=vm), len(coords)
 
     def analyze(self, image_bgr, px_per_um=0.0, params=None, progress_callback=None,
-                cancel=None, device=None):
+                cancel=None, device=None, draw_overlay=True):
         """Detect and measure grains.
+
+        ``draw_overlay=False`` (UPDATE 4 item 12) leaves ``overlay_image``
+        None: the app's batch runs draw the filtered overlay themselves, so
+        the detector's own (~0.2 s per image) would only be thrown away.
 
         ``device`` (UPDATE 4 item 10b): compute device for the AI-assisted
         mode -- "auto" | "gpu" | "cpu"; None uses ``params.sam_device``
@@ -750,9 +778,12 @@ class GrainDetector:
         # label_image stays in analysed (crop) coordinates; the overlay is
         # the FULL original frame with the crop overlay at its offset, so an
         # exported overlay keeps the SEM data bar and original resolution.
-        result.overlay_image = compose_full_overlay(
-            full_bgr, self._draw_overlay(image_bgr, labels, grains),
-            rc_to_xywh(crop_rect))
+        if draw_overlay:
+            result.overlay_image = compose_full_overlay(
+                full_bgr, self._draw_overlay(image_bgr, labels, grains),
+                rc_to_xywh(crop_rect))
+        else:
+            result.overlay_image = None
 
         check()
         progress(100, f"Complete — {result.grain_count} grains detected.")

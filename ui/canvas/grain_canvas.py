@@ -31,7 +31,8 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ui.canvas.layers import (
-    desaturate, excluded_layer, grain_mask_image, grain_outline, overlay_layer,
+    changed_rect, desaturate, excluded_layer, grain_mask_image, grain_outline,
+    overlay_layer, overlay_patch,
 )
 from ui.design import icons
 from ui.design.theme import ui_font
@@ -76,6 +77,7 @@ class GrainCanvas(ThemeAware, QWidget):
         self._result = None
         self._raw = None
         self._pm: Dict[str, QPixmap] = {}
+        self._vm_ref = None             # valid_mask the cached excluded_layer was drawn from
         self._view = "original"
         self._show_excluded = False
         self._overlay_opacity = 1.0     # UX-05
@@ -136,6 +138,7 @@ class GrainCanvas(ThemeAware, QWidget):
                      and self._bgr.shape[:2] == bgr.shape[:2])
         self._bgr = bgr
         self._pm = {}
+        self._vm_ref = None
         if bgr is not None:
             self._pm["original"] = QPixmap.fromImage(bgr_to_qimage(bgr))
         self._selected, self._sel_paths = [], {}
@@ -420,20 +423,62 @@ class GrainCanvas(ThemeAware, QWidget):
 
     # ------------------------------------------------------------------ internals
     def _set_result(self, result, raw=None, excluded=None) -> None:
+        old_labels, old_excluded = self._labels, self._excluded
         self._result = result
         self._raw = raw
         self._excluded = {int(k): list(v) for k, v in (excluded or {}).items()}
         src = raw if raw is not None else result
         self._labels = getattr(src, "label_image", None) if src is not None else None
         self._grains = {int(g.grain_id): g for g in (src.grains if src else [])}
-        for k in ("overlay", "mask", "excluded", "excluded_layer", "desat"):
-            self._pm.pop(k, None)
+        self._pm.pop("mask", None)
+        vm = getattr(result, "valid_mask", None) if result is not None else None
+        if not self._same_mask(vm, self._vm_ref):   # the excluded-region tint follows valid_mask only
+            self._pm.pop("excluded_layer", None)
+        self._patch_overlay(old_labels, old_excluded)
         if self._hover_id and self._hover_id not in self._grains:
             self._hover_id, self._hover_path = 0, None
         self._ensure_layer(self._view)
         if self._show_excluded:
             self._ensure_layer("excluded_layer")
         self._update_pill()
+
+    # UPDATE 4 item 12: a grain edit (remove / merge / split / add, and the
+    # refilter that follows it) changes a few grains, not the image, so the
+    # cached overlay is patched where the labels or the exclusions changed
+    # instead of being drawn again in full (three times per edit).
+    PATCH_MAX_FRACTION = 0.5
+
+    @staticmethod
+    def _same_mask(a, b) -> bool:
+        if a is b:
+            return True
+        if a is None or b is None or a.shape != b.shape:
+            return False
+        return bool(np.array_equal(a, b))
+
+    def _patch_overlay(self, old_labels, old_excluded: Dict[int, list]) -> None:
+        pm = self._pm.get("overlay")
+        if pm is None:
+            return
+        lab = self._labels
+        if not self._label_ok() or old_labels is None or old_labels.shape != lab.shape:
+            self._pm.pop("overlay", None)
+            return
+        ids = set(old_excluded) ^ set(self._excluded)
+        rect = changed_rect(old_labels, lab, ids)
+        if rect is None:
+            return
+        y0, y1, x0, x1 = rect
+        if (y1 - y0) * (x1 - x0) > self.PATCH_MAX_FRACTION * lab.shape[0] * lab.shape[1]:
+            self._pm.pop("overlay", None)
+            return
+        img, px, py = overlay_patch(lab, rect, list(self._excluded), self._show_ex_grains)
+        if img.isNull():
+            return
+        p = QPainter(pm)
+        p.setCompositionMode(QPainter.CompositionMode_Source)
+        p.drawImage(px, py, img)
+        p.end()
 
     def _label_ok(self) -> bool:
         lab = self._labels
@@ -459,6 +504,7 @@ class GrainCanvas(ThemeAware, QWidget):
                     self._pm["excluded_layer"] = QPixmap.fromImage(excluded_layer(vm))
                 else:
                     self._pm["excluded_layer"] = QPixmap()
+                self._vm_ref = vm
             if key == "excluded" and "desat" not in self._pm:
                 self._pm["desat"] = QPixmap.fromImage(bgr_to_qimage(desaturate(self._bgr)))
 

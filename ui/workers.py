@@ -151,8 +151,10 @@ def analyze_image(image_bgr: np.ndarray, px_per_um: float = 0.0,
         ox, oy = x, y
 
     det = GrainDetector()
+    # the detector's own overlay is never used here: it is redrawn on the
+    # full frame below, or skipped when the caller draws it after filtering
     result = det.analyze(img, px_per_um=px_per_um, params=params,
-                         progress_callback=progress, cancel=cancel)
+                         progress_callback=progress, cancel=cancel, draw_overlay=False)
     check()
     # The detector reports the crop it actually applied (white borders and/or
     # the SEM info bar), as (r0, c0, r1, c1) in scan-area coordinates.

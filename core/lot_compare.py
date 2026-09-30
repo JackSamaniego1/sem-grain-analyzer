@@ -43,7 +43,19 @@ from enum import Enum
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
-from scipy import stats
+
+
+class _LazyStats:
+    """``scipy.stats`` imported on first use (UPDATE 4 item 12): the Lot
+    Compare page imports this module at app start and scipy.stats alone is
+    ~0.3 s warm.  ``stats.t.ppf(...)`` etc. read exactly as before."""
+
+    def __getattr__(self, name):
+        from scipy import stats as _stats
+        return getattr(_stats, name)
+
+
+stats = _LazyStats()
 
 __all__ = [
     "Band", "Verdict", "LotSummary", "PairDiff", "WelchAnova", "Equivalence",
