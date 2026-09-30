@@ -159,18 +159,18 @@ See handoff/UPDATE_4.md: 19 items, 3 batches, execution checklist.
 | 14 | Display mode persists across images | ui-designer | done | 7a70d74 |
 | 10a | Remove CPU tile from Analyze | detection-engineer | done | 7a70d74 |
 | 17 | PPTX distribution slides per lot + lot-to-lot | report-engineer | done | 83a864e; area+diameter bars+KDE; comparison slide stacked |
-| 4 | Scale-bar label OCR (JEOL + Thermo) | detection-engineer | review | 8a059e0 core reviewed; JEOL 100 nm (32 px, 0.94 conf), Thermo 100 µm (279 px, 0.97 conf), vendor logo + beam current parsed; **UI wiring in Automatic mode pending** |
+| 4 | Scale-bar label OCR (JEOL + Thermo) | detection-engineer | review | 8a059e0 core reviewed; JEOL 100 nm (32 px, 0.94 conf), Thermo 100 µm (279 px, 0.97 conf), vendor logo + beam current parsed; **UI wiring in Automatic mode in progress** |
 | 9 | Overlay opacity slider (top-right image) | ui-designer | done | 4127728; Analyze + Review tabs, shared persisted value, Overlay view only |
 | 13 | Review image list grouped Job › Part › Lot | ui-designer | done | 4127728; reused ImageTree component, folder nesting, image stepping |
 | 19 | PPTX contents page as slide 2 with links | report-engineer | done | 1c3eec9; page numbers, collapsed ranges, clickable links, Grain Size Summary now slide 3 |
 
-**Batch 3 (parallel: reports + core):**
+**Batch 3 (parallel: reports + core; 2026-09-30 night update):**
 | # | Item | Owner | Status | Notes |
 |---|------|-------|--------|-------|
-| 15 | Lot summary charts (bar+trendline) | report-engineer | todo | **Unblocked (D-31)**: build now, user reviews when testing |
-| 11 | Auto-fill mag/instrument/kV/WD from metadata | detection-engineer | todo | Parallel track after item 4 |
-| 5 | Resolution Profiles sidebar card | ui-designer + data-architect | todo | Batch 3 |
-| 10b | GPU/CUDA torch build + AI-Assisted modes | detection-engineer + build-engineer | review | 822bfb3 core + fcf57cc packaging done (device resolution, scaffolding OFF by default); **UI modes + installer GPU-pack page + trial build pending** (D-35, D-36) |
+| 15 | Lot summary charts (bar+trendline) | report-engineer | doing | In progress (uncommitted); job summary + bar/trendline per lot in Excel/PPTX |
+| 11 | Auto-fill mag/instrument/kV/WD from metadata | detection-engineer | doing | In progress (core/image_info.py, tests/test_image_info.py); core reader done, UI wiring pending after item 4 |
+| 5 | Resolution Profiles sidebar card | ui-designer + data-architect | todo | Batch 3; after items 4 UI + item 11 |
+| 10b | GPU/CUDA torch build + AI-Assisted modes | ui-designer + build-engineer | doing | 822bfb3 core + fcf57cc packaging + **c4b2584 installer page (DONE)**: $EXEDIR path fix, exit codes 10/11, makensis test. **UI modes in progress** (ai_probe.py); trial build + manual pack checks pending (D-35, D-36) |
 | 7 | Stability on weak CPUs during analysis | opus | todo |  |
 | 8 | Review: "Add grain" tool | ui-designer + detection-engineer | todo |  |
 | 12 | Fable: speed & usability optimisation | fable | todo | LAST item |

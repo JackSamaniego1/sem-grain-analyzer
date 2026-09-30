@@ -247,6 +247,18 @@
 - **Test status**: Full suite owed after items 9/13/19 review + commit.
 - **Next**: Items 9/13/19 review → commit + full suite. Then items 4 UI wiring (same card as 6) + item 11 (metadata). Then items 15 (lot summary charts) + 5 (profiles). Batch 3 (7, 8, 10b, 12 last).
 
+## 2026-09-30 (night) — UPDATE 4 batch 2 final; item 10b installer page committed
+- **Item 10b installer page DONE (c4b2584)**: Installer GPU-pack option fully integrated into create_nsis_script.py. Changes: `$GpuDir` variable strips trailing backslash from `$EXEDIR` (handles flash drive root `D:\`); auto-detect GPU pack in $EXEDIR or Browse fallback; NVIDIA presence check via WMI if pack found; silent mode `/S /GPU=1` run pack with `/S /D=$INSTDIR\bin` and check exit code (10 = pack missing/invalid, 11 = pack installer failed, 0 = success); app installer always succeeds regardless of pack outcome; tick state preserved across Back→Next cycle; makensis compile test added (17 tests in test_gpu_pack_scripts.py when makensis is installed, skip otherwise). **Note**: Portable NSIS 3.10 was used from session scratch; BUILD_WINDOWS.bat requires makensis on PATH to build release installer — flag for user.
+- **Manual verification checks pending** (to be run before release): (1) pack binary beside installer on USB, (2) pack with NVIDIA driver, (3) pack without NVIDIA driver, (4) Browse with wrong file name, (5) path with spaces in $INSTDIR, (6) run from a drive root (D:\), (7) real pack overlay install, (8) "app running" refusal + retry flow. No code written pending these manual tests.
+- **Test suite**: 1111 passed as of last commit (4127728); no full run since c4b2584 (no core/test changes, only installer scripts + makensis test).
+- **Batch 2 is now complete**: All items 1–3, 6, 9–10a (installer page), 13–14, 16–19 committed and tested. Item 4 partial (core 8a059e0 reviewed; UI wiring in progress). Item 10b partial (core + packaging 822bfb3, fcf57cc; installer page c4b2584; UI modes in progress).
+- **Batch 3 in parallel** (agents running, uncommitted):
+  - Item 4 UI wiring (same scale-bar card): auto-fill scale label from OCR in Automatic mode (worker thread).
+  - Item 11 core (detection-engineer): read_image_info() for JEOL/Thermo metadata extraction.
+  - Item 15 reports (report-engineer): Lot summary bar+trendline charts, job summary in Excel/PPTX.
+  - Item 10b UI modes (ui-designer): "AI-Assisted (GPU)" / "AI-Assisted (CPU)" modes, GPU greyed with tooltip.
+- **Next**: Review each agent commit + full suite run → then trial build + manual GPU pack checks → batch 3 remainder (items 5, 7, 8, 12 Fable).
+
 ## 2026-09-30 (late) — UPDATE 4 batch 2 complete; 5 items + packaging done
 - **Item 19 DONE (1c3eec9)**: PPTX contents page as slide 2 with clickable links to slides; page numbers computed after full deck layout. Runs of similar slides collapse to ranges (e.g. "Pages 11–30 · Image results"). Slide 3 is now the Grain Size Summary (was slide 2). Sample: %TEMP%\contents_sample.pptx. Code-reviewed.
 - **Item 10b core DONE (822bfb3)**: core/ai_device.py module with `ai_devices()` list, `resolve_device(device_str)`, `GpuUnavailableError`, `mark_gpu_failed()` tracking. `GrainDetector.analyze(..., device=None)` routes to GPU if available, falls back to CPU on OOM/fault. DetectionParams.sam_device="auto" (default), results record ai_device / ai_device_fallback / ai_device_note. GPU and CPU use identical SAM settings (1024 px, 32x32 points) so results match. Tests pass; GPU match test skipped (CUDA torch not in dev .venv). Core-reviewed.
