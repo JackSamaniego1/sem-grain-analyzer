@@ -62,7 +62,8 @@ GATE_TITLE = "Scan area and scale needed"
 
 _SOURCE = {"auto": ("Auto", "info"), "metadata": ("Metadata", "info"),
            "manual": ("Manual", "success"), "all": ("All images", "neutral"),
-           "saved": ("Saved", "neutral"), "": ("", "neutral")}
+           "saved": ("Saved", "neutral"), "profile": ("Profile", "info"),
+           "": ("", "neutral")}
 
 __all__ = ["AnalyzePage", "ParamPanel", "SetupTile", "ModeCard", "GATE_TEXT", "MODES",
            "sam_model_available"]
@@ -982,6 +983,9 @@ class AnalyzePage(QWidget):
         self._build()
         self._wire()
         self._relabel()
+        # UPDATE 4 item 5: Resolution Profiles card + summary under the image
+        from ui.pages.resolution_profiles_card import install_resolution_profiles
+        install_resolution_profiles(self)
 
     # ------------------------------------------------------------------ build
     def _build(self) -> None:
@@ -1314,6 +1318,9 @@ class AnalyzePage(QWidget):
         self.queue.job_failed.connect(self._on_job_failed)
         self.queue.overall_progress.connect(self._on_overall)
         self.queue.queue_finished.connect(self._on_queue_finished)
+        # UPDATE 4 item 7: the one analysis gate (AppState.analysis_lock)
+        st.analysis_lock.bind(busy_uids=self.busy_uids, stop=self.cancel)
+        self.busy_changed.connect(st.analysis_lock.set_active)
         self._sync_opacity(st.overlay_opacity)
 
     # ------------------------------------------------------------------ state sync
@@ -1852,6 +1859,13 @@ class AnalyzePage(QWidget):
     def is_busy(self) -> bool:
         return self.queue.is_running()
 
+    def busy_uids(self) -> set:
+        """UPDATE 4 item 7: images queued or being analysed right now."""
+        if not self.queue.is_running():
+            return set()
+        cur = self.queue.current_uid()
+        return set(self.queue.pending_uids()) | ({cur} if cur is not None else set())
+
     def analyze_all(self) -> None:
         imgs = [im for im in self.state.images() if im.readable or im.loading]
         self._start(imgs, self.btn_all)
@@ -1908,7 +1922,17 @@ class AnalyzePage(QWidget):
         self.ring.set_value(0, animate=False)
         self.run_title.setText(f"Analysing {len(jobs)} image{'s' if len(jobs) != 1 else ''}")
         self.busy_changed.emit(True)
-        self.queue.start(jobs)
+        started = False
+        try:
+            started = bool(self.queue.start(jobs))
+        finally:
+            if not started and not self.queue.is_running():
+                self._end_run_controls()       # never leave the edit lock on
+        if not started:
+            for im in images:
+                self.state.set_image_status(im.uid, "done" if im.result is not None else "pending")
+            self._toast("Analysis could not start",
+                        "The previous analysis is still stopping. Try again in a moment.", "info")
 
     def running_button(self) -> Optional[AnimatedButton]:
         return self._run_btn if self.queue.is_running() else None
@@ -1952,14 +1976,22 @@ class AnalyzePage(QWidget):
         self.ring.set_caption(f"{min(done, self._batch_total)} of {self._batch_total}")
         self.progress_changed.emit(pct, self.run_sub.text().split("\n")[0])
 
+    def _end_run_controls(self) -> None:
+        """Run buttons back to idle and the edit lock released -- the lock
+        is released even if restoring a control raises (a run that ended,
+        failed or was cancelled must never leave editing locked)."""
+        try:
+            for b in (self.btn_all, self.btn_cur, self.btn_sel):
+                b.set_loading(False)
+                b.setEnabled(True)
+            self._run_btn = None
+            self._on_checked_changed()
+            self.btn_cancel.hide()
+        finally:
+            self.busy_changed.emit(False)
+
     def _on_queue_finished(self, cancelled: bool) -> None:
-        for b in (self.btn_all, self.btn_cur, self.btn_sel):
-            b.set_loading(False)
-            b.setEnabled(True)
-        self._run_btn = None
-        self._on_checked_changed()
-        self.btn_cancel.hide()
-        self.busy_changed.emit(False)
+        self._end_run_controls()
         self.progress_changed.emit(-1, "")
         imgs = [self.state.session.image(u) for u in self._batch_uids] if self.state.session else []
         ok = [im for im in imgs if im is not None and im.status in ("done", "running")

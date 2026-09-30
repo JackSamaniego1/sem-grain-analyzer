@@ -259,6 +259,9 @@ class ImageDetailsService(QObject):
         self._running = None               # uid being read
         self._pending: set = set()         # uids with the metadata read in flight
         self._doc = None
+        # bumped by reset(): a batch still in flight for an earlier document
+        # never touches the bookkeeping of the current one
+        self._gen = 0
         self._to_save: Dict[Any, Dict[str, dict]] = {}   # record path -> {filename: dict}
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
@@ -281,6 +284,7 @@ class ImageDetailsService(QObject):
         self._pending.clear()
         self._running = None
         self._doc = None
+        self._gen += 1
 
     def request(self, doc, images, ocr: bool = False) -> None:
         """Fill ``image_info`` of ``images`` (saved -> metadata; with
@@ -303,10 +307,12 @@ class ImageDetailsService(QObject):
         for rpath, ims in groups.items():
             items = [(im.uid, im.filename, str(im.path) if im.path else None) for im in ims]
             self._pending.update(im.uid for im in ims)
+            g = self._gen
             run_task(read_batch, rpath, items,
-                     on_done=lambda out, d=doc, o=ocr, u=[i[0] for i in items]:
-                     self._batch_done(d, out, o, u),
-                     on_error=lambda _m, u=[i[0] for i in items]: self._pending.difference_update(u))
+                     on_done=lambda out, d=doc, o=ocr, u=[i[0] for i in items], g=g:
+                     self._batch_done(d, out, o, u, g),
+                     on_error=lambda _m, u=[i[0] for i in items], g=g:
+                     self._batch_failed(u, g))
         self._pump()
 
     def _image(self, doc, uid):
@@ -317,7 +323,13 @@ class ImageDetailsService(QObject):
             im = next((x for x in doc.removed if x.uid == uid), None)
         return im
 
-    def _batch_done(self, doc, out, ocr: bool, uids) -> None:
+    def _batch_failed(self, uids, gen: Optional[int] = None) -> None:
+        if gen is None or gen == self._gen:
+            self._pending.difference_update(uids)
+
+    def _batch_done(self, doc, out, ocr: bool, uids, gen: Optional[int] = None) -> None:
+        if gen is not None and gen != self._gen:
+            return                         # an earlier document's batch
         self._pending.difference_update(uids)
         if doc is not self._doc:
             return
@@ -326,7 +338,9 @@ class ImageDetailsService(QObject):
             if im is None or im.image_info is not None:
                 continue
             info = info_from_dict(d)
-            self._set(doc, im, info, save=not saved and not info.is_empty)
+            # details saved earlier: the lot's acquisition fields were filled
+            # (or deliberately cleared) back then -- never refilled on open
+            self._set(doc, im, info, save=not saved and not info.is_empty, fresh=not saved)
             if ocr and needs_ocr(info):
                 self._enqueue(uid)
         self._pump()
@@ -344,12 +358,15 @@ class ImageDetailsService(QObject):
             if im is None or not im.path or not needs_ocr(im.image_info):
                 continue
             self._running = uid
+            g = self._gen
             run_task(read_with_ocr, str(im.path), im.image_bgr,
-                     on_done=lambda d, u=uid, dc=doc: self._ocr_done(dc, u, d),
-                     on_error=lambda _m, u=uid, dc=doc: self._ocr_done(dc, u, None),
+                     on_done=lambda d, u=uid, dc=doc, g=g: self._ocr_done(dc, u, d, g),
+                     on_error=lambda _m, u=uid, dc=doc, g=g: self._ocr_done(dc, u, None, g),
                      pool=ocr_pool())
 
-    def _ocr_done(self, doc, uid, d) -> None:
+    def _ocr_done(self, doc, uid, d, gen: Optional[int] = None) -> None:
+        if gen is not None and gen != self._gen:
+            return                         # an earlier document's reading
         if self._running == uid and doc is self._doc:
             self._running = None
         im = self._image(doc, uid)
@@ -372,14 +389,17 @@ class ImageDetailsService(QObject):
         self._set(doc, im, info_from_dict(d), save=True)
 
     # ------------------------------------------------------------ apply / save
-    def _set(self, doc, im, info, save: bool) -> None:
+    def _set(self, doc, im, info, save: bool, fresh: bool = True) -> None:
+        """``fresh``: the details were just read from the image (not loaded
+        from the saved details file) -- only then do they fill the lot's
+        empty acquisition fields."""
         im.image_info = info
         if save:
             rec = doc.record_for(im)
             if rec is not None:
                 self._to_save.setdefault(rec.path, {})[im.filename] = info.to_dict()
                 self._save_timer.start()
-        if doc.records and doc.record_for(im) is doc.records[0]:
+        if fresh and doc.records and doc.record_for(im) is doc.records[0]:
             vals = acquisition_values(info)
             if vals:
                 self.state._fill_acquisition(doc, vals)

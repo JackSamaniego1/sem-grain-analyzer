@@ -83,6 +83,28 @@ def test_chart_hover_tooltip_names_the_lot(themed, qtbot):
     assert "Trend" in ch.toolTip()
 
 
+def test_footnotes_shown_under_the_table(themed, qtbot, monkeypatch):
+    import reports.lot_summary as ls
+    m = _model(_job(parts=2, lots=3))
+    real = ls.lot_summary_data(m)
+    w = _preview(qtbot, m)
+    notes = real.get("footnotes") or []
+    assert w.footnotes.isVisible() == bool(notes)
+    for n in notes:
+        assert n in w.footnotes.text()
+    # explicit footnotes -> shown as small muted text inside the table card
+    monkeypatch.setattr(ls, "lot_summary_data",
+                        lambda model: dict(real, footnotes=["* First note.", "* Second."]))
+    w.refresh()
+    assert w.footnotes.isVisible() and w.footnotes.parent() is not None
+    assert w.footnotes.text() == "* First note.\n* Second."
+    assert w.table_card.isAncestorOf(w.footnotes)
+    # none -> hidden
+    monkeypatch.setattr(ls, "lot_summary_data", lambda model: dict(real, footnotes=[]))
+    w.refresh()
+    assert not w.footnotes.isVisible() and w.footnotes.text() == ""
+
+
 def test_empty_state_without_lots(themed, qtbot):
     imgs = [_img("a", "", "", [1.0, 2.0, 3.0]), _img("b", "", "", [2.0, 2.5])]
     w = _preview(qtbot, _model(imgs))

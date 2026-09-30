@@ -1440,7 +1440,8 @@ class ProjectsPage(QWidget):
 
     def _rename(self, node: NodeRef, new: str) -> None:
         ws = self.state.workspace
-        self._release_open_session(node.path)
+        if not self._release_open_session(node.path):
+            return
         try:
             if node.kind not in hui.LEVELS:
                 return
@@ -1456,14 +1457,18 @@ class ProjectsPage(QWidget):
         self.state.set_node(self._node)
         self.reload()
 
-    def _release_open_session(self, path: Path) -> None:
+    def _release_open_session(self, path: Path) -> bool:
+        """Close the open lot / session when it lives under ``path``.
+        False when that is refused (UPDATE 4 item 7: analysis running) --
+        the folder must then not be renamed, moved or deleted."""
         s = self.state.session
         if s is not None:
             try:
                 s.path.relative_to(path)
             except ValueError:
-                return
-            self.state.close_session()
+                return True
+            return self.state.close_session() is not False
+        return True
 
     # ------------------------------------------------------------------ menus
     def _tree_menu(self, pos) -> None:
@@ -2315,8 +2320,8 @@ class ProjectsPage(QWidget):
         return Path(it["session"]) if it["kind"] == "image" else Path(it["path"])
 
     def _delete_items(self, items: List[dict]) -> None:
-        for it in items:
-            self._release_open_session(self._item_home(it))
+        if not all(self._release_open_session(self._item_home(it)) for it in items):
+            return
         ws = self.state.workspace
         root = self.state.root
         folders = [(it["kind"], Path(it["path"])) for it in items if it["kind"] != "image"]
@@ -2421,8 +2426,8 @@ class ProjectsPage(QWidget):
         dlg.open()
 
     def _move_items(self, items: List[dict], dest: Path) -> None:
-        for it in items:
-            self._release_open_session(self._item_home(it))
+        if not all(self._release_open_session(self._item_home(it)) for it in items):
+            return
         ws = self.state.workspace
         root = self.state.root
 
@@ -2472,9 +2477,9 @@ class ProjectsPage(QWidget):
     def _undo_move(self, moves, dest: Path) -> None:
         ws = self.state.workspace
         root = self.state.root
-        for kind, a, b in moves:
-            self._release_open_session(Path(b) if kind == "folder" else Path(a))
-        self._release_open_session(dest)
+        if not all(self._release_open_session(Path(b) if kind == "folder" else Path(a))
+                   for kind, a, b in moves) or not self._release_open_session(dest):
+            return
 
         def work():
             cat = Catalog(root)
@@ -2529,7 +2534,8 @@ class ProjectsPage(QWidget):
         try:
             if k == "image":
                 sd = Path(it["session"])
-                self._release_open_session(sd)
+                if not self._release_open_session(sd):
+                    return
                 final = file_ops.rename_image(ws, sd, it["filename"], new,
                                               catalog=Catalog(self.state.root))
                 self._toast("Renamed", f"Image renamed to “{final}”.", "success")

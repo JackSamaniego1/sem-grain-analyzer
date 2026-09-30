@@ -351,6 +351,14 @@ class LotSummaryPreview(SectionPreview):
         self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.table.verticalHeader().setDefaultSectionSize(28)
         self.table_card.add_widget(self.table)
+        # footnotes of the table (e.g. how subtotal ASTM G is averaged), as
+        # printed under the Lot Summary sheet: small muted text
+        self.footnotes = label("", "caption")
+        self.footnotes.setObjectName("lotSummaryFootnotes")
+        self.footnotes.setWordWrap(True)
+        self.footnotes.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.footnotes.setVisible(False)
+        self.table_card.add_widget(self.footnotes)
         self.body.addWidget(self.table_card)
         self.chart_host = QVBoxLayout()
         self.chart_host.setSpacing(SPACE.lg)
@@ -388,6 +396,9 @@ class LotSummaryPreview(SectionPreview):
             c.setParent(None)
             c.deleteLater()
         self.chart_cards = []
+        notes = [str(n).strip() for n in (d.get("footnotes") or []) if str(n).strip()]
+        self.footnotes.setText("\n".join(notes))
+        self.footnotes.setVisible(has and bool(notes))
         if not has:
             self.note.setText("")
             return

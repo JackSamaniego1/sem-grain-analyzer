@@ -17,6 +17,12 @@ from PySide6.QtCore import QObject
 from core.grain_edit import GrainEditError
 
 
+def _refused(exc) -> bool:
+    """UPDATE 4 item 7: refused by the analysis gate -- the operator was
+    already told why (dialog / notice); no second message."""
+    return type(exc).__name__ == "EditRefused"
+
+
 class GrainEditController(QObject):
     def __init__(self, canvas, state, toasts=None, parent: Optional[QObject] = None) -> None:
         super().__init__(parent or canvas)
@@ -34,7 +40,8 @@ class GrainEditController(QObject):
         try:
             gid = self.state.merge_grains(uid, ids)
         except GrainEditError as exc:
-            self._toast("Cannot merge", str(exc), "warning")
+            if not _refused(exc):
+                self._toast("Cannot merge", str(exc), "warning")
             return None
         self.canvas.select([gid])
         self._toast(f"Merged {len(ids)} grains into #{gid}",
@@ -46,7 +53,8 @@ class GrainEditController(QObject):
         try:
             pieces = self.state.split_grain(uid, line)
         except GrainEditError as exc:
-            self._toast("Cannot split", str(exc), "warning")
+            if not _refused(exc):
+                self._toast("Cannot split", str(exc), "warning")
             return None
         self.canvas.select(pieces)
         self._toast(f"Split grain #{pieces[0]} into {len(pieces)}",
@@ -60,7 +68,8 @@ class GrainEditController(QObject):
         try:
             gid = self.state.add_grain(uid, outline)
         except GrainEditError as exc:
-            self._toast("No grain added", str(exc), "warning")
+            if not _refused(exc):
+                self._toast("No grain added", str(exc), "warning")
             return None
         self.canvas.select([gid])
         self._toast(f"Added grain #{gid}",
@@ -73,7 +82,7 @@ class GrainEditController(QObject):
         if self.toasts is None:
             return
         if undo:
-            self.toasts.show_toast(title, body, severity, "Undo", self.state.undo_stack.undo)
+            self.toasts.show_toast(title, body, severity, "Undo", self.state.undo)
         else:
             self.toasts.show_toast(title, body, severity)
 

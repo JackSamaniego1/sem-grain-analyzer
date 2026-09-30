@@ -67,10 +67,40 @@ def _create_splash():
     return QSplashScreen(pm)
 
 
+def configure_runtime() -> dict:
+    """UPDATE 4 item 7, run once before any analysis or info-bar reading:
+
+    * crash log (faulthandler + sys/threading excepthooks -> a size-capped
+      log in %LOCALAPPDATA%\\GrainAnalyzer\\logs; nothing is uploaded),
+    * thread caps for OpenCV / torch / OCR (core.perf) so the window stays
+      responsive on weak PCs.  Never raises; does not import torch.
+    Returns the thread caps."""
+    import logging
+    log = logging.getLogger("grain_analyzer")
+    try:
+        from ui import crash_log
+        path = crash_log.install()
+        if path is not None:
+            log.debug("crash log: %s", path)
+    except Exception:          # the app must start even without a log
+        pass
+    caps = {}
+    try:
+        from core.perf import configure_threads
+        caps = configure_threads()
+        log.info("thread caps: %s", caps)
+    except Exception:
+        log.warning("thread caps could not be applied", exc_info=True)
+    return caps
+
+
 def main():
+    configure_runtime()
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)
+    from ui import crash_log
+    crash_log.prepare_gui()
 
     from ui.design.theme import apply_theme
     from data.settings import load_settings

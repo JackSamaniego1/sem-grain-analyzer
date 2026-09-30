@@ -422,8 +422,8 @@ class ReviewPage(QWidget):
         self.tool_group.buttonClicked.connect(
             lambda b: self.canvas.set_tool(b.property("tool")))
         self.canvas.tool_changed.connect(self._sync_tool)
-        self.btn_undo.clicked.connect(st.undo_stack.undo)
-        self.btn_redo.clicked.connect(st.undo_stack.redo)
+        self.btn_undo.clicked.connect(st.undo)
+        self.btn_redo.clicked.connect(st.redo)
         st.undo_stack.canUndoChanged.connect(self.btn_undo.setEnabled)
         st.undo_stack.canRedoChanged.connect(self.btn_redo.setEnabled)
         self.btn_undo.setEnabled(False)
@@ -445,6 +445,31 @@ class ReviewPage(QWidget):
         st.overlay_opacity_changed.connect(self.canvas.set_overlay_opacity)
         self.canvas.overlay_opacity_edited.connect(self._on_canvas_opacity)
         self.canvas.set_overlay_opacity(st.overlay_opacity)
+        # UPDATE 4 item 7: grain edits of an image being analysed are locked
+        st.analysis_lock.lock_changed.connect(lambda _on: self._sync_edit_lock())
+        st.current_image_changed.connect(lambda _u: self._sync_edit_lock())
+        st.image_updated.connect(lambda u: u == st.current_uid and self._sync_edit_lock())
+
+    def _edit_locked(self) -> bool:
+        return self.state.analysis_lock.is_busy(self.state.current_uid)
+
+    def _sync_edit_lock(self) -> None:
+        """Edit tools look disabled (and say why) while the image shown is
+        queued or being analysed; viewing tools stay available."""
+        from ui.analysis_lock import show_locked
+        locked = self._edit_locked()
+        why = ("This image is waiting for analysis or being analysed - editing its grains "
+               "is available when it is finished.")
+        for b in (self.btn_tool_split, self.btn_tool_add):
+            b.setEnabled(not locked)
+            show_locked(b, locked, why)
+        if locked and self.canvas.tool() in ("split", "add"):
+            self.canvas.set_tool("select")
+        ids = self.canvas.selected()
+        self.btn_del.setEnabled(bool(ids) and not locked)
+        self.btn_merge.setEnabled(len(ids) >= 2 and not locked)
+        show_locked(self.btn_del, locked, why)
+        show_locked(self.btn_merge, locked, why)
 
     def _on_canvas_opacity(self, v: float, final: bool) -> None:
         self.state.set_overlay_opacity(v, persist=False)
@@ -670,8 +695,9 @@ class ReviewPage(QWidget):
 
     # ------------------------------------------------------------------ selection
     def _on_canvas_selection(self, ids: List[int]) -> None:
-        self.btn_del.setEnabled(bool(ids))
-        self.btn_merge.setEnabled(len(ids) >= 2)
+        locked = self._edit_locked()
+        self.btn_del.setEnabled(bool(ids) and not locked)
+        self.btn_merge.setEnabled(len(ids) >= 2 and not locked)
         self.btn_merge.setText(f"Merge {len(ids)}" if len(ids) >= 2 else "Merge")
         self.btn_del.setText(f"Remove {len(ids)}" if len(ids) > 1 else "Remove")
         if self._syncing:
@@ -701,8 +727,9 @@ class ReviewPage(QWidget):
         self._syncing = True
         self.canvas.select(ids, center=len(ids) == 1)
         self._syncing = False
-        self.btn_del.setEnabled(bool(self.canvas.selected()))
-        self.btn_merge.setEnabled(len(self.canvas.selected()) >= 2)
+        locked = self._edit_locked()
+        self.btn_del.setEnabled(bool(self.canvas.selected()) and not locked)
+        self.btn_merge.setEnabled(len(self.canvas.selected()) >= 2 and not locked)
 
     def delete_selected(self, ids=None) -> None:
         ids = list(ids) if ids else self.canvas.selected()
@@ -713,4 +740,4 @@ class ReviewPage(QWidget):
             if self.toasts is not None:
                 self.toasts.show_toast(f"Removed {len(ids)} grain{'s' if len(ids) != 1 else ''}",
                                        "Statistics updated. Press Ctrl+Z to undo.", "info",
-                                       "Undo", self.state.undo_stack.undo)
+                                       "Undo", self.state.undo)

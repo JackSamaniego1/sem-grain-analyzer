@@ -36,8 +36,8 @@ from ui.filtering import (
     preview_params, remeasure_excluded,
 )
 from ui.canvas.layers import kept_labels
-from ui.workers import (load_pool, read_image, run_task, serial_pool, snapshot_result,
-                        thumb_qimage)
+from ui.workers import (filter_pool, load_pool, read_image, run_task, serial_pool,
+                        snapshot_result, thumb_qimage)
 from core.result_pack import (
     is_packed, live_bytes, pack_array, pack_result, unpack_result, unpacked_copy,
 )
@@ -71,6 +71,8 @@ def ui_state_path() -> Path:
 
 
 def load_ui_state() -> dict:
+    from ui import ui_state_store
+    ui_state_store.flush()               # a pending background save lands first
     p = ui_state_path()
     try:
         return read_json(p) if p.exists() else {}
@@ -79,10 +81,21 @@ def load_ui_state() -> dict:
 
 
 def save_ui_state(state: dict) -> None:
+    """Debounced and written off the UI thread (atomic, last write wins);
+    :func:`flush_ui_state` writes it at once (app close)."""
+    from ui import ui_state_store
     try:
-        write_json_atomic(ui_state_path(), state)
-    except OSError:
-        pass
+        ui_state_store.submit(ui_state_path(), state)
+    except Exception:                    # e.g. an unserialisable value
+        try:
+            write_json_atomic(ui_state_path(), state)
+        except (OSError, TypeError, ValueError):
+            pass
+
+
+def flush_ui_state(timeout: float = 10.0) -> bool:
+    from ui import ui_state_store
+    return ui_state_store.flush(timeout)
 
 
 def params_to_dict(p: DetectionParams) -> dict:
@@ -213,6 +226,9 @@ class ImageDoc:
     # UPDATE 4 item 11: acquisition details (core.image_info.ImageInfo; None =
     # not read yet).  Saved next to the manifest (ui.image_details).
     image_info: Optional[Any] = None
+    # UPDATE 4 item 5: Resolution Profile applied to this image
+    # (ResolutionProfile.snapshot(); None = none).  Saved in the manifest.
+    profile: Optional[dict] = None
     # pixel cache: ``image_bgr`` is None while evicted; ``readable`` /
     # ``shape`` (h, w) stay known without holding the pixels
     shape: Optional[tuple] = None
@@ -412,7 +428,8 @@ def _image_dict(si, bgr, legacy: Optional[dict] = None, opts: Optional[PostFilte
                 excluded=excluded, manual=manual, override=override,
                 edits=edits, detector_labels=base,
                 thumb=thumb_qimage(bgr), scan_rect=entry.scan_rect,
-                px=float(entry.px_per_um or 0.0), notes=entry.notes)
+                px=float(entry.px_per_um or 0.0), notes=entry.notes,
+                profile=getattr(entry, "resolution_profile", None))
 
 
 def _load_session_bundle(path: Path, keep_n: int = PIXEL_CACHE_MAX_IMAGES) -> dict:
@@ -781,7 +798,16 @@ class ExcludeGrainsCommand(QUndoCommand):
     def is_empty(self) -> bool:
         return not self.ids
 
+    def uids(self) -> set:
+        """The images this command changes (the undo gate checks them)."""
+        return {self.uid}
+
+    def release(self) -> None:
+        """Marked obsolete: nothing big to free."""
+
     def _doc(self) -> Optional[ImageDoc]:
+        if self.isObsolete():
+            return None                  # obsolete: undo / redo is a no-op
         return self.state.session.image(self.uid) if self.state.session else None
 
     def redo(self) -> None:
@@ -829,7 +855,15 @@ class RestoreGrainsCommand(QUndoCommand):
     def is_empty(self) -> bool:
         return not self.ids
 
+    def uids(self) -> set:
+        return {self.uid}
+
+    def release(self) -> None:
+        """Marked obsolete: nothing big to free."""
+
     def _doc(self) -> Optional[ImageDoc]:
+        if self.isObsolete():
+            return None                  # obsolete: undo / redo is a no-op
         return self.state.session.image(self.uid) if self.state.session else None
 
     def redo(self) -> None:
@@ -877,6 +911,16 @@ class GrainGeometryCommand(QUndoCommand):
         self.after = (new_raw, list(doc.edits) + [dict(outcome.op)], base)
         self.op = dict(outcome.op)
 
+    def uids(self) -> set:
+        return {self.uid}
+
+    def release(self) -> None:
+        """Marked obsolete (the image was re-analysed): drop the before /
+        after label arrays so a stale command lower in the stack does not
+        keep full-size images alive."""
+        self.before = None
+        self.after = None
+
     def _doc(self) -> Optional[ImageDoc]:
         return self.state.session.image(self.uid) if self.state.session else None
 
@@ -895,10 +939,77 @@ class GrainGeometryCommand(QUndoCommand):
         self.state._geometry_changed(doc)
 
     def redo(self) -> None:
+        if self.isObsolete() or self.after is None:
+            return                       # obsolete: a safe no-op
         self._apply(*self.after)
 
     def undo(self) -> None:
+        if self.isObsolete() or self.before is None:
+            return
         self._apply(*self.before)
+
+
+class _SnapshotCommand(QUndoCommand):
+    """A change to the scale / scan area of several images, stored as
+    before / after snapshots (the same tuples :meth:`AppState.restore_scales`
+    / :meth:`AppState.restore_scans` take).  The change is already applied
+    when the command is pushed, so the first ``redo`` (from ``push``) does
+    nothing.  Undo / redo never ask the analysis gate: ``AppState.undo`` /
+    ``redo`` check :meth:`uids` BEFORE the stack moves."""
+
+    uid = None                           # several images: no single uid
+
+    def __init__(self, state: "AppState", before: List, after: List, text: str) -> None:
+        super().__init__(text)
+        self.state = state
+        self.before = before
+        self.after = after
+        self._pushed = False
+
+    def uids(self) -> set:
+        snap = self.before or self.after or []
+        return {item[0] for item in snap if item and item[0] != "session"}
+
+    def release(self) -> None:
+        self.before = self.after = None
+
+    def _apply(self, snap) -> None:
+        raise NotImplementedError
+
+    def redo(self) -> None:
+        if not self._pushed:
+            self._pushed = True          # applied by the caller already
+            return
+        if self.isObsolete() or self.after is None:
+            return
+        self._apply(self.after)
+
+    def undo(self) -> None:
+        if self.isObsolete() or self.before is None:
+            return
+        self._apply(self.before)
+
+
+class ScaleCommand(_SnapshotCommand):
+    def _apply(self, snap) -> None:
+        self.state._apply_scales(snap)
+
+
+class ScanAreaCommand(_SnapshotCommand):
+    def _apply(self, snap) -> None:
+        self.state._apply_scans(snap)
+
+
+def _edit_refused_cls():
+    from core.grain_edit import GrainEditError
+
+    class EditRefused(GrainEditError):
+        """A grain edit refused by the analysis gate (the operator was
+        already told why; callers stay quiet)."""
+    return EditRefused
+
+
+EditRefused = _edit_refused_cls()
 
 
 # ======================================================================
@@ -976,6 +1087,9 @@ class AppState(QObject):
         from ui.image_details import ImageDetailsService
         self.image_details = ImageDetailsService(self)
         self.about_to_flush.connect(self.image_details.flush_saves)
+        # UPDATE 4 item 7: one gate for edits while images are being analysed
+        from ui.analysis_lock import AnalysisLock
+        self.analysis_lock = AnalysisLock(self)
 
     # ------------------------------------------------------------------ settings
     def save_settings(self) -> None:
@@ -987,6 +1101,107 @@ class AppState(QObject):
 
     def persist_ui_state(self) -> None:
         save_ui_state(self.ui_state)
+
+    # ------------------------------------------------------------------ UPDATE 4 item 7
+    @property
+    def warn_edit_during_analysis(self) -> bool:
+        """Ask before changes made while images are being analysed.  Stored
+        as ``AppSettings.warn_edit_during_analysis`` when the settings model
+        has that field, else in the local ui_state (same folder)."""
+        if hasattr(self.settings, "warn_edit_during_analysis"):
+            return bool(getattr(self.settings, "warn_edit_during_analysis"))
+        return bool(self.ui_state.get("warn_edit_during_analysis", True))
+
+    def set_warn_edit_during_analysis(self, on: bool) -> None:
+        on = bool(on)
+        if hasattr(self.settings, "warn_edit_during_analysis"):
+            self.settings.warn_edit_during_analysis = on
+            self.save_settings()
+        else:
+            self.ui_state["warn_edit_during_analysis"] = on
+            self.persist_ui_state()
+            self.settings_changed.emit()
+
+    def _guard(self, action: str, uids=None, resync: Optional[str] = None) -> bool:
+        """``analysis_lock.guard``; when refused, ``resync`` ("filters" /
+        "calibration") re-emits that signal so panels show the unchanged
+        values again."""
+        if self.analysis_lock.guard(action, uids):
+            return True
+        if resync == "filters":
+            self.filters_changed.emit()
+        elif resync == "calibration":
+            self.calibration_changed.emit()
+        return False
+
+    def undo(self) -> bool:
+        """Edit > Undo through the analysis gate (never undoes a change of
+        an image that is being analysed)."""
+        st = self.undo_stack
+        self._drop_obsolete_commands()
+        if not st.canUndo():
+            return False
+        # guard on EVERY image the command touches before the stack moves;
+        # the commands themselves never refuse once it has moved
+        cmd = st.command(st.index() - 1)
+        if not self._guard("Undo", self._cmd_uids(cmd), resync=self._cmd_resync(cmd)):
+            return False
+        st.undo()
+        self._drop_obsolete_commands()
+        return True
+
+    def redo(self) -> bool:
+        st = self.undo_stack
+        self._drop_obsolete_commands()
+        if not st.canRedo():
+            return False
+        cmd = st.command(st.index())
+        if not self._guard("Redo", self._cmd_uids(cmd), resync=self._cmd_resync(cmd)):
+            return False
+        st.redo()
+        self._drop_obsolete_commands()
+        return True
+
+    @staticmethod
+    def _cmd_resync(cmd) -> Optional[str]:
+        return "calibration" if isinstance(cmd, _SnapshotCommand) else None
+
+    @staticmethod
+    def _cmd_uids(cmd) -> Optional[List]:
+        """The images an undo command changes (None = none in particular)."""
+        fn = getattr(cmd, "uids", None)
+        if callable(fn):
+            got = [u for u in fn() if u is not None]
+        else:
+            uid = getattr(cmd, "uid", None)
+            got = [uid] if uid is not None else []
+        return got or None
+
+    def _drop_obsolete_commands(self) -> None:
+        """Commands of a re-analysed image are obsolete: Qt deletes an
+        obsolete command (without running it) when it is undone / redone."""
+        st = self.undo_stack
+        while st.canUndo() and st.command(st.index() - 1).isObsolete():
+            st.undo()
+        while st.canRedo() and st.command(st.index()).isObsolete():
+            st.redo()
+
+    def _obsolete_commands_for(self, uid) -> int:
+        """A new detection replaced image ``uid``'s result: its hand edits
+        on the undo stack refer to grains that no longer exist."""
+        st = self.undo_stack
+        n = 0
+        for i in range(st.count()):
+            cmd = st.command(i)
+            if cmd is not None and getattr(cmd, "uid", None) == uid and not cmd.isObsolete():
+                cmd.setObsolete(True)
+                release = getattr(cmd, "release", None)
+                if callable(release):
+                    release()            # free label arrays held by stale commands
+                n += 1
+        if n:
+            self._drop_obsolete_commands()
+        return n
 
     @property
     def root(self) -> Path:
@@ -1003,6 +1218,8 @@ class AppState(QObject):
         return Catalog(self.root)
 
     def set_workspace_root(self, path) -> None:
+        if not self.analysis_lock.guard_session("Changing the workspace folder"):
+            return
         self.close_session()
         self.settings.workspace_root = str(path)
         self._workspace = None
@@ -1092,6 +1309,12 @@ class AppState(QObject):
             if on_done:
                 on_done(True)
             self.session_opened.emit()
+            return
+        if not self.analysis_lock.guard_session(
+                "Opening another lot or session",
+                retry=lambda: self.open_session(path, on_done)):
+            if on_done:
+                on_done(False)
             return
         self.flush()
         self.session_loading.emit(path)
@@ -1192,6 +1415,10 @@ class AppState(QObject):
         im.scan_rect = scan
         im.px_override = override
         im.original_name = d.get("original_name") or ""
+        prof = d.get("profile")
+        im.profile = dict(prof) if isinstance(prof, dict) else None
+        if im.profile:                          # UPDATE 4 item 5
+            im.scale_source = im.scan_source = "profile"
         im.status = "done" if res is not None else "pending"
         im.progress, im.message = 0, ""
         im.record = rec
@@ -1217,6 +1444,11 @@ class AppState(QObject):
             return
         if len(paths) == 1:
             self.open_session(paths[0], on_done)
+            return
+        if not self.analysis_lock.guard_session(
+                "Loading other images", retry=lambda: self.open_records(paths, on_done)):
+            if on_done:
+                on_done(False)
             return
         self.flush()
         self.session_loading.emit(paths[0])
@@ -1346,6 +1578,8 @@ class AppState(QObject):
         gone = [im for im in doc.images if im.uid in uids]
         if not gone:
             return 0
+        if not self._guard("Removing images", [im.uid for im in gone]):
+            return 0
         idx = doc.index_of(self.current_uid)
         doc.images = [im for im in doc.images if im.uid not in uids]
         doc.removed.extend(gone)
@@ -1402,7 +1636,18 @@ class AppState(QObject):
             self.setup_changed.emit()
         return len(back)
 
-    def close_session(self) -> None:
+    def close_session(self) -> bool:
+        """Close the open lot / session; False when refused (analysis
+        running: the operator may stop it, the lot closes afterwards)."""
+        if self.session is None:
+            return True
+        if not self.analysis_lock.guard_session("Closing the lot or session",
+                                                retry=self.close_session):
+            return False
+        self._close_now()
+        return True
+
+    def _close_now(self) -> None:
         if self.session is None:
             return
         self.flush()
@@ -1500,7 +1745,12 @@ class AppState(QObject):
                 im.cal_suggestion = tuple(cal) if cal else None
                 if doc.record_for(im) is doc.records[0]:
                     self._fill_acquisition(doc, im.sem_meta)
-                if cal and cal[2] == "high" and im.px_override <= 0 and im.result is None:
+                # UPDATE 4 item 7: never changed behind an analysis run's back
+                # (offered with "Use it" instead)
+                if cal and cal[2] == "high" and self.analysis_lock.is_active():
+                    self.metadata_calibration.emit(im.uid, float(cal[0]), str(cal[1]),
+                                                   "medium", float(im.px_override))
+                elif cal and cal[2] == "high" and im.px_override <= 0 and im.result is None:
                     prev = im.px_override
                     self.set_calibration(float(cal[0]), im.uid)
                     self.metadata_calibration.emit(im.uid, float(cal[0]), str(cal[1]),
@@ -1547,6 +1797,10 @@ class AppState(QObject):
         info = self.info_bar_for(im)
         if im is None or not info or not info.get("analysis_rect"):
             return None
+        if not self._guard("Changing the scan area",
+                           [uid] if this_image else self._following("scan"),
+                           resync="calibration"):
+            return None
         prev = im.scan_rect if this_image else self.session.scan_rect
         self.set_scan_rect(tuple(info["analysis_rect"]), uid if this_image else None)
         return (prev,)
@@ -1586,10 +1840,15 @@ class AppState(QObject):
         if doc is None:
             return 0
         wanted = None if uids is None else set(uids)
+        busy = self.analysis_lock.busy_uids()
         targets = [im for im in doc.images if (wanted is None or im.uid in wanted)
                    and not im.loading and im.readable
-                   and im.uid not in self._setup_pending]
+                   and im.uid not in self._setup_pending and im.uid not in busy]
         if not targets:
+            if busy and any(wanted is None or u in wanted for u in busy):
+                self.analysis_lock.guard("Auto-find", list(busy))   # explains why
+            return 0
+        if not self._guard("Auto-find scan area & scale bar"):
             return 0
         if not self._setup_pending:
             self._setup_stats = dict(total=0, done=0, info_bar=0, full_frame=0, kept_scan=0,
@@ -1613,7 +1872,8 @@ class AppState(QObject):
                      im.cal_suggestion is None, im.scale_source != "manual",
                      im.cal_suggestion, known, details,
                      on_done=lambda out, im=im: self._apply_setup(doc, im, out),
-                     on_error=lambda _m, im=im: self._apply_setup(doc, im, {}))
+                     on_error=lambda _m, im=im: self._apply_setup(doc, im, {}),
+                     pool=filter_pool())     # item 7: 1-2 at a time, not one per image
         return len(targets)
 
     def _matching_bar_um(self, im: ImageDoc) -> float:
@@ -1639,7 +1899,12 @@ class AppState(QObject):
         st["done"] += 1
         if out.get("shape") and not im.shape:
             im.shape = tuple(out["shape"])
-        if im.readable and im.shape:
+        if self.analysis_lock.is_busy(im.uid):
+            # UPDATE 4 item 7: queued for analysis meanwhile -- its scan area
+            # and scale are already handed to the analysis; keep them
+            st["kept_scan"] += 1
+            st["kept_scale"] += 1
+        elif im.readable and im.shape:
             info = out.get("info") or {}
             if info or im.info_bar is None:
                 im.info_bar = info
@@ -1731,19 +1996,28 @@ class AppState(QObject):
             targets += [o for o in doc.images if o is not im and o.bar_px > 0
                         and abs(o.bar_px - im.bar_px) <= 2
                         and o.scale_source not in ("manual", "metadata")]
+        if not self._guard("Setting the scale", [o.uid for o in targets],
+                           resync="calibration"):
+            return []
         snap = [(o.uid, o.px_override, o.scale_source, o.bar_um) for o in targets]
         for o in targets:
             o.bar_um = float(length_um)
             o.px_override = o.bar_px / float(length_um)
             o.scale_source = "manual" if o is im else "auto"
+        self._push_snapshot(ScaleCommand, snap, "Set scale")
         self._meta_dirty = True
         self.calibration_changed.emit()
         self.setup_changed.emit()
         self.schedule_save()
         return snap
 
-    def restore_scales(self, snap: List) -> None:
-        """Undo :meth:`set_bar_length` / :meth:`set_calibration_all`."""
+    def restore_scales(self, snap: List) -> bool:
+        """Undo :meth:`set_bar_length` / :meth:`set_calibration_all` (the
+        toast's "Undo"): undoes that change's command on the undo stack."""
+        return self._undo_snapshot(snap, ScaleCommand, "Undoing the scale")
+
+    def _apply_scales(self, snap: List) -> None:
+        """Write a scale snapshot back (no gate: the caller has asked)."""
         doc = self.session
         if doc is None or not snap:
             return
@@ -1767,12 +2041,16 @@ class AppState(QObject):
         doc = self.session
         if doc is None:
             return []
+        if not self._guard("Setting the scale", [o.uid for o in doc.images],
+                           resync="calibration"):
+            return []
         snap = [("session", doc.px_per_um)] + [
             (o.uid, o.px_override, o.scale_source, o.bar_um) for o in doc.images]
         doc.px_per_um = float(px_per_um)
         for o in doc.images:
             o.px_override = 0.0
             o.scale_source = "manual"
+        self._push_snapshot(ScaleCommand, snap, "Set scale for all images")
         self._meta_dirty = True
         self.calibration_changed.emit()
         self.setup_changed.emit()
@@ -1786,6 +2064,9 @@ class AppState(QObject):
         doc = self.session
         if doc is None:
             return []
+        if not self._guard("Changing the scan area", [o.uid for o in doc.images],
+                           resync="calibration"):
+            return []
         snap = [("session", doc.scan_rect)] + [(o.uid, o.scan_rect, o.scan_source)
                                                for o in doc.images]
         rect = tuple(int(v) for v in rect) if rect else None
@@ -1797,10 +2078,15 @@ class AppState(QObject):
                 o.scan_rect = None
             o.scan_source = "manual"
         self.set_scan_rect(rect, None)
+        self._push_snapshot(ScanAreaCommand, snap, "Set scan area for all images")
         self.setup_changed.emit()
         return snap
 
-    def restore_scans(self, snap: List) -> None:
+    def restore_scans(self, snap: List) -> bool:
+        """Undo :meth:`set_scan_rect_all` (the toast's "Undo")."""
+        return self._undo_snapshot(snap, ScanAreaCommand, "Undoing the scan area")
+
+    def _apply_scans(self, snap: List) -> None:
         doc = self.session
         if doc is None or not snap:
             return
@@ -1898,6 +2184,10 @@ class AppState(QObject):
         """Global calibration, or a per-image override when ``uid`` is given."""
         if self.session is None:
             return
+        if not self._guard("Setting the scale",
+                           [uid] if uid is not None else self._following("scale"),
+                           resync="calibration"):
+            return
         if uid is None:
             self.session.px_per_um = float(px_per_um)
             self._meta_dirty = True
@@ -1924,6 +2214,8 @@ class AppState(QObject):
         im = self.session.image(uid)
         if im is None or im.scan_rect is None:
             return
+        if not self._guard("Changing the scan area", [uid], resync="calibration"):
+            return
         im.scan_rect = None
         im.scan_source = ""
         self._meta_dirty = True
@@ -1933,6 +2225,10 @@ class AppState(QObject):
 
     def set_scan_rect(self, rect, uid=None) -> None:
         if self.session is None:
+            return
+        if not self._guard("Changing the scan area",
+                           [uid] if uid is not None else self._following("scan"),
+                           resync="calibration"):
             return
         rect = tuple(int(v) for v in rect) if rect else None
         if uid is None:
@@ -1978,6 +2274,8 @@ class AppState(QObject):
         im.raw = raw
         im.manual = set()
         im.edits, im.detector_labels = [], None     # a new detection: hand edits start over
+        # UPDATE 4 item 7: undo must never bring back the old detection's edits
+        self._obsolete_commands_for(uid)
         im.det_packed = None
         self.overlays.discard_uid(uid)
         self.hold_arrays(im)
@@ -2004,6 +2302,9 @@ class AppState(QObject):
         override).  Otherwise: a per-image override."""
         if self.session is None:
             return
+        if not self._guard("Changing the grain filters",
+                           [uid] if uid is not None else None, resync="filters"):
+            return
         opts = options_from_dict(options_to_dict(opts))
         if uid is None:
             self.session.filters = opts
@@ -2024,6 +2325,12 @@ class AppState(QObject):
 
     def apply_filters_to_all(self, opts: Optional[PostFilterOptions] = None) -> None:
         if self.session is None:
+            return
+        busy = self.analysis_lock.busy_uids()
+        if not self._guard("Applying the grain filters to all images",
+                           [im.uid for im in self.session.images
+                            if im.filter_override is not None and im.uid in busy],
+                           resync="filters"):
             return
         for im in self.session.images:
             im.filter_override = None
@@ -2078,6 +2385,8 @@ class AppState(QObject):
             self.schedule_save()
 
         def failed(msg):
+            if self.session is not doc:
+                return
             if im.filter_gen == gen:
                 self._filtering.discard(uid)
                 self.filtering_changed.emit(uid, False)
@@ -2089,8 +2398,11 @@ class AppState(QObject):
 
         # shallow copy: compacting ``im.raw`` meanwhile only rebinds the
         # original's attributes, never the worker's
+        # UPDATE 4 item 7: a small dedicated pool (1-2 threads), not one task
+        # per image on the global pool (each reads full-resolution pixels)
         run_task(_filter_task, copy.copy(im.raw), im.image_bgr, im.path, opts,
-                 frozenset(im.manual), params, on_done=done, on_error=failed)
+                 frozenset(im.manual), params, on_done=done, on_error=failed,
+                 pool=filter_pool())
 
     def _run_final_filters(self) -> None:
         for uid in list(self._final_pending):
@@ -2101,6 +2413,8 @@ class AppState(QObject):
         """Remove grains by hand (undoable; feeds ``manual_excluded``)."""
         if not grain_ids or self.session is None:
             return False
+        if not self._guard("Removing grains", [uid]):
+            return False
         cmd = ExcludeGrainsCommand(self, uid, list(grain_ids))
         if cmd.is_empty():
             return False
@@ -2110,6 +2424,8 @@ class AppState(QObject):
     def restore_grains(self, uid, grain_ids: List[int]) -> bool:
         """Put hand-removed grains back (undoable)."""
         if not grain_ids or self.session is None:
+            return False
+        if not self._guard("Restoring grains", [uid]):
             return False
         cmd = RestoreGrainsCommand(self, uid, list(grain_ids))
         if cmd.is_empty():
@@ -2129,6 +2445,78 @@ class AppState(QObject):
         off = label_offset(lab.shape, shape, getattr(im.raw, "auto_crop_rect", None))
         return im, off
 
+    def _edit_gate(self, action: str, uid) -> None:
+        """Merge / split / add go through the analysis gate; refused ->
+        :class:`EditRefused` (a GrainEditError the canvas stays quiet on)."""
+        if not self._guard(action, [uid]):
+            raise EditRefused(action)
+
+    def _following(self, what: str) -> List:
+        """Images that follow the session-wide scale / scan area (a change
+        of it changes them)."""
+        if self.session is None:
+            return []
+        if what == "scale":
+            return [im.uid for im in self.session.images if im.px_override <= 0]
+        return [im.uid for im in self.session.images if not im.scan_rect]
+
+    @staticmethod
+    def _snap_uids(snap) -> List:
+        return [item[0] for item in snap if item and item[0] != "session"]
+
+    def _snapshot_now(self, cls, before: List) -> List:
+        """The current values of the images (and session) in ``before``."""
+        doc = self.session
+        out = []
+        for item in before:
+            if item[0] == "session":
+                out.append(("session", doc.px_per_um if cls is ScaleCommand
+                            else doc.scan_rect))
+                continue
+            o = doc.image(item[0])
+            if o is None:
+                continue
+            out.append((o.uid, o.px_override, o.scale_source, o.bar_um)
+                       if cls is ScaleCommand else (o.uid, o.scan_rect, o.scan_source))
+        return out
+
+    def _push_snapshot(self, cls, before: List, text: str) -> None:
+        """Put an already-applied scale / scan-area change on the undo stack."""
+        if self.session is None or not before:
+            return
+        self.undo_stack.push(cls(self, before, self._snapshot_now(cls, before), text))
+
+    def _undo_snapshot(self, snap: List, cls, action: str) -> bool:
+        """The toast's "Undo" of a scale / scan-area change.  Its command on
+        top of the stack -> a normal :meth:`undo`; lower down (other changes
+        since) -> gate, write the snapshot back and drop the command; not on
+        the stack (already undone / stack cleared) -> nothing.  Refused ->
+        nothing changes."""
+        if self.session is None or not snap:
+            return False
+        st = self.undo_stack
+        self._drop_obsolete_commands()
+        for i in range(st.index() - 1, -1, -1):
+            cmd = st.command(i)
+            if isinstance(cmd, cls) and cmd.before is snap and not cmd.isObsolete():
+                if i == st.index() - 1:
+                    return self.undo()
+                if not self._guard(action, sorted(cmd.uids(), key=str) or None,
+                                   resync="calibration"):
+                    return False
+                self._apply_snapshot(cls, snap)
+                cmd.setObsolete(True)
+                cmd.release()
+                return True
+        # already undone, or the stack was cleared (another lot was opened)
+        return False
+
+    def _apply_snapshot(self, cls, snap: List) -> None:
+        if cls is ScaleCommand:
+            self._apply_scales(snap)
+        else:
+            self._apply_scans(snap)
+
     def kept_ids(self, uid) -> set:
         """Grains currently counted (not excluded by a filter or by hand)."""
         im = self.session.image(uid) if (self.session and uid is not None) else None
@@ -2141,6 +2529,7 @@ class AppState(QObject):
         merged grain's id; raises ``core.grain_edit.GrainEditError`` with a
         user-facing message when the grains cannot be merged."""
         from core.grain_edit import GrainEditError, merge_grains, remeasure_after_edit
+        self._edit_gate("Merging grains", uid)
         im, _off = self._edit_target(uid)
         kept = self.kept_ids(uid)
         ids = sorted({int(i) for i in grain_ids if int(i) in kept})
@@ -2156,6 +2545,7 @@ class AppState(QObject):
         """Split one kept grain along a cut line given in IMAGE (canvas)
         coordinates (undoable).  Returns the ids of the pieces."""
         from core.grain_edit import remeasure_after_edit, split_grain, to_label_coords
+        self._edit_gate("Splitting a grain", uid)
         im, off = self._edit_target(uid)
         line = to_label_coords(line_xy, off)
         out = split_grain(im.raw.label_image, line, grain_id, candidates=self.kept_ids(uid))
@@ -2173,6 +2563,7 @@ class AppState(QObject):
         from core.grain_edit import (
             GrainEditError, add_grain, remeasure_after_edit, to_label_coords,
         )
+        self._edit_gate("Adding a grain", uid)
         im, off = self._edit_target(uid)
         outline = to_label_coords(points, off)
         try:
@@ -2409,7 +2800,8 @@ class AppState(QObject):
                     filters_override=(options_to_dict(im.filter_override)
                                       if im.filter_override is not None else CLEAR),
                     manual_excluded=sorted(int(i) for i in im.manual),
-                    grain_edits=[dict(op) for op in im.edits] if im.edits else CLEAR)
+                    grain_edits=[dict(op) for op in im.edits] if im.edits else CLEAR,
+                    resolution_profile=dict(im.profile) if im.profile else CLEAR)
 
     def save_now(self) -> None:
         """Flush pending changes to disk off-thread (Ctrl+S / autosave)."""
@@ -2471,12 +2863,15 @@ class AppState(QObject):
             if im.loading:
                 continue
             if im.uid in with_result and im.result is not None:
-                snap = snapshot_result(im.result)
+                # item 7: no label copy -- it is replaced just below, and label
+                # maps are never edited in place (edits build new arrays)
+                snap = snapshot_result(im.result, copy_labels=False)
+                snap.label_image = None
                 # The saved label image keeps EVERY raw grain so filters can be
                 # switched off again after reload; grains.json / summary.json /
                 # overlay.png hold the filtered (reported) result.
                 if im.raw is not None and im.raw.label_image is not None:
-                    snap.label_image = im.raw.label_image.copy()
+                    snap.label_image = im.raw.label_image
                     if is_packed(snap):          # result compacted, raw in use
                         packed = dict(snap._packed_arrays)
                         packed.pop("label_image", None)
@@ -2519,25 +2914,41 @@ class AppState(QObject):
                         calibration_reason=m.calibration_reason)
         return entries, meta
 
-    def flush(self, timeout_ms: int = 15000) -> None:
-        """Synchronously wait for pending saves (close / session switch)."""
+    def flush(self, timeout_ms: int = 60000) -> None:
+        """Wait for pending filters and saves (close / session switch).
+
+        UPDATE 4 item 7: waits only on the pools that matter (record loads,
+        grain filters, saves -- not every background task in the app) and
+        keeps painting the window meanwhile (user input is held back), so
+        it never looks frozen.  ``timeout_ms`` is a safety net per stage."""
         self.about_to_flush.emit()
         if self._records_pending:
-            from PySide6.QtCore import QThreadPool, QCoreApplication
-            load_pool().waitForDone(timeout_ms)
-            QThreadPool.globalInstance().waitForDone(timeout_ms)
-            QCoreApplication.processEvents()
+            self._wait_pool(load_pool(), timeout_ms)
         if self._final_pending:
             self._final_timer.stop()
             self._run_final_filters()
-            from PySide6.QtCore import QThreadPool, QCoreApplication
-            QThreadPool.globalInstance().waitForDone(timeout_ms)
-            QCoreApplication.processEvents()
+        if self._filtering or self._final_pending:
+            self._wait_pool(filter_pool(), timeout_ms)
         if self.session is not None and self.is_dirty():
             self.save_now()
-        serial_pool().waitForDone(timeout_ms)
-        from PySide6.QtCore import QCoreApplication
-        QCoreApplication.processEvents()
+        self._wait_pool(serial_pool(), timeout_ms)
+        if self.session is not None and self.is_dirty() and not self._saving:
+            self.save_now()          # a filter result that arrived meanwhile
+            self._wait_pool(serial_pool(), timeout_ms)
+
+    @staticmethod
+    def _wait_pool(pool, timeout_ms: int) -> None:
+        """Wait for ``pool`` while delivering its results and repainting."""
+        from PySide6.QtCore import QCoreApplication, QElapsedTimer, QEventLoop
+        clock = QElapsedTimer()
+        clock.start()
+        flags = QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents
+        while not pool.waitForDone(25):
+            QCoreApplication.processEvents(flags, 25)
+            if clock.elapsed() > timeout_ms:
+                _log.warning("flush: background work still running after %d ms", timeout_ms)
+                break
+        QCoreApplication.processEvents(flags)
 
     def _set_save_state(self, state: str, detail: str) -> None:
         self.save_state = state

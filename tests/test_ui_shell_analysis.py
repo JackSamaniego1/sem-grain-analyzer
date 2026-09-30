@@ -220,7 +220,11 @@ def test_close_window_mid_analysis_exits_cleanly(env, qtbot, capfd):
     confirm_setup(shell, qtbot)
     shell.analyze.analyze_all()
     qtbot.waitUntil(lambda: shell.analyze.queue.is_running(), timeout=10000)
+    # UPDATE 4 item 7: "Stop and close?" -> the window closes once the image
+    # in flight has stopped (never while its thread still runs)
+    shell.confirm_close = lambda: True
     shell.close()
+    qtbot.waitUntil(lambda: not shell.isVisible(), timeout=TIMEOUT)
     qtbot.wait(300)
     err = capfd.readouterr().err
     assert "Signal source has been deleted" not in err

@@ -99,6 +99,15 @@ class SettingsPage(QWidget):
         self.motion.setToolTip("Turn off transitions and animated counters")
         self.motion.toggled.connect(self._set_motion)
         ap.add_widget(self.motion)
+        # UPDATE 4 item 7: re-enable the "images are being analysed" question
+        self.warn_edit = QCheckBox("Ask before changes while images are being analysed")
+        self.warn_edit.setChecked(state.warn_edit_during_analysis)
+        self.warn_edit.setToolTip(
+            "Editing grains, filters, scale or scan area while an analysis is running can "
+            "be unreliable on low-performance PCs. When on, you are asked first (once per "
+            "analysis run).")
+        self.warn_edit.toggled.connect(self.state.set_warn_edit_during_analysis)
+        ap.add_widget(self.warn_edit)
         ap.body_layout().addStretch(1)
         grid.addWidget(ap, 0, 1)
 
@@ -239,6 +248,10 @@ class SettingsPage(QWidget):
             self.cal_toggle.blockSignals(True)
             self.cal_toggle.setChecked(bool(st.calibration_verification_enabled))
             self.cal_toggle.blockSignals(False)
+        if self.warn_edit.isChecked() != self.state.warn_edit_during_analysis:
+            self.warn_edit.blockSignals(True)
+            self.warn_edit.setChecked(self.state.warn_edit_during_analysis)
+            self.warn_edit.blockSignals(False)
         self._refresh_cal()
 
     # ------------------------------------------------------------------ INN-27 / INN-29
@@ -363,6 +376,9 @@ class SettingsPage(QWidget):
             self._toast("Save the folder settings first",
                         "Renaming uses the saved folder-name settings.", "warning")
             return
+        # UPDATE 4 item 7: folders are never renamed under a running analysis
+        if not self.state.analysis_lock.guard_session("Renaming folders"):
+            return
         dlg = RenameFoldersDialog(self.state, self)
         dlg.renamed.connect(lambda applied: self._after_rename(applied, undo=False))
         self._rename_dlg = dlg
@@ -375,8 +391,7 @@ class SettingsPage(QWidget):
         st = self.state
         if st.session is not None and applied:
             new = remap(st.session.path, applied)
-            if new != st.session.path:
-                st.close_session()
+            if new != st.session.path and st.close_session() is not False:
                 st.open_session(new)
         st.workspace_changed.emit()
         n = len(applied)

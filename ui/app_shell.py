@@ -135,6 +135,15 @@ class AppShell(QMainWindow):
         self._meta_cal_timer.setSingleShot(True)
         self._meta_cal_timer.setInterval(350)
         self._meta_cal_timer.timeout.connect(self._flush_metadata_calibration)
+        # UPDATE 4 item 7: closing while analysing waits (no time limit) for
+        # the running image to stop; never destroys a running thread
+        self._close_pending = False
+        self._close_asking = False          # "Stop and close?" is open
+        self._close_timer = QTimer(self)
+        self._close_timer.setInterval(100)
+        self._close_timer.timeout.connect(self._close_when_idle)
+        #: ``confirm_close()`` -> True to stop and close (tests replace it)
+        self.confirm_close = self._ask_stop_and_close
         self._build()
         self._build_menus()
         self._wire()
@@ -267,11 +276,11 @@ class AppShell(QMainWindow):
         self._act(f, "Export &current image to Excel", self.export_current_excel, "Ctrl+Shift+E")
         self._act(f, "Open report &designer…", lambda: self.go("reports"), None, "reports")
         f.addSeparator()
-        self._act(f, "&Close session", self.state.close_session)
+        self.act_close = self._act(f, "&Close session", self.state.close_session)
         self._act(f, "&Quit", self.close, QKeySequence.Quit)
         e = mb.addMenu("&Edit")
-        self.act_undo = self._act(e, "&Undo", self.state.undo_stack.undo, QKeySequence.Undo, "undo")
-        self.act_redo = self._act(e, "&Redo", self.state.undo_stack.redo,
+        self.act_undo = self._act(e, "&Undo", self.state.undo, QKeySequence.Undo, "undo")
+        self.act_redo = self._act(e, "&Redo", self.state.redo,
                                   ["Ctrl+Y", "Ctrl+Shift+Z"], "redo")
         self.act_undo.setEnabled(False)
         self.act_redo.setEnabled(False)
@@ -283,8 +292,8 @@ class AppShell(QMainWindow):
         self._act(a, "Set &scale bar…", self.open_calibration, "Ctrl+K", "calibrate")
         self._act(a, "Set scan &area…", self.open_scan_area, "Ctrl+R", "scan_area")
         a.addSeparator()
-        self._act(a, "Analyze &all images", self.analyze_all, "F5", "run")
-        self._act(a, "Analyze &current image", self.analyze_current, "Ctrl+F5")
+        self.act_run_all = self._act(a, "Analyze &all images", self.analyze_all, "F5", "run")
+        self.act_run_cur = self._act(a, "Analyze &current image", self.analyze_current, "Ctrl+F5")
         self._act(a, "Ca&ncel analysis", self.analyze.cancel, None, "stop")
         vm = mb.addMenu("&View")
         for i, (key, ic, text) in enumerate(PAGES + [("settings", "settings", "Settings")]):
@@ -330,6 +339,7 @@ class AppShell(QMainWindow):
         st.undo_stack.canUndoChanged.connect(self.act_undo.setEnabled)
         st.undo_stack.canRedoChanged.connect(self.act_redo.setEnabled)
         st.session_loading.connect(lambda p: self._status(f"Opening {Path(p).name}…"))
+        st.analysis_lock.lock_changed.connect(self._on_lock_changed)
         self.projects.open_session_requested.connect(self.open_session)
         self.projects.open_image_requested.connect(
             lambda path, name: self.open_session(path, select=name))
@@ -512,6 +522,10 @@ class AppShell(QMainWindow):
         """Wizard finished: (re)open the lot / session, then read the SEM
         metadata of its images (INN-05 auto-calibration)."""
         path = Path(path)
+        if not self.state.analysis_lock.guard_session(
+                "Opening the new lot or session",
+                retry=lambda: self._on_wizard_created(path)):
+            return
         s = self.state.session
         if s is not None and s.path == path:
             self.state.close_session()      # images were appended on disk: reload
@@ -902,23 +916,90 @@ class AppShell(QMainWindow):
             self.rail.set_expanded(True, animate=False)
         self.stack.setCurrentWidget(self.pages.get(last, self.projects))
 
+    # ------------------------------------------------------------------ UPDATE 4 item 7
+    def _on_lock_changed(self, on: bool) -> None:
+        """Actions that are never allowed during a run look disabled and say
+        why; they come back when the run ends."""
+        from ui.analysis_lock import show_locked
+        for a in (self.act_close, self.act_new, self.act_run_all, self.act_run_cur):
+            a.setEnabled(not on)
+            show_locked(a, on)
+
+    def _ask_stop_and_close(self) -> bool:
+        from PySide6.QtWidgets import QMessageBox
+
+        from ui.analysis_lock import headless
+        if headless():
+            return True          # nobody can answer: stop (safely) and close
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("Analysis running")
+        box.setText("Analysis running — stop and close?\n\nImages already finished are "
+                    "saved. The image being analysed now is not.")
+        stop = box.addButton("Stop and close", QMessageBox.AcceptRole)
+        keep = box.addButton("Keep analysing", QMessageBox.RejectRole)
+        box.setDefaultButton(keep)
+        box.setEscapeButton(keep)
+        box.exec()
+        return box.clickedButton() is stop
+
+    def is_closing(self) -> bool:
+        return self._close_pending
+
+    def _close_when_idle(self) -> None:
+        """Polled while stopping: close once the analysis thread has ended
+        (however long the image in flight takes on a slow PC)."""
+        if not self.analyze.queue.is_idle():
+            return
+        self._close_timer.stop()
+        QApplication.restoreOverrideCursor()
+        self._close_pending = False
+        self._close_ready = True
+        self.close()
+
     def closeEvent(self, e) -> None:
         self.analyze.params.stop_background()      # no start-up GPU check while closing
-        if self.analyze.queue.is_running():
-            # The detector call in flight cannot be interrupted; tell the user
-            # why closing takes a moment instead of appearing frozen.
-            self.statusBar().showMessage("Finishing the current analysis before closing…")
-            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-            QApplication.processEvents()
-            self.analyze.queue.cancel()
-            self.analyze.queue.wait(20000)
-            QApplication.restoreOverrideCursor()
+        if self._close_pending:
+            e.ignore()                             # already stopping; closes by itself
+            return
+        if getattr(self, "_close_asking", False):
+            e.ignore()                             # "Stop and close?" is already open
+            return
+        if not getattr(self, "_close_ready", False) and not self.analyze.queue.is_idle():
+            if self.analyze.queue.is_running():
+                # the question runs a nested event loop: a second close
+                # request meanwhile must not open a second question
+                self._close_asking = True
+                try:
+                    ok = self.confirm_close()
+                finally:
+                    self._close_asking = False
+                if not ok:
+                    e.ignore()
+                    return
+        if not getattr(self, "_close_ready", False) and not self.analyze.queue.is_idle():
+            # The image in flight stops at the detector's next cancel check;
+            # the window stays alive (and says so) until the thread has ended.
+            self._close_pending = True
+            self.state.analysis_lock.cancel_pending()   # nothing opens while closing
+            self.analyze.cancel()
+            self.statusBar().showMessage("Stopping… the window closes when the current "
+                                         "image has stopped.")
+            self._status("Stopping analysis…")
+            self.analyze.run_title.setText("Stopping…")
+            QApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
+            self._close_timer.start()
+            e.ignore()
+            return
+        self._close_ready = False
         self.state.flush()
         from ui.workers import shutdown_tasks
         shutdown_tasks()
         self.state.ui_state["geometry"] = bytes(self.saveGeometry().toBase64()).decode("ascii")
         self.state.ui_state["last_page"] = self.current_page()
         self.state.persist_ui_state()
+        from ui.app_state import flush_ui_state
+        flush_ui_state()                           # the background save lands now
         super().closeEvent(e)
 
     def show_about(self) -> None:

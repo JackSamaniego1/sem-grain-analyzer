@@ -207,14 +207,19 @@ def full_frame_overlay(image_bgr: np.ndarray, result: AnalysisResult) -> np.ndar
     return compose_full_overlay(image_bgr, ov, rect)
 
 
-def snapshot_result(result: Optional[AnalysisResult]) -> Optional[AnalysisResult]:
+def snapshot_result(result: Optional[AnalysisResult],
+                    copy_labels: bool = True) -> Optional[AnalysisResult]:
     """Copy of a result safe to hand to another thread while the GUI keeps
-    editing the original (label image copied; grain list copied)."""
+    editing the original (label image copied; grain list copied).
+
+    ``copy_labels=False`` (UPDATE 4 item 7): the caller replaces the label
+    image anyway -- skip the wasted full-size copy.  Label maps are never
+    edited in place (grain edits build new arrays), so sharing is safe."""
     if result is None:
         return None
     r = copy.copy(result)
     r.grains = list(result.grains)
-    if result.label_image is not None:
+    if copy_labels and result.label_image is not None:
         r.label_image = result.label_image.copy()
     if isinstance(getattr(result, "astm", None), dict):
         r.astm = dict(result.astm)
@@ -304,8 +309,61 @@ class AnalysisJob:
     path: Optional[Any] = None
 
 
+#: Analysis threads still running, held here until they have finished (UPDATE
+#: 4 item 7): a running ``QThread`` whose last Python reference goes away is
+#: destroyed while running, which aborts the whole process.
+_ALIVE_THREADS: Dict[int, tuple] = {}
+
+
+def _keep_alive(th: QThread, wk: QObject) -> None:
+    _ALIVE_THREADS[id(th)] = (th, wk)
+
+
+def _release_thread(th: Optional[QThread], wk: Optional[QObject]) -> None:
+    """GUI thread, after ``finished``: ``finished`` is emitted just BEFORE
+    the thread really ends, so wait for that (returns at once) before the
+    last reference goes -- a QThread destroyed a moment too early aborts the
+    whole program ("Destroyed while thread is still running")."""
+    if th is not None:
+        try:
+            th.wait()
+        except RuntimeError:
+            pass
+    if wk is not None:
+        try:
+            wk.deleteLater()
+        except RuntimeError:
+            pass
+    if th is not None:
+        try:
+            th.deleteLater()
+        except RuntimeError:
+            pass
+        _ALIVE_THREADS.pop(id(th), None)
+
+
+def alive_analysis_threads() -> int:
+    """Analysis threads not finished yet (tests / close)."""
+    n = 0
+    for th, _wk in list(_ALIVE_THREADS.values()):
+        try:
+            if th.isRunning():
+                n += 1
+        except RuntimeError:
+            pass
+    return n
+
+
 class AnalysisQueue(QObject):
-    """Sequential batch analysis keyed by image uid (no index bookkeeping)."""
+    """Sequential batch analysis keyed by image uid (no index bookkeeping).
+
+    UPDATE 4 item 7 (stability): every run has a generation number; the
+    delayed "start the next image" call of an old run is ignored, and a new
+    worker thread is never started while one is still running, so Cancel
+    followed by a quick restart can never put two threads on one queue."""
+
+    #: pause between two images (lets queued GUI work run in between)
+    NEXT_DELAY_MS = 30
 
     job_started = Signal(object)            # uid
     job_progress = Signal(object, int, str)  # uid, pct, message
@@ -324,12 +382,27 @@ class AnalysisQueue(QObject):
         self._worker: Optional[AnalysisWorker] = None
         self._cancelled = False
         self._running = False
+        self._gen = 0                 # run generation (stale timers are ignored)
+        self.threads_started = 0      # tests: worker threads ever started
         # UX-07: cooperative cancel token shared with the running worker.
         self._cancel_event = threading.Event()
 
     # -- API ---------------------------------------------------------------
     def is_running(self) -> bool:
         return self._running
+
+    def is_idle(self) -> bool:
+        """Not running AND no worker thread alive (safe to close / destroy)."""
+        if self._running or self._thread is not None:
+            return False
+        return True
+
+    def thread_alive(self) -> bool:
+        th = self._thread
+        try:
+            return th is not None and th.isRunning()
+        except RuntimeError:
+            return False
 
     def current_uid(self):
         return self._current.uid if self._current else None
@@ -338,8 +411,10 @@ class AnalysisQueue(QObject):
         return [j.uid for j in self._jobs]
 
     def start(self, jobs: Sequence[AnalysisJob]) -> bool:
-        if self._running or not jobs:
+        # a thread of an earlier (cancelled) run still finishing: not yet
+        if self._running or not jobs or self._thread is not None:
             return False
+        self._gen += 1
         self._jobs = list(jobs)
         self._total = len(self._jobs)
         self._done = 0
@@ -347,7 +422,7 @@ class AnalysisQueue(QObject):
         self._cancel_event = threading.Event()
         self._running = True
         self.overall_progress.emit(0.0)
-        self._next()
+        self._next(self._gen)
         return True
 
     def cancel(self) -> None:
@@ -359,6 +434,7 @@ class AnalysisQueue(QObject):
         self._cancelled = True
         self._cancel_event.set()
         self._jobs.clear()
+        self._gen += 1                # the pending "next image" timer is now stale
         if self._thread is None:
             self._finish()
 
@@ -366,13 +442,26 @@ class AnalysisQueue(QObject):
         """Forget a pending job (image closed mid-batch)."""
         self._jobs = [j for j in self._jobs if j.uid != uid]
 
-    def wait(self, ms: int = 30000) -> None:
-        """Block until the running thread ends (used on application close)."""
-        if self._thread is not None:
-            self._thread.wait(ms)
+    def wait(self, ms: int = 30000) -> bool:
+        """Block until the running thread ends; True when it has.  Only for
+        tests / scripts: the window's close waits on the event loop instead
+        (:meth:`is_idle`), without a time limit."""
+        th = self._thread
+        if th is None:
+            return True
+        try:
+            return bool(th.wait(ms))
+        except RuntimeError:
+            return True
 
     # -- internals ---------------------------------------------------------
-    def _next(self) -> None:
+    def _next(self, gen: Optional[int] = None) -> None:
+        if gen is not None and gen != self._gen:
+            return                    # a stale timer of an earlier run
+        if self._thread is not None:
+            return                    # never two workers: the running one schedules us
+        if not self._running:
+            return
         if self._cancelled or not self._jobs:
             self._finish()
             return
@@ -393,7 +482,10 @@ class AnalysisQueue(QObject):
         wk.cancelled.connect(th.quit)
         th.finished.connect(self._on_thread_done)
         self._thread, self._worker = th, wk
-        th.start()
+        _keep_alive(th, wk)
+        self.threads_started += 1
+        # below the GUI thread: the window stays responsive on weak PCs
+        th.start(QThread.Priority.LowPriority)
 
     @Slot(int, str)
     def _on_progress(self, pct: int, msg: str) -> None:
@@ -423,14 +515,12 @@ class AnalysisQueue(QObject):
         th, wk = self._thread, self._worker
         self._thread = self._worker = None
         self._current = None
-        if wk is not None:
-            wk.deleteLater()
-        if th is not None:
-            th.deleteLater()
+        _release_thread(th, wk)
         if self._cancelled:
             self._finish()
         else:
-            QTimer.singleShot(30, self._next)
+            gen = self._gen
+            QTimer.singleShot(self.NEXT_DELAY_MS, self, lambda g=gen: self._next(g))
 
     def _finish(self) -> None:
         if not self._running:
@@ -462,10 +552,15 @@ class _TaskSignals(QObject):
         self.done.connect(self._deliver_done)
         self.failed.connect(self._deliver_failed)
 
+    @staticmethod
+    def _stale() -> bool:
+        # UPDATE 4 item 7: nothing is delivered into a window being closed
+        return bool(_SHUTTING_DOWN)
+
     @Slot(object)
     def _deliver_done(self, value) -> None:
         _LIVE.discard(self)
-        if self._on_done is not None:
+        if self._on_done is not None and not self._stale():
             try:
                 self._on_done(value)
             except RuntimeError:  # receiver widget already destroyed
@@ -474,7 +569,7 @@ class _TaskSignals(QObject):
     @Slot(str)
     def _deliver_failed(self, msg: str) -> None:
         _LIVE.discard(self)
-        if self._on_error is not None:
+        if self._on_error is not None and not self._stale():
             try:
                 self._on_error(msg)
             except RuntimeError:
@@ -496,7 +591,33 @@ class Task(QRunnable):
         except Exception as e:
             self.signals.failed.emit(f"{type(e).__name__}: {e}\n{traceback.format_exc()}")
             return
+        except BaseException as e:           # never let a pool thread die silently
+            self.signals.failed.emit(f"{type(e).__name__}: {e}")
+            return
         self.signals.done.emit(value)
+
+
+def _low_priority(pool: QThreadPool) -> QThreadPool:
+    """UPDATE 4 item 7: background pools run below the GUI thread so the
+    window keeps responding while they work (weak PCs)."""
+    try:
+        pool.setThreadPriority(QThread.Priority.LowPriority)
+    except (AttributeError, RuntimeError):     # Qt < 6.2
+        pass
+    return pool
+
+
+_GLOBAL_TUNED = False
+
+
+def global_pool() -> QThreadPool:
+    """Qt's global pool, set to low thread priority once."""
+    global _GLOBAL_TUNED
+    pool = QThreadPool.globalInstance()
+    if not _GLOBAL_TUNED:
+        _GLOBAL_TUNED = True
+        _low_priority(pool)
+    return pool
 
 
 _SERIAL_POOL: Optional[QThreadPool] = None
@@ -506,7 +627,7 @@ def serial_pool() -> QThreadPool:
     """Single-thread pool: writes to one session are never concurrent."""
     global _SERIAL_POOL
     if _SERIAL_POOL is None:
-        _SERIAL_POOL = QThreadPool()
+        _SERIAL_POOL = _low_priority(QThreadPool())
         _SERIAL_POOL.setMaxThreadCount(1)
     return _SERIAL_POOL
 
@@ -521,7 +642,7 @@ def load_pool() -> QThreadPool:
     """Small dedicated pool for loading record bundles (bounded concurrency)."""
     global _LOAD_POOL
     if _LOAD_POOL is None:
-        _LOAD_POOL = QThreadPool()
+        _LOAD_POOL = _low_priority(QThreadPool())
         _LOAD_POOL.setMaxThreadCount(LOAD_POOL_THREADS)
     return _LOAD_POOL
 
@@ -534,9 +655,34 @@ def ocr_pool() -> QThreadPool:
     background -- 50 images added at once are read one after another."""
     global _OCR_POOL
     if _OCR_POOL is None:
-        _OCR_POOL = QThreadPool()
+        _OCR_POOL = _low_priority(QThreadPool())
         _OCR_POOL.setMaxThreadCount(1)
     return _OCR_POOL
+
+
+_FILTER_POOL: Optional[QThreadPool] = None
+
+
+def filter_pool_threads(logical: Optional[int] = None) -> int:
+    """1 thread on a 1-4 core PC, 2 above: grain filters and Auto-find each
+    read full-resolution pixels, so more at once only thrash memory."""
+    import os
+    n = logical if logical is not None else (os.cpu_count() or 1)
+    return 2 if int(n) > 4 else 1
+
+
+def filter_pool() -> QThreadPool:
+    """UPDATE 4 item 7 (load shedding): grain-filter and Auto-find tasks run
+    here, 1-2 at a time, instead of one per image on the global pool."""
+    global _FILTER_POOL
+    if _FILTER_POOL is None:
+        _FILTER_POOL = _low_priority(QThreadPool())
+        _FILTER_POOL.setMaxThreadCount(filter_pool_threads())
+    return _FILTER_POOL
+
+
+def all_pools() -> List[QThreadPool]:
+    return [load_pool(), ocr_pool(), filter_pool(), global_pool(), serial_pool()]
 
 
 def run_task(fn: Callable, *args, on_done=None, on_error=None,
@@ -544,7 +690,7 @@ def run_task(fn: Callable, *args, on_done=None, on_error=None,
     """Start ``fn`` off the GUI thread; ``on_done(value)`` / ``on_error(msg)``
     run on the GUI thread."""
     task = Task(fn, *args, on_done=on_done, on_error=on_error, **kwargs)
-    (pool or QThreadPool.globalInstance()).start(task)
+    (pool or global_pool()).start(task)
     return task
 
 
@@ -556,7 +702,8 @@ def shutdown_tasks(timeout_ms: int = 10000) -> None:
     try:
         load_pool().waitForDone(timeout_ms)
         ocr_pool().waitForDone(timeout_ms)   # at most one data-bar read in flight
-        QThreadPool.globalInstance().waitForDone(timeout_ms)
+        filter_pool().waitForDone(timeout_ms)
+        global_pool().waitForDone(timeout_ms)
         serial_pool().waitForDone(timeout_ms)
     finally:
         # Tasks that finished while we waited dropped their results; reset
@@ -578,6 +725,7 @@ def pending_tasks() -> int:
 __all__ = [
     "IMAGE_FILTER", "IMAGE_EXTS", "read_image", "bgr_to_qimage", "thumb_qimage",
     "load_thumb_file", "analyze_image", "snapshot_result", "redraw_overlay", "full_frame_overlay",
-    "mask_to_display", "AnalysisWorker", "AnalysisJob", "AnalysisQueue",
-    "Task", "run_task", "serial_pool", "ocr_pool", "shutdown_tasks", "pending_tasks", "is_shutting_down",
+    "mask_to_display", "AnalysisWorker", "AnalysisJob", "AnalysisQueue", "alive_analysis_threads",
+    "Task", "run_task", "serial_pool", "ocr_pool", "filter_pool", "global_pool", "shutdown_tasks",
+    "pending_tasks", "is_shutting_down",
 ]
