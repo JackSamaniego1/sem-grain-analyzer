@@ -20,6 +20,8 @@ The user numbered two items "8"; they are renumbered 1–12 here.
 
 | 13 | Review page image list: use the **same grouped layout as the Analyze image tree** (Job › Part › Lot folders with the images under them) instead of the current flat, disorganised list. Reuse `ui/pages/image_tree.py` (ImageTree). | ui-designer | 0.5 d | 1 |
 | 14 | Analyze & Review: the display mode (Original / Overlay / …) **persists when switching images**. Today it resets to Overlay on every new image. | ui-designer | 0.25 d | 1 |
+| 15 | **Lot Summary page is blank** in the report (known gap: the report editor has no preview widget for the `lot_summary` section; also verify the exported Excel/PPTX). Make lot-vs-lot charts really good: every summary chart = **bars per lot with an overlaid trendline** (combo bar+line), plus an **overall job summary** chart/table. Mock up first, like the PPTX slide 2 process. | report-engineer (opus for design) | 1.5–2 d | 2 |
+| 16 | **Units & bins bug:** switching area nm² → µm² (e.g. 20,000 nm²) dumps everything into one 0–1 µm² bin, and raising the bin count does nothing. Unit change must only rescale values (move the decimal); bin edges must be recomputed from the data range in the new unit; more bins = narrower bins (smaller step), never needing huge counts. Add tests for nm²↔µm² and diameter nm↔µm with bin-count changes. | report-engineer | 0.5–1 d | 1 |
 
 **Total ≈ 13.5–16.5 working days of agent time**, plus the user's review between batches.
 
@@ -30,8 +32,8 @@ The user numbered two items "8"; they are renumbered 1–12 here.
 - **GPU:** `core/grain_detector.py:1200` already uses CUDA if torch sees it, but the installer ships **CPU-only torch** (`build.yml`). GPU needs an NVIDIA card plus a CUDA build of torch, which adds about 2.5 GB to the installer. Alternative: DirectML (any GPU, less proven with SAM).
 
 ## Suggested batches
-1. **Quick UX wins (~3 d):** 1, 2, 3, 6, 9, 13, 14, and remove the CPU tile.
-2. **Calibration automation (~4–5 d):** 11 → 4 → 5 (profiles build on auto scale/scan).
+1. **Quick UX wins (~3 d):** 1, 2, 3, 6, 9, 13, 14, 16, and remove the CPU tile.
+2. **Calibration automation (~4–5 d):** 11 → 4 → 5, 15 (profiles build on auto scale/scan).
 3. **Performance & tools (~5–6 d):** 7 + 12 together (same profiling work), 8, 10 GPU.
 
 ## User answers (2026-09-29)
