@@ -18,7 +18,9 @@ The user numbered two items "8"; they are renumbered 1–12 here.
 | 11 | On image load, auto-detect magnification, instrument, accelerating voltage and working distance (same machinery as #4). | detection-engineer | 0.5 d (metadata) + 1 d (on-image text) | 2 |
 | 12 | Optimise speed and usability; speed up grain detection without losing accuracy. **User asked for the Fable model.** | Fable (see question Q3) | 2–3 d | 3 |
 
-**Total ≈ 13–16 working days of agent time**, plus the user's review between batches.
+| 13 | Review page image list: use the **same grouped layout as the Analyze image tree** (Job › Part › Lot folders with the images under them) instead of the current flat, disorganised list. Reuse `ui/pages/image_tree.py` (ImageTree). | ui-designer | 0.5 d | 1 |
+
+**Total ≈ 13.5–16.5 working days of agent time**, plus the user's review between batches.
 
 ## Feasibility notes (answered to the user)
 - **Metadata already exists:** `core/sem_metadata.py` reads Zeiss, FEI/Thermo, TESCAN, Hitachi, JEOL and ImageJ metadata (pixel size, magnification, HV, WD, detector) from original TIFFs and sidecar files, and `ui/app_state.py` already uses it for calibration. For original TIFFs, #11 is mostly wiring to fill the fields.
@@ -27,7 +29,7 @@ The user numbered two items "8"; they are renumbered 1–12 here.
 - **GPU:** `core/grain_detector.py:1200` already uses CUDA if torch sees it, but the installer ships **CPU-only torch** (`build.yml`). GPU needs an NVIDIA card plus a CUDA build of torch, which adds about 2.5 GB to the installer. Alternative: DirectML (any GPU, less proven with SAM).
 
 ## Suggested batches
-1. **Quick UX wins (~2.5 d):** 1, 2, 3, 6, 9, and remove the CPU tile.
+1. **Quick UX wins (~3 d):** 1, 2, 3, 6, 9, 13, and remove the CPU tile.
 2. **Calibration automation (~4–5 d):** 11 → 4 → 5 (profiles build on auto scale/scan).
 3. **Performance & tools (~5–6 d):** 7 + 12 together (same profiling work), 8, 10 GPU.
 
