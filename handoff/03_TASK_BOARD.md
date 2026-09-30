@@ -139,3 +139,6 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 | UX-14 | Editable charts: bin size, units (µm/nm, ECD/area/G), axis ranges, titles, labels, normal fit toggle, colours; "Save as my default" persisted locally | report-engineer | done | 435ba01: chart editor (bin/unit/range/title/fit toggle); defaults saved to chart_defaults.json |
 | UX-15 | Custom palettes: create from 3 hex/colour-wheel colours, save locally, selectable next to 4 built-in, drives report colours | report-engineer | done | 560deed: palette editor (hex input + wheel); palette_library.json; selectable in report UI |
 | UX-16 | Overlay opacity in report export — use ReportModel.overlay_opacity (UX-05) | report-engineer | done | 1e0a895: export respects ReportModel.overlay_opacity; Excel & PPTX apply opacity |
+
+## UPDATE 4 (stored 2026-09-29, not started)
+See handoff/UPDATE_4.md: 12 items, 3 batches, open questions Q1-Q6. Do not execute until the user says go.
