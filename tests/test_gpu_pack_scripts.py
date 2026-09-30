@@ -144,7 +144,8 @@ def test_main_installer_has_gpu_page_before_install_page(main_nsi):
 def test_main_installer_nvidia_detection_and_silent_switch(main_nsi):
     assert "nvcuda.dll" in main_nsi and "nvml.dll" in main_nsi
     assert '"/GPU="' in main_nsi and "IfSilent" in main_nsi
-    assert r'$EXEDIR\GrainAnalyzer_GPU_Pack.exe' in main_nsi
+    assert r'$GpuDir\GrainAnalyzer_GPU_Pack.exe' in main_nsi
+    assert r'$EXEDIR\GrainAnalyzer_GPU_Pack.exe' not in main_nsi
     assert "/GPU=1" in _base_nsi_text()  # documented in the script header
 
 
@@ -185,3 +186,39 @@ def test_no_network_strings_in_either_script(main_nsi, pack_mod):
         low = t.lower()
         for bad in ("http", "www.", "inetc", "nsisdl", "ftp:", "inetload"):
             assert bad not in low, bad
+
+
+def test_exedir_trailing_backslash_stripped_and_error_levels(main_nsi):
+    assert 'StrCpy $GpuDir "$GpuDir" -1' in main_nsi
+    assert "SetErrorLevel 10" in main_nsi and "SetErrorLevel 11" in main_nsi
+    assert "GpuCheckClick" in main_nsi  # tick survives Back -> Next
+
+
+def test_makensis_compiles_both_scripts(main_nsi, pack_mod):
+    import shutil
+    import subprocess
+    import tempfile
+    exe = shutil.which("makensis")
+    if not exe:
+        for c in (r"C:\Program Files (x86)\NSIS\makensis.exe", r"C:\Program Files\NSIS\makensis.exe"):
+            if os.path.isfile(c):
+                exe = c
+    if not exe:
+        pytest.skip("makensis not installed")
+    work = tempfile.mkdtemp(prefix="nsis_test_")
+    try:
+        for d in ("dist\\GrainAnalyzer", "dist_gpu_pack", "resources"):
+            os.makedirs(os.path.join(work, d))
+        for rel in ("dist\\GrainAnalyzer\\GrainAnalyzer.exe", "dist_gpu_pack\\stub.dll",
+                    "THIRD_PARTY_LICENSES.txt", "LICENSE.txt"):
+            with open(os.path.join(work, rel), "wb") as f:
+                f.write(b"stub")
+        shutil.copy(os.path.join(ROOT, "resources", "icon.ico"), os.path.join(work, "resources", "icon.ico"))
+        scripts = {"main.nsi": main_nsi, "pack.nsi": pack_mod.generate("dist_gpu_pack", [])}
+        for name, text in scripts.items():
+            with open(os.path.join(work, name), "w", encoding="utf-8") as f:
+                f.write(text)
+            r = subprocess.run([exe, "/V1", name], cwd=work, capture_output=True, text=True, timeout=300)
+            assert r.returncode == 0, (name, r.stdout, r.stderr)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)

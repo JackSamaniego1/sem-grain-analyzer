@@ -14,6 +14,10 @@ GPU option in this installer (decision D-32):
   * Silent (GrainAnalyzer_Setup.exe /S): no page. The pack is applied only if
     it sits in $EXEDIR AND /GPU=1 is on the command line, e.g.
         GrainAnalyzer_Setup.exe /S /GPU=1
+  * Silent exit codes (SetErrorLevel; 0 = everything requested succeeded).
+    The app is ALWAYS installed; only the exit code differs:
+        10 = /GPU=1 given but GrainAnalyzer_GPU_Pack.exe missing/invalid
+        11 = the GPU pack installer ran but failed (app uses the CPU)
   * The pack is run silently AFTER the app and its registry keys are
     installed. If it fails, the app stays installed and uses the CPU.
 """
@@ -75,6 +79,8 @@ Var GpuPackPath
 Var GpuPackAuto
 Var GpuHasNvidia
 Var GpuApply
+Var GpuDir
+Var GpuSilentWant
 
 !insertmacro GetParameters
 !insertmacro GetOptions
@@ -113,6 +119,14 @@ Function .onInit
   StrCpy $GpuPackPath ""
   StrCpy $GpuPackAuto "0"
   StrCpy $GpuHasNvidia "0"
+  StrCpy $GpuSilentWant "0"
+
+  ; Folder of this installer without a trailing backslash ($EXEDIR is "D:\"
+  ; at a drive root, which would otherwise give "D:\\GrainAnalyzer_...").
+  StrCpy $GpuDir "$EXEDIR"
+  StrCpy $R2 "$GpuDir" 1 -1
+  StrCmp $R2 "\" 0 +2
+    StrCpy $GpuDir "$GpuDir" -1
 
   ; NVIDIA driver present? nvcuda.dll (CUDA driver) or nvml.dll are installed
   ; into System32 by the NVIDIA display driver. Looked up with WOW64 file
@@ -127,7 +141,7 @@ gpu_nv_done:
   ${EnableX64FSRedirection}
 
   ; GPU option next to this installer?
-  StrCpy $0 "$EXEDIR\GrainAnalyzer_GPU_Pack.exe"
+  StrCpy $0 "$GpuDir\GrainAnalyzer_GPU_Pack.exe"
   Call GpuCheckFile
   StrCmp $1 "" 0 gpu_init_nofile
   StrCpy $GpuPackPath "$0"
@@ -140,10 +154,11 @@ gpu_init_nofile:
   ; was found next to the installer.
   IfSilent 0 gpu_init_done
   StrCpy $GpuApply "0"
-  StrCmp $GpuPackAuto "1" 0 gpu_init_done
   ${GetParameters} $R0
   ${GetOptions} $R0 "/GPU=" $R1
   StrCmp $R1 "1" 0 gpu_init_done
+  StrCpy $GpuSilentWant "1"
+  StrCmp $GpuPackAuto "1" 0 gpu_init_done
   StrCpy $GpuApply "1"
 gpu_init_done:
 FunctionEnd
@@ -172,6 +187,7 @@ gpu_page_nobrowse:
   Pop $GpuCheck
   StrCmp $GpuApply "1" 0 +2
     ${NSD_Check} $GpuCheck
+  ${NSD_OnClick} $GpuCheck GpuCheckClick
   StrCmp $GpuPackPath "" 0 +2
     EnableWindow $GpuCheck 0
 
@@ -194,8 +210,14 @@ gus_none:
   ${NSD_SetText} $GpuStatusLbl "GPU option file not found next to this installer."
 FunctionEnd
 
+; Keep the tick in $GpuApply as it changes, so Back then Next restores it
+; (nsDialogs does not call the Leave function when going Back).
+Function GpuCheckClick
+  ${NSD_GetState} $GpuCheck $GpuApply
+FunctionEnd
+
 Function GpuBrowse
-  nsDialogs::SelectFileDialog open "$EXEDIR\GrainAnalyzer_GPU_Pack.exe" "GrainAnalyzer_GPU_Pack.exe|GrainAnalyzer_GPU_Pack.exe|Programs (*.exe)|*.exe"
+  nsDialogs::SelectFileDialog open "$GpuDir\GrainAnalyzer_GPU_Pack.exe" "GrainAnalyzer_GPU_Pack.exe|GrainAnalyzer_GPU_Pack.exe|Programs (*.exe)|*.exe"
   Pop $0
   StrCmp $0 "" gb_end
   Call GpuCheckFile
@@ -208,6 +230,7 @@ gb_ok:
   Call GpuUpdateStatus
   EnableWindow $GpuCheck 1
   ${NSD_Check} $GpuCheck
+  StrCpy $GpuApply "1"
 gb_end:
 FunctionEnd
 
@@ -265,7 +288,12 @@ nogpupack:
   ; Optional GPU option: only a file the user picked (or that sits next to
   ; this installer with /GPU=1 in silent mode). The app and its registry keys
   ; are already in place, which the pack's same-version check needs.
-  StrCmp $GpuApply "1" 0 gpu_run_skip
+  StrCmp $GpuApply "1" gpu_run_go
+  ; /GPU=1 requested silently but no usable pack next to the installer.
+  StrCmp $GpuSilentWant "1" 0 gpu_run_skip
+  SetErrorLevel 10
+  Goto gpu_run_skip
+gpu_run_go:
   StrCmp $GpuPackPath "" gpu_run_skip
   StrCpy $0 "$GpuPackPath"
   Call GpuCheckFile
@@ -275,6 +303,8 @@ nogpupack:
   StrCmp $0 "0" gpu_run_skip
 gpu_run_failed:
   MessageBox MB_OK|MB_ICONEXCLAMATION "The GPU option could not be installed. The app is installed and will use the CPU. You can run GrainAnalyzer_GPU_Pack.exe later." /SD IDOK
+  IfSilent 0 gpu_run_skip
+  SetErrorLevel 11
 gpu_run_skip:
 SectionEnd
 
