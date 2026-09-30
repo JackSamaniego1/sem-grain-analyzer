@@ -115,6 +115,17 @@ Context: UPDATE 4 item 10b design for flexibility. User decision 2026-09-30: one
 ### D-37 · 2026-09-30 · accepted (user) — JEOL 110–135 mm check stays as is
 Context: UPDATE 4 item 4 (OCR) performs scale-bar text reading + cross-checks against metadata (when both exist). User supplied JEOL image at 100 nm; no images at other magnifications. User decision 2026-09-30: no multi-magnification testing needed. Decision: **JEOL 110–135 mm dynamic range check stays as is** in core/scale_bar.py find_scale_bar_candidates. On mismatch with metadata, app asks user to confirm (never silently wrong). Consequences: no additional validation code; JEOL images keep existing safeguard; real-world testing can refine if more magnifications are supplied later.
 
+### D-38 · 2026-09-30 · accepted — Adaptive SAM point skipping rejected
+Context: UPDATE 4 item 12 (speed optimisation). Fable investigated dynamically skipping SAM detection points based on local grain density. Early prototype: adaptive skip reduced detection time <5% but changed grain count by -8 grains and diameter by +2% vs standard run on same image. Decision: **reject adaptive SAM skipping.** Results must be reproducible and stable across runs. Consequences: no lossy detection speed-up via point skipping; UI-side optimisation (overlay, grain edits, batch overhead) remains only option for item 12 UI work (deferred per user).
+
+### D-39 · 2026-09-30 · accepted — Out-of-date result rule: flag + exclude, never delete
+Context: UPDATE 4 item 5 (Resolution Profiles). When user manually changes scale or scan area (or applies a profile that differs from current), previously-analysed images' results become stale. Three options: (1) auto-delete stale results, (2) flag but keep, (3) user manually re-analyse. Decision: **flag stale results "Needs re-analysis — scale changed" and exclude from reports/exports, but DO NOT delete.** Results survive session reopen for scale changes (user may have saved intentionally; undo/re-analyse makes current). Hand changes clear profile label. Consequences: conservative approach (never lose data); users see stale state in UI; exports are correct (include only current results).
+
+### D-40 · 2026-09-30 · accepted — Garbage collection runs only on the UI thread
+Context: UPDATE 4 item 7 stability issue (crash during analysis on weak CPUs). Root cause (d880550): Python's cycle garbage collector ran on Qt worker thread → destroyed Qt objects owned by UI thread (AppState + QTimers live in reference cycles) → pending timer events → access violation. Decision: **disable automatic GC (`gc.disable()`), run threshold collection every 500 ms on UI thread only (ui/gc_guard.py timer).** core/ai_device.release_gpu_memory no longer calls gc.collect() on analysis thread. Consequences: eliminates hard crash on weak PCs during analysis; GC latency isolated to UI thread; no user-visible change.
+
+### D-41 · 2026-09-30 · accepted — Lighter review cadence was one-off per user request
+Context: UPDATE 4 batch 3 (items 5, 7, 8, 10b, 11, 12, 15) ran under lighter code-review cadence (per-step review + full suite once at end, not after every commit) per user request 2026-09-30. Decision: **this cadence is a one-off exception.** Standard process resumes: per-task agent work → code-reviewer → commit → save-handoff → next task. Lighter cadence suitable only when batch is small and low-risk (familiar agents, well-tested components). Consequences: next UPDATE 5 or feature batch returns to strict per-task review.
 
 
 

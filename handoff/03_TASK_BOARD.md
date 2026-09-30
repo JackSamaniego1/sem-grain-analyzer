@@ -164,13 +164,13 @@ See handoff/UPDATE_4.md: 19 items, 3 batches, execution checklist.
 | 13 | Review image list grouped Job › Part › Lot | ui-designer | done | 4127728; reused ImageTree component, folder nesting, image stepping |
 | 19 | PPTX contents page as slide 2 with links | report-engineer | done | 1c3eec9; page numbers, collapsed ranges, clickable links, Grain Size Summary now slide 3 |
 
-**Batch 3 (complete except follow-ups & deferred; 2026-09-30 morning):**
+**Batch 3 FINAL (2026-09-30 night):**
 | # | Item | Owner | Status | Notes |
 |---|------|-------|--------|-------|
 | 15 | Lot summary charts (bar+trendline) | report-engineer | done | b4e38a5: job summary table + bar/trendline charts in Excel/PPTX; minor: ASTM G avg label (e8e3642) |
 | 11 | Auto-fill mag/instrument/kV/WD from metadata | detection-engineer | done | 37e6040 UI + 959ffe0 core; fills Analyze card fields on image load |
-| 5 | Resolution Profiles sidebar card | ui-designer + data-architect | done | 502d8c8 UI + a21da9d data; import/export wired. Follow-ups: out-of-date rule, label clear, clipping check, tests (running) |
-| 10b | GPU/CUDA torch build + AI-Assisted modes | ui-designer + build-engineer | done | 822bfb3 core + fcf57cc packaging + c4b2584 installer page + 455e548 UI modes; trial build + manual checks pending (deferred) |
-| 7 | Stability on weak CPUs during analysis | ui-designer | done | 502d8c8 UI + a51a2d2 core; wired startup call, AnalysisQueue fix, crash log, lock, undo cleanup, thread caps. Full suite passed. |
+| 5 | Resolution Profiles sidebar card + follow-ups | ui-designer + data-architect | done | 502d8c8 UI + a21da9d data + 7ec0338 follow-ups; out-of-date rule + label clear + card tests done; scan-area-only reopen flag deferred |
+| 10b | GPU/CUDA torch build + AI-Assisted modes | ui-designer + build-engineer | review | 822bfb3 core + fcf57cc packaging + c4b2584 installer page + 455e548 UI modes; code done; trial build + manual install test deferred (NSIS not installed) |
+| 7 | Stability on weak CPUs during analysis | ui-designer + detection-engineer | done | 502d8c8 UI + a51a2d2 core + d880550 GC guard; wired startup call, AnalysisQueue fix, crash log, lock, undo cleanup, thread caps, GC safety. Full suite 1349 passed. |
 | 8 | Review: "Add grain" tool | ui-designer + detection-engineer | done | 37e6040 UI + 273750b core; split-tool lasso on Review page, shortcut A |
-| 12 | Fable: speed & usability optimisation | fable | blocked | b5b1e7b: step 1 done (thread cap, measurements); UI-side optimisation deferred (user discretion) |
+| 12 | Fable: speed & usability optimisation | fable | done (partial) | b5b1e7b: step 1 done (thread cap, measurements D-38: adaptive skip rejected); UI-side optimisation deferred (user discretion) |
