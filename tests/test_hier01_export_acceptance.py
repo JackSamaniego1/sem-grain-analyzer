@@ -183,7 +183,8 @@ def test_renamed_levels_and_custom_field_flow_into_next_export(tmp_path):
     # part-summary chart's category-axis title (the "Part"/"Lot" table
     # columns themselves are always the generic literal names per spec).
     prs = Presentation(pptx_path)
-    chart_slide = list(prs.slides)[1]  # table + 3 charts share slide 2 (index 1) for <= 6 parts
+    # Contents is slide 2; table + 3 charts share slide 3 (index 2) for <= 6 parts
+    chart_slide = list(prs.slides)[2]
     chart = next(sh for sh in chart_slide.shapes if sh.has_chart).chart
     assert chart.category_axis.axis_title.text_frame.text == "Component"
     title_text = _all_text(prs.slides[0])
