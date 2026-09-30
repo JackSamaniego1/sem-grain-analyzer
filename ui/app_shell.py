@@ -122,6 +122,10 @@ class AppShell(QMainWindow):
         ``probe_device`` is accepted for compatibility and ignored (UPDATE 4
         item 10a removed the "AI runs on" status chip)."""
         super().__init__()
+        # Qt objects freed by Python's cycle collector must die on the GUI
+        # thread, never on a pool thread (hard crash): see ui/gc_guard.py
+        from ui import gc_guard
+        gc_guard.install()
         self._tour_autostart = _tour_env_allows() if tour is None else bool(tour)
         self._tour_checked = False
         self.state = state or AppState()

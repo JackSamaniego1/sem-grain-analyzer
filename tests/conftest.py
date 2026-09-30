@@ -17,6 +17,21 @@ if ROOT not in sys.path:
 # Headless Qt for any UI tests that get added later.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+# Like the app (ui/gc_guard.py): Python's cycle collector must never run on a
+# pool thread -- Qt objects of a finished test (AppState, its timers) freed
+# there crash the whole run later with an access violation.  Collections run
+# on the main thread between tests instead.
+import gc  # noqa: E402
+
+gc.disable()
+
+
+@pytest.fixture(autouse=True)
+def _gc_on_main_thread():
+    yield
+    from ui.gc_guard import collect_if_due
+    collect_if_due()
+
 
 def make_mosaic(h=512, w=512, n_grains=90, seed=7,
                 boundary_val=35, boundary_px=2, noise_sigma=6.0,

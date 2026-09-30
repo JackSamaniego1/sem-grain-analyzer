@@ -318,8 +318,9 @@ def release_gpu_memory() -> None:
     """Free cached CUDA blocks after an error. Never raises; no-op without
     torch/CUDA."""
     try:
-        import gc
-        gc.collect()
+        # No gc.collect() here: this runs on the analysis thread, and a
+        # cycle collection there can destroy Qt objects that belong to the
+        # UI thread (see ui/gc_guard.py).  empty_cache() is enough.
         torch = _import_torch()
         if torch is not None and torch.cuda.is_available():
             torch.cuda.empty_cache()
