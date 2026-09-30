@@ -843,6 +843,238 @@ def import_loose_images(workspace: Workspace, paths: Sequence[Union[str, Path]],
 
 
 # ======================================================================
+# Drag-and-drop / "add images to this lot"
+# ======================================================================
+
+# Same list as ui.workers.IMAGE_EXTS (data/ must not import Qt-side modules;
+# tests/test_data_add_images.py asserts the two stay identical).
+IMAGE_EXTS = frozenset({".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp"})
+# Vendor sidecar files core.sem_metadata reads from beside an image.
+_SIDECAR_SUFFIXES = (".txt", "-tif.hdr", ".hdr")
+
+
+@dataclass
+class AddedImage:
+    filename: str            # name inside the lot's images/ folder
+    source_path: str
+    sidecars: List[str] = field(default_factory=list)  # sidecar file names copied along
+
+
+@dataclass
+class SkippedImage:
+    path: str
+    reason: str              # plain-language, e.g. "Already in this lot."
+    existing_filename: str = ""
+
+
+@dataclass
+class RejectedImage:
+    path: str
+    reason: str
+
+
+@dataclass
+class AddImagesResult:
+    added: List[AddedImage] = field(default_factory=list)
+    skipped: List[SkippedImage] = field(default_factory=list)   # duplicates
+    rejected: List[RejectedImage] = field(default_factory=list)
+
+    def summary(self) -> str:
+        parts = [f"{len(self.added)} added"]
+        if self.skipped:
+            parts.append(f"{len(self.skipped)} already in this lot")
+        if self.rejected:
+            parts.append(f"{len(self.rejected)} rejected")
+        return ", ".join(parts)
+
+
+def _find_sidecars(src: Path) -> List[Path]:
+    found, seen = [], set()
+    for suf in _SIDECAR_SUFFIXES:
+        for cand in (src.stem + suf, src.stem + suf.upper()):
+            p = src.with_name(cand)
+            key = os.path.normcase(str(p))
+            if key not in seen and p.is_file():
+                seen.add(key)
+                found.append(p)
+    return found
+
+
+_MAX_NAME_TRIES = 1000
+
+
+def _same_content(path: Path, digest: str, size: int) -> bool:
+    try:
+        return path.stat().st_size == size and sha256_file(path) == digest
+    except OSError:
+        return False
+
+
+def _slot_free(images_dir: Path, name: str, src: Path, digest: str, size: int,
+               sidecars: List[Path]) -> bool:
+    """True if ``name`` can hold ``src``: no different file there and no
+    different pre-existing sidecar on the same stem (which the image would
+    wrongly inherit)."""
+    dest = images_dir / name
+    if dest.exists() and not _same_content(dest, digest, size):
+        return False
+    stem = Path(name).stem
+    for sc in sidecars:
+        target = images_dir / (stem + sc.name[len(src.stem):])
+        if target.exists():
+            try:
+                if not _same_content(target, sha256_file(sc), sc.stat().st_size):
+                    return False
+            except OSError:
+                return False
+    return True
+
+
+def add_images_to_lot(lot_path: Union[str, Path], paths: Sequence[Union[str, Path]], *,
+                      catalog=None, image_name_template: Optional[str] = None,
+                      name_context: Optional[Dict[str, Any]] = None) -> AddImagesResult:
+    """Copy image files into a lot (or in-place session) folder and record
+    them in its manifest.  Qt-free; safe to call from a worker thread.
+
+    ``lot_path`` is the folder holding ``lot.json`` and/or ``manifest.json``
+    (the record folder, as used by ``save_session(..., in_place=True)``).
+    Files are always copied into ``<lot>/images/`` and never moved or linked.
+    Unsupported/missing files are reported in ``rejected``; a file whose
+    content is already in the lot is reported in ``skipped``; same name with
+    different content gets a ``-2`` style suffix (a-2.png).  Sidecar metadata files
+    (``<stem>.txt``, ``<stem>.hdr``, ``<stem>-tif.hdr``) are copied along
+    under the new image's stem (a stale, different sidecar on the chosen stem
+    makes the image take the next free name instead).  The manifest is written
+    once, after all copies succeed; if that fails, every file created in this
+    call (images, thumbs, sidecars) is removed.
+    Raises ``FileNotFoundError`` if ``lot_path`` is not a lot/session folder."""
+    lot_path = Path(lot_path)
+    manifest_path = lot_path / "manifest.json"
+    if not manifest_path.exists():
+        if not (lot_path / "lot.json").exists():
+            raise FileNotFoundError(f"Not a lot folder: {lot_path}")
+        _save_session_in_place(lot_path, {}, [], None, None, None, None)
+    meta = SessionMeta.from_dict(read_json(manifest_path))
+    images_dir = lot_path / "images"
+    _ensure_session_dirs(lot_path)
+    try:
+        images_dir_res = images_dir.resolve()
+    except OSError:
+        images_dir_res = images_dir
+
+    result = AddImagesResult()
+    used_names = {img.filename.lower() for img in meta.images}
+    known_digests = {img.sha256: img.filename for img in meta.images if img.sha256}
+    batch: List[tuple] = []     # (ImageEntry, src Path, dest name)
+
+    for raw_p in paths:
+        src = Path(raw_p)
+        sp = str(raw_p)
+        if src.is_dir():
+            result.rejected.append(RejectedImage(sp, "Folders aren't supported. Drop image files."))
+            continue
+        if not src.is_file():
+            result.rejected.append(RejectedImage(sp, "File not found."))
+            continue
+        if src.suffix.lower() not in IMAGE_EXTS:
+            result.rejected.append(RejectedImage(
+                sp, f"Unsupported file type ({src.suffix or 'no extension'}). "
+                    "Supported: " + ", ".join(sorted(IMAGE_EXTS)) + "."))
+            continue
+        try:
+            digest = sha256_file(src)
+        except OSError as exc:
+            result.rejected.append(RejectedImage(sp, f"Could not read file ({exc})."))
+            continue
+        if digest in known_digests:
+            result.skipped.append(SkippedImage(sp, "Already in this lot.",
+                                               known_digests[digest]))
+            continue
+
+        try:
+            in_images = src.resolve().parent == images_dir_res
+        except OSError:
+            in_images = False
+        if in_images:
+            if src.name.lower() in used_names:
+                result.skipped.append(SkippedImage(sp, "Already in this lot.", src.name))
+                continue
+            base = src.name   # already in place: register, never self-copy
+        else:
+            orig_stem, suffix = src.stem, _sanitize_suffix(src.suffix)
+            if image_name_template and image_name_template != "{original}":
+                ctx = dict(name_context or {})
+                ctx.setdefault("original", orig_stem)
+                ctx.setdefault("index", len(meta.images) + len(batch) + 1)
+                base = (render_template(image_name_template, ctx, for_filename=True)
+                        or sanitize_name(orig_stem)) + suffix
+            else:
+                base = sanitize_name(orig_stem) + suffix
+        candidate, n = base, 2
+        size = src.stat().st_size
+        side_src = [] if in_images else _find_sidecars(src)
+        while not in_images:
+            if candidate.lower() not in used_names and _slot_free(
+                    images_dir, candidate, src, digest, size, side_src):
+                break
+            if n > _MAX_NAME_TRIES:
+                break
+            candidate = f"{Path(base).stem}-{n}{Path(base).suffix}"  # "(n)" would be re-sanitised
+            n += 1
+        if n > _MAX_NAME_TRIES:
+            result.rejected.append(RejectedImage(sp, "Could not find a free file name."))
+            continue
+        used_names.add(candidate.lower())
+        known_digests[digest] = candidate
+        batch.append((ImageEntry(source_path=str(src), filename=candidate), src, candidate))
+
+    if not batch:
+        return result
+
+    def _snapshot() -> set:
+        return {p for d in ("images", "results", "thumbs") if (lot_path / d).is_dir()
+                for p in (lot_path / d).rglob("*") if p.is_file()}
+    before = _snapshot()
+    created: List[Path] = []
+    try:
+        built = _build_manifest_images(
+            images_dir, lot_path / "results", lot_path / "thumbs",
+            [b[0] for b in batch], start_index=len(meta.images))
+        good = []
+        for (entry, src, name), m in zip(batch, built):
+            if m.notes.startswith("FAILED to import"):
+                result.rejected.append(RejectedImage(str(src), m.notes))
+                continue
+            m.original_name = src.name
+            sidecars = []
+            for sc in _find_sidecars(src):
+                target = images_dir / (Path(m.filename).stem + sc.name[len(src.stem):])
+                if target.exists():
+                    continue
+                try:
+                    shutil.copy2(sc, target)
+                    created.append(target)
+                    sidecars.append(target.name)
+                except OSError as exc:
+                    logger.warning("Sidecar copy failed for %s: %s", sc, exc)
+            good.append((m, src, sidecars))
+        meta.images.extend(m for m, _, _ in good)
+        write_json_atomic(manifest_path, meta.to_dict())
+    except Exception:
+        for p in _snapshot() - before:
+            try:
+                p.unlink()
+            except OSError:
+                pass
+        raise
+    for m, src, sidecars in good:
+        result.added.append(AddedImage(m.filename, str(src), sidecars))
+    if good and catalog is not None:
+        catalog.index_session(lot_path)
+    return result
+
+
+# ======================================================================
 # INN-27: include / exclude a field from the lot statistics (audited)
 # ======================================================================
 
