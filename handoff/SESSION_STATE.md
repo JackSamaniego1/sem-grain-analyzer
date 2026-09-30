@@ -1,7 +1,7 @@
 # SESSION STATE - read this first when resuming
 
-**Last updated:** 2026-09-30 (night, update 2: items 8, 11, 15 UI done; item 5 data half done; item 12 first step done; item 7 UI wiring running now)  
-**Branch:** `v3-dev` | **Last commit:** `37e6040` (UI pass 2: items 8, 11, 15 UI done + GPU-check review fixes) | **Phase:** UPDATE 4 batch 3: items 8, 11, 15, 5 data, 12 step-1 done; item 7 UI wiring in progress  
+**Last updated:** 2026-09-30 (morning: items 7, 5 UI done; 4 supporting commits landed; item 5 follow-ups running now)  
+**Branch:** `v3-dev` | **Last commit:** `502d8c8` (stability during analysis item 7 UI + Resolution Profiles item 5 UI) | **Phase:** UPDATE 4 batch 3 final: items 8, 11, 15, 5, 7 done; item 12 step 1 done; item 5 follow-ups running  
 **Resume with:** read this file only, then handoff/UPDATE_4.md and handoff/02_TEAM_ROSTER.md. **Note:** User overnight: keep working through UPDATE 4 tonight; ignore context-size warning when it fires.
 
 ## Done and committed
@@ -31,21 +31,21 @@
 - Installer builds locally: GrainAnalyzer_Setup.exe 644 MB
 
 ## In-progress tasks (uncommitted, agents running)
-- **Item 7 UI wiring** (ui-designer): Call core/perf.py `configure_threads()` at startup in main.py; AnalysisQueue generation fix; close-while-analysing check; crash log; analysis lock with "Continue anyway"/"Don't warn again" per ITEM_7_STABILITY_PLAN.md.
+- **Item 5 follow-ups** (ui-designer): (1) out-of-date rule for already-analysed images whose scale/scan changes; (2) manual scale/scan change clears profile label; (3) sidebar clipping check; (4) missing card tests.
 
 ## NEXT 3 ACTIONS
 
-1. **Review + commit ui/data layer branches** (detection-engineer: items 11, 7 UI + item 8 UI). Code-reviewer on each diff, full test suite after review/commit.
-2. **Item 5 Resolution Profiles** (data layer + UI sidebar card) → item 7 UI wiring (thread caps lock during analysis) → item 12 Fable last (speed optimisation).
-3. **Final full suite + smoke-app** → summary for user: manual checks needed (installer GPU page, real JEOL/Thermo images, sample Excel/PowerPoint, NSIS build on installer PC).
+1. **Review + commit item 5 follow-ups** (ui-designer: out-of-date rule, label clear, clipping check, tests). Code-reviewer on diff, full test suite after commit.
+2. **Item 12 UI-side Fable optimisation** (deferred unless user asks): overlay copies, grain edits scan overhead, batch startup time. Item 10b GPU trial build (needs NSIS).
+3. **Final full suite + smoke-app** → user manual checks: Add grain on real image, image details with real JEOL/Thermo, sample Excel/PowerPoint, trendline straight-line fit decision.
 
-**Batch 3 status (parallel reports, data, core, UI; 2026-09-30 night):**
-- [x] Item 15 DONE & REVIEWED (b4e38a5): Lot Summary in Excel (per-lot distribution chart + subtotals) + PowerPoint (job summary table + bar+trendline charts). Minor follow-up: ASTM G in subtotal rows label as average.
-- [x] Item 11 DONE & REVIEWED (37e6040): Auto-fill mag/instrument/kV/WD on image load (core 959ffe0 + UI 37e6040). Fills Analyze card fields on image load.
-- [~] Item 5 HALF DONE (data layer: a21da9d): ProfileStore, ResolutionProfile, check_fit, import/export, snapshot in session. UI sidebar card TBD (data layer review fixes in progress).
-- [x] Item 8 DONE & REVIEWED (37e6040): Add grain lasso tool on Review canvas (split-tool style; core 273750b + UI 37e6040). Shortcut A.
-- [x] Item 12 STEP 1 DONE (b5b1e7b): Thread cap keeps both cores for AI on 1–2 core PCs. Measurements recorded: standard modes 0.6–1.5 s; AI on CPU 31–80 s (thread-independent results); no lossless speed-up exists.
-- [ ] Item 7 UI WIRING IN PROGRESS (ui-designer): configure_threads at startup, AnalysisQueue fix, close-while-analysing, crash log, analysis lock with "Continue anyway"/"Don't warn again".
+**Batch 3 status (complete except follow-ups & deferred; 2026-09-30 morning):**
+- [x] Item 15 DONE & REVIEWED (b4e38a5): Lot Summary in Excel (per-lot distribution chart + subtotals) + PowerPoint (job summary table + bar+trendline charts).
+- [x] Item 11 DONE & REVIEWED (37e6040 UI, 959ffe0 core): Auto-fill mag/instrument/kV/WD on image load. Fills Analyze card fields on image load.
+- [x] Item 5 DONE & REVIEWED (502d8c8 UI, a21da9d data): Resolution Profiles data layer (ProfileStore, export/import) + UI sidebar card. Follow-ups: out-of-date rule, label clear, clipping check, tests.
+- [x] Item 8 DONE & REVIEWED (37e6040 UI, 273750b core): Add grain lasso tool on Review canvas (split-tool style). Shortcut A.
+- [x] Item 12 STEP 1 DONE (b5b1e7b): Thread cap keeps both cores for AI on 1–2 core PCs. Measurements recorded: AI on CPU 31–80 s (thread-independent); UI-side optimisation TBD.
+- [x] Item 7 DONE & REVIEWED (502d8c8 UI, a51a2d2 core): Stability during analysis on weak CPUs. Core: configure_threads, AnalysisQueue fix, crash log, add_grain hardening. UI: wired startup call, analysis lock "Continue anyway"/"Don't warn again", undo cleanup.
 
 **Batch 2 status** ✓ complete:
 - [x] Item 6: Unit dropdown + pulse (7a70d74)
