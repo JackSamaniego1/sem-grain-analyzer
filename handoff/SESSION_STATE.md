@@ -1,8 +1,8 @@
 # SESSION STATE - read this first when resuming
 
-**Last updated:** 2026-09-30 (night: 3 new commits; UPDATE 4 batch 3 complete except GPU trial build & item 12 UI-side)  
-**Branch:** `v3-dev` | **Last commit:** `c5fcc67` (smoke-app entry point) | **Phase:** UPDATE 4 final status; items 1–9, 11, 13–19 done; items 10 & 12 partial (deferred); item 5 follow-ups done (out-of-date rule, card tests, label clear)  
-**Resume with:** read this file only, then handoff/UPDATE_4.md. All 16 items code-complete; GPU trial build & manual checks pending user.
+**Last updated:** 2026-09-30 (late night: all UPDATE 4 code-complete including item 12 UI-side)  
+**Branch:** `v3-dev` | **Last commit:** `f440f40` (item 12 UI-side: overlay LUT + patch, lazy imports) | **Phase:** UPDATE 4 code-complete; items 1–9, 11–19 done; item 10 GPU trial build pending NSIS; item 12 done  
+**Resume with:** read this file only. All 16 items code-complete; GPU trial build & manual spot checks pending user.
 
 ## Done and committed
 
@@ -26,20 +26,21 @@
   - **4127728**: Items 9, 13 — Overlay opacity pill (top-right image, persisted); Review image list grouped Job › Part › Lot.
 
 ## Test suite status
-- **1349 passed** (full suite with GC guard + item 5 follow-ups; 2 skipped, 0 failed; `-X faulthandler` confirms no fatal crashes)
+- **1360 passed** (full suite with item 12 UI-side lazy imports & overlay patch; 2 skipped, 0 failed; `-X faulthandler` confirms no fatal crashes)
 - Offline guard clean (no network egress)
 - Installer builds locally: GrainAnalyzer_Setup.exe 644 MB
+- **NSIS not installed on dev PC** (no makensis on PATH) — GPU trial build remains blocked pending build-engineer environment setup
 
 ## Completed follow-ups & deferred items
 - **Item 5 follow-ups DONE**: out-of-date results rule (flag + exclude from reports/exports until re-analysed, survive reopen), label cleared by hand changes, card tests added. Pending: scan-area-only reopen flag needs data/session model field (low priority).
 - **Item 10b GPU trial build DEFERRED**: code complete (core ai_device modes, installer GPU page, pack scripts); NSIS not installed on dev PC → trial build + manual install test pending user's environment.
-- **Item 12 UI-side DEFERRED**: detection-side speed optimised (thread cap keeps both cores on 1–2 core PCs); overlay copies, grain edits, batch overhead, startup time TBD if user requests.
+- **Item 12 DONE (f440f40)**: overlay_layer rebuilt with per-grain LUT on uint32 view (2048×1536: 69→19 ms; with exclusions 112→39 ms) + overlay_patch() for changed rectangles; grain_canvas patches only changed rect after edits (no 3 full rebuilds); skimage/scipy.stats import lazily on first use; draw_overlay=False in analyze_image; app startup 980→510 ms. Tests: test_ui_overlay_patch (pixel-identical), test_startup_lazy_imports. Full suite 1360 passed, 2 skipped; smoke launch OK.
 
 ## NEXT 3 ACTIONS
 
-1. **User manual spot checks** (smoke-app + real SEM images): Add grain on real image; image details (JEOL/Thermo); sample report (Lot Summary, percentile, distribution, contents slides in PPTX; Lot Summary + raw data in Excel); Resolution Profiles end-to-end; editing during analysis lock; crash log after forced error; installer GPU page if NSIS available; display scaling 150/200%.
-2. **GPU trial build** (build-engineer): if NSIS is installed, build GrainAnalyzer_GPU_Pack.exe locally → manual pack install + GPU device detection on real work PC (if available).
-3. **UI-side optimisation** (Fable + user discretion): overlay_layer whole-image copies, grain edits on UI thread, per-image overhead in batch runs, startup time.
+1. **User manual spot checks** (smoke-app + real SEM images): Add grain on real image; image details (JEOL/Thermo); sample report (Lot Summary, percentile, distribution, contents slides in PPTX; Lot Summary + raw data in Excel); Resolution Profiles end-to-end; editing during analysis lock; crash log after forced error; installer GPU page (check if NSIS available); display scaling 150/200%.
+2. **GPU trial build** (build-engineer): requires NSIS on PATH; build GrainAnalyzer_GPU_Pack.exe locally → manual pack install + GPU device detection on real work PC (if available).
+3. **(Optional) follow-up**: item 5 scan-area-only reopen flag (low priority; needs data/session model field).
 
 **Batch 3 final status (code & tests complete; 2026-09-30):**
 - [x] Item 15 DONE (b4e38a5): Lot Summary in Excel (per-lot distribution chart + subtotals) + PowerPoint (job summary table + bar+trendline charts).

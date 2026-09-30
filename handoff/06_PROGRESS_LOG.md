@@ -301,3 +301,8 @@
 
 ## 2026-09-30 (handoff update) — D-42 decision logged; Lot Summary trendline design finalized
 - **D-42 (user decision)**: Lot Summary "trendline" is a line joining lot values in lot order — NO curve fitting of any kind. Excel, PowerPoint, on-screen preview all use simple piecewise-linear trendlines; omitted when fewer than two lots have a value. Resolved design question from item 15; 433 report/preview tests pass. Removed outdated BATCH 3 PREP section from SESSION_STATE.md.
+
+## 2026-09-30 (late) — Item 12 UI-side DONE (f440f40); UPDATE 4 code-complete
+- **Item 12 UI-side FINAL (f440f40)**: ui/canvas/layers.py overlay_layer rebuilt with per-grain lookup tables on flat uint32 view (2048×1536 test image: 69 ms → 19 ms; with exclusions 112 ms → 39 ms). ui/canvas/grain_canvas.py overlay patches only changed rectangle after grain edits/refilters (previously 3 full rebuilds per edit) and keeps desaturated + excluded-region layers when inputs unchanged. core/grain_detector.py imports skimage lazily on first detect call; analyze(draw_overlay=False) avoids throwaway overlay in batch runs. core/lot_compare.py imports scipy.stats lazily. App-shell import time 980 ms → 510 ms warm. New tests: test_ui_overlay_patch (pixel-identical to old drawing + full rebuild), test_startup_lazy_imports. Full suite: 1360 passed, 2 skipped, 0 failed. Headless smoke launch OK.
+- **UPDATE 4 STATUS**: All 16 items code-complete (1–9, 11–19 done; item 10 GPU trial build blocked on NSIS install; item 12 done). Only GPU trial build and manual spot checks remain. Full test suite green. Offline guard clean.
+- **Environment note**: NSIS not installed on dev PC (no makensis on PATH). GPU pack trial build remains deferred pending build-engineer setup or user environment.
