@@ -210,6 +210,9 @@ class ImageDoc:
     # (app_state._scale_reading_summary dict; None = not read).  In memory
     # only -- the applied scale itself is saved as before.
     bar_read: Optional[dict] = None
+    # UPDATE 4 item 11: acquisition details (core.image_info.ImageInfo; None =
+    # not read yet).  Saved next to the manifest (ui.image_details).
+    image_info: Optional[Any] = None
     # pixel cache: ``image_bgr`` is None while evicted; ``readable`` /
     # ``shape`` (h, w) stay known without holding the pixels
     shape: Optional[tuple] = None
@@ -592,6 +595,12 @@ def read_scale_label(image_bgr, info_bar=None, bar_rect=None, meta_px_per_um: fl
     summary dict of :func:`_scale_reading_summary`; never raises.  With the
     file's own pixel size (``meta_px_per_um``) the reading is cross-checked
     against it."""
+    return _read_label(image_bgr, info_bar, bar_rect, meta_px_per_um)[0]
+
+
+def _read_label(image_bgr, info_bar=None, bar_rect=None, meta_px_per_um: float = 0.0):
+    """(summary dict, the OCR module's reading or None) -- the reading is
+    shared with the image details (UPDATE 4 item 11: one OCR per image)."""
     try:
         from types import SimpleNamespace
 
@@ -600,15 +609,17 @@ def read_scale_label(image_bgr, info_bar=None, bar_rect=None, meta_px_per_um: fl
         r = info_bar_ocr.read_info_bar(
             image_bgr, tuple(int(v) for v in bar_rect) if bar_rect else None,
             info_bar=info_bar, metadata=meta)
-        return _scale_reading_summary(r)
+        return _scale_reading_summary(r), r
     except Exception as exc:                      # never take Auto-find down
-        return {"status": "error", "available": True, "um": 0.0, "value": 0.0, "unit": "",
-                "confirm": True, "meta_ok": None, "bar_px": 0.0, "note": "",
-                "message": f"Could not read the scale-bar label ({type(exc).__name__})."}
+        return ({"status": "error", "available": True, "um": 0.0, "value": 0.0, "unit": "",
+                 "confirm": True, "meta_ok": None, "bar_px": 0.0, "note": "",
+                 "message": f"Could not read the scale-bar label ({type(exc).__name__})."},
+                None)
 
 
 def setup_probe(image_bgr, path=None, want_meta: bool = True, want_ocr: bool = False,
-                known_cal=None) -> dict:
+                known_cal=None, known_read: Optional[dict] = None,
+                want_details: bool = False) -> dict:
     """Worker-thread (UX-02): everything "Auto-find scan area & scale bar"
     needs for one image -- the SEM info bar (-> scan area), the scale-bar
     line inside it (length in px) and the pixel size stored in the file by
@@ -616,7 +627,12 @@ def setup_probe(image_bgr, path=None, want_meta: bool = True, want_ocr: bool = F
     the scale-bar label when a data bar was found (``out["ocr"]``, see
     :func:`read_scale_label`); ``known_cal`` is the file's calibration from
     an earlier metadata read, used for the cross-check.  Local only; nothing
-    leaves the PC."""
+    leaves the PC.
+
+    UPDATE 4 item 11 (one OCR per image): ``known_read`` is a label the
+    image-details reading already found (used instead of reading again);
+    ``want_details`` also turns this reading into the image details
+    (``out["details"]``, an ImageInfo dict)."""
     out: Dict[str, Any] = {"info": {}, "bar_px": 0.0, "cal": None, "meta": None,
                            "shape": None}
     if image_bgr is None:
@@ -647,7 +663,12 @@ def setup_probe(image_bgr, path=None, want_meta: bool = True, want_ocr: bool = F
             out["meta"] = info.get("meta") or {}
             out["cal"] = tuple(info["cal"]) if info.get("cal") else None
     from ui.workers import is_shutting_down
-    if want_ocr and ib is not None and ib.bars and not is_shutting_down():
+    if want_ocr and known_read and ib is not None and ib.bars:
+        rd = dict(known_read)
+        out["ocr"] = rd
+        if not out["bar_px"] and rd.get("um") and rd.get("bar_px", 0) >= 10:
+            out["bar_px"] = float(rd["bar_px"])
+    elif want_ocr and ib is not None and ib.bars and not is_shutting_down():
         cal = out["cal"] if out["cal"] is not None else known_cal
         meta_px = 0.0
         try:
@@ -655,8 +676,11 @@ def setup_probe(image_bgr, path=None, want_meta: bool = True, want_ocr: bool = F
                 meta_px = float(cal[0])
         except (TypeError, ValueError, IndexError):
             meta_px = 0.0
-        rd = read_scale_label(image_bgr, ib, bar["rect"] if bar else None, meta_px)
+        rd, reading = _read_label(image_bgr, ib, bar.get("rect") if bar else None, meta_px)
         out["ocr"] = rd
+        if want_details and reading is not None and path:
+            from ui.image_details import details_from_reading
+            out["details"] = details_from_reading(path, image_bgr, reading)
         # the OCR's text-aware bar search may find a bar the line finder missed
         if not out["bar_px"] and rd.get("um") and rd.get("bar_px", 0) >= 10:
             out["bar_px"] = float(rd["bar_px"])
@@ -948,6 +972,10 @@ class AppState(QObject):
         self._arr_lru: "OrderedDict[object, bool]" = OrderedDict()  # uid -> hydrated
         self.result_cache_max_images = RESULT_CACHE_MAX_IMAGES
         self.overlays = OverlayCache()
+        # UPDATE 4 item 11: instrument / magnification / kV / WD per image
+        from ui.image_details import ImageDetailsService
+        self.image_details = ImageDetailsService(self)
+        self.about_to_flush.connect(self.image_details.flush_saves)
 
     # ------------------------------------------------------------------ settings
     def save_settings(self) -> None:
@@ -1117,6 +1145,7 @@ class AppState(QObject):
         self.current_image_changed.emit(self.current_uid)
         self.calibration_changed.emit()
         self.filters_changed.emit()
+        self.image_details.request(doc, doc.images)
 
     def _make_image(self, doc: SessionDoc, d: dict, rec: Optional[RecordRef] = None,
                     into: Optional[ImageDoc] = None) -> ImageDoc:
@@ -1292,6 +1321,7 @@ class AppState(QObject):
             self.current_image_changed.emit(self.current_uid)
         self.calibration_changed.emit()
         self._record_done(doc, rec)
+        self.image_details.request(doc, [im for im in doc.images if im.record is rec])
 
     def _record_failed(self, doc: SessionDoc, rec: RecordRef, msg: str) -> None:
         if self.session is not doc:
@@ -1358,10 +1388,11 @@ class AppState(QObject):
             def got(new, rec=rec):
                 if self.session is not doc or not new:
                     return
-                for d in new:
-                    doc.images.append(self._make_image(doc, d, rec))
+                fresh = [self._make_image(doc, d, rec) for d in new]
+                doc.images.extend(fresh)
                 self.images_changed.emit()
                 self.setup_changed.emit()
+                self.image_details.request(doc, fresh, ocr=True)
             run_task(_load_new_images, rec.path, known, on_done=got)
         if back:
             if self.current_uid is None and doc.images:
@@ -1375,6 +1406,7 @@ class AppState(QObject):
         if self.session is None:
             return
         self.flush()
+        self.image_details.reset()
         self.session = None
         self.current_uid = None
         self._arr_lru.clear()
@@ -1429,6 +1461,9 @@ class AppState(QObject):
                 result, where or ("the lot" if doc.is_lot else "the session"))
             self.message.emit(title, body, sev)
             self.probe_metadata(added)
+            # UPDATE 4 item 11: details of the new images (data bar read in
+            # the background, one image at a time)
+            self.image_details.request(doc, [doc.image(u) for u in added], ocr=True)
             if on_done:
                 on_done(len(new))
             if on_result:
@@ -1565,12 +1600,18 @@ class AppState(QObject):
         for im in targets:
             self._setup_pending.add(im.uid)
         self.setup_progress.emit(self._setup_stats["done"], self._setup_stats["total"])
+        from ui.image_details import label_reading
         for im in targets:
             # UPDATE 4 item 4: read the scale-bar label unless the operator
-            # already set this image's scale by hand
+            # already set this image's scale by hand.  Item 11: a label the
+            # details reading found is used once instead of reading again,
+            # and this reading fills details not read from the data bar yet.
+            info = im.image_info
+            known = label_reading(info) if im.bar_read is None else None
+            details = info is None or info.ocr_status == "not_run"
             run_task(setup_probe, im.image_bgr, str(im.path) if im.path else None,
                      im.cal_suggestion is None, im.scale_source != "manual",
-                     im.cal_suggestion,
+                     im.cal_suggestion, known, details,
                      on_done=lambda out, im=im: self._apply_setup(doc, im, out),
                      on_error=lambda _m, im=im: self._apply_setup(doc, im, {}))
         return len(targets)
@@ -1592,6 +1633,8 @@ class AppState(QObject):
         if self.session is not doc or im.uid not in self._setup_pending:
             return
         self._setup_pending.discard(im.uid)
+        if out.get("details"):                     # UPDATE 4 item 11: same reading
+            self.image_details.adopt(doc, im, out["details"])
         st = self._setup_stats
         st["done"] += 1
         if out.get("shape") and not im.shape:
@@ -2120,6 +2163,30 @@ class AppState(QObject):
         self.undo_stack.push(GrainGeometryCommand(self, uid, raw, out,
                                                   f"Split grain #{out.op['id']}"))
         return [int(i) for i in out.changed]
+
+    def add_grain(self, uid, points) -> int:
+        """UPDATE 4 item 8: add a grain the detector missed, drawn by hand as
+        an outline in IMAGE (canvas) coordinates (closed end-to-start like a
+        lasso; undoable).  Returns the new grain's id; raises
+        ``GrainEditError`` with the plain-language reason when nothing could
+        be added (then nothing is pushed onto the undo stack)."""
+        from core.grain_edit import (
+            GrainEditError, add_grain, remeasure_after_edit, to_label_coords,
+        )
+        im, off = self._edit_target(uid)
+        outline = to_label_coords(points, off)
+        try:
+            min_px = int(params_from_dict(self.session.params).min_grain_size_px or 0)
+        except (TypeError, ValueError, AttributeError):
+            min_px = 0
+        out = add_grain(im.raw.label_image, outline, valid_mask=im.raw.valid_mask,
+                        min_area_px=min_px)
+        if not out.added:
+            raise GrainEditError(out.reason or "Nothing was added.")
+        raw = remeasure_after_edit(im.raw, out, self._frame_shape(im))
+        self.undo_stack.push(GrainGeometryCommand(self, uid, raw, out,
+                                                  f"Add grain #{out.grain_id}"))
+        return int(out.grain_id)
 
     @staticmethod
     def _frame_shape(im: ImageDoc):

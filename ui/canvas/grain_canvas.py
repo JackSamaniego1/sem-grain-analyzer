@@ -12,7 +12,9 @@ GrainCanvas — the v3 image viewer used by the Analyze and Review pages.
   at least half inside is selected (Ctrl adds to the selection); **Cut** (C)
   - draw a line across a grain, emits ``split_requested`` with the line in
   image coordinates; **Merge** (M) emits ``merge_requested`` for a
-  selection of 2+ grains.  V / Esc returns to the select tool.  The page
+  selection of 2+ grains; **Add grain** (A) - draw around a grain the
+  detector missed (closed back to the start like a lasso), emits
+  ``add_requested``.  V / Esc returns to the select tool.  The page
   turns the requests into undoable ``AppState`` edits.
 """
 from __future__ import annotations
@@ -41,9 +43,12 @@ from ui.workers import bgr_to_qimage
 VIEWS = ("original", "overlay", "mask", "excluded")
 VIEW_LABELS = {"original": "Original", "overlay": "Overlay", "mask": "Mask",
                "excluded": "Excluded"}
-TOOLS = ("select", "lasso", "split")
+TOOLS = ("select", "lasso", "split", "add")
 TOOL_HINTS = {"lasso": "Lasso  ·  draw a loop around grains  (Ctrl adds)",
-              "split": "Cut  ·  draw a line across one grain"}
+              "split": "Cut  ·  draw a line across one grain",
+              "add": "Add grain  ·  draw around a grain that was missed"}
+#: tools that draw a stroke (crosshair cursor, Esc cancels the stroke)
+DRAW_TOOLS = ("lasso", "split", "add")
 
 
 class GrainCanvas(ThemeAware, QWidget):
@@ -52,9 +57,10 @@ class GrainCanvas(ThemeAware, QWidget):
     hovered = Signal(int)              # grain id or 0
     zoom_changed = Signal(float)       # scale (1.0 = 100 %)
     view_changed = Signal(str)
-    tool_changed = Signal(str)         # select | lasso | split
+    tool_changed = Signal(str)         # select | lasso | split | add
     merge_requested = Signal(list)     # grain ids (2+)
     split_requested = Signal(list)     # [(x, y), ...] cut line, image coordinates
+    add_requested = Signal(list)       # [(x, y), ...] outline (closed to start), image coords
     overlay_opacity_edited = Signal(float, bool)   # user moved the opacity pill: value, settled
 
     MIN_SCALE = 0.02
@@ -214,7 +220,7 @@ class GrainCanvas(ThemeAware, QWidget):
         return [(q.x(), q.y()) for q in self._stroke]
 
     def _tool_cursor(self):
-        return Qt.CrossCursor if self._tool in ("lasso", "split") else Qt.ArrowCursor
+        return Qt.CrossCursor if self._tool in DRAW_TOOLS else Qt.ArrowCursor
 
     def _cancel_stroke(self) -> None:
         self._stroke, self._drawing = [], False
@@ -250,6 +256,8 @@ class GrainCanvas(ThemeAware, QWidget):
             self.lasso_select(pts, add=bool(modifiers & (Qt.ControlModifier | Qt.ShiftModifier)))
         elif tool == "split" and span >= 4:
             self.split_requested.emit(pts)
+        elif tool == "add" and len(pts) >= 3 and span >= 6:
+            self.add_requested.emit(pts)
 
     def view(self) -> str:
         return self._view
@@ -634,13 +642,29 @@ class GrainCanvas(ThemeAware, QWidget):
         self._paint_tooltip(p, t)
 
     def _paint_stroke(self, p: QPainter, t) -> None:
-        """Lasso loop (accent, marching ants, light fill) or cut line."""
+        """Lasso loop (accent, marching ants, light fill), cut line, or the
+        outline of a grain being added (cut-line pen + a thin closing line
+        back to the start, so the user sees the lasso that will be filled)."""
         if len(self._stroke) < 2:
             return
         path = QPainterPath(self._stroke[0])
         for q in self._stroke[1:]:
             path.lineTo(q)
-        if self._tool == "lasso":
+        if self._tool == "add":
+            color = qcolor(t.success.fg)
+            loop = QPainterPath(path)
+            loop.closeSubpath()
+            fill = QColor(color)
+            fill.setAlphaF(0.16)
+            p.setPen(Qt.NoPen)
+            p.setBrush(fill)
+            p.drawPath(loop)
+            p.setBrush(Qt.NoBrush)
+            for pen in (QPen(QColor(0, 0, 0, 140), 2.6), QPen(color, 1.4, Qt.DotLine)):
+                pen.setCosmetic(True)
+                p.setPen(pen)
+                p.drawLine(self._stroke[-1], self._stroke[0])
+        elif self._tool == "lasso":
             path.closeSubpath()
             fill = QColor(qcolor(t.accent.text))
             fill.setAlphaF(0.14)
@@ -698,7 +722,8 @@ class GrainCanvas(ThemeAware, QWidget):
             hw = fm.horizontalAdvance(hint) + 20
             hr = QRectF(r.right() + 8, 12, hw, 24)
             self._pill(p, t, hr)
-            p.setPen(qcolor(t.warning.fg if self._tool == "split" else t.accent.text))
+            p.setPen(qcolor({"split": t.warning.fg, "add": t.success.fg}.get(
+                self._tool, t.accent.text)))
             p.drawText(hr, Qt.AlignCenter, hint)
 
     def _paint_minimap(self, p: QPainter, t) -> None:
@@ -901,6 +926,8 @@ class GrainCanvas(ThemeAware, QWidget):
             self.set_tool("select" if self._tool == "lasso" else "lasso")
         elif k == Qt.Key_C and self._interactive and not e.modifiers():
             self.set_tool("select" if self._tool == "split" else "split")
+        elif k == Qt.Key_A and self._interactive and not e.modifiers():
+            self.set_tool("select" if self._tool == "add" else "add")
         elif k == Qt.Key_V and not e.modifiers():
             self.set_tool("select")
         elif k == Qt.Key_M and self._interactive and not e.modifiers():

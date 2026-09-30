@@ -60,6 +60,7 @@ ICONS: Dict[str, str] = {
     "lasso": "mdi6.lasso",
     "merge": "mdi6.merge",
     "split": "mdi6.call-split",
+    "add_grain": "mdi6.shape-polygon-plus",
     "zoom_in": "mdi6.magnify-plus-outline",
     "zoom_out": "mdi6.magnify-minus-outline",
     "fit": "mdi6.fit-to-screen-outline",

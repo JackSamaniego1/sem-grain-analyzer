@@ -321,6 +321,147 @@ def lot_comparison_rows_safe(section):
         return []
 
 
+class LotSummaryPreview(SectionPreview):
+    """UPDATE 4 item 15: the job summary table (lot rows, part subtotals,
+    job total) and the lot-vs-lot charts (bar per lot + trendline) -- the
+    numbers come from ``reports.lot_summary.lot_summary_data``, exactly what
+    the Lot Summary sheet and slides show."""
+
+    def __init__(self, page, section) -> None:
+        from ui.widgets import EmptyState
+        super().__init__(page, "lot_summary", section.title or "Lot Summary")
+        self.section = section
+        self.data: dict = {}
+        self.empty = EmptyState("mdi6.chart-bar", "No lots in this report",
+                                "The Lot Summary compares lots. None of the images in this "
+                                "report belong to a lot, so the sheet and slides are left out. "
+                                "Images added to a lot on the Projects page appear here.")
+        self.body.addWidget(self.empty)
+        self.table_card = Card("Job summary", "One row per lot, a subtotal per part and the "
+                                              "job total")
+        self.table = QTableWidget(0, 0)
+        self.table.setObjectName("lotSummaryTable")
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.table.setFocusPolicy(Qt.NoFocus)
+        self.table.setShowGrid(True)
+        self.table.setWordWrap(True)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.table.verticalHeader().setDefaultSectionSize(28)
+        self.table_card.add_widget(self.table)
+        self.body.addWidget(self.table_card)
+        self.chart_host = QVBoxLayout()
+        self.chart_host.setSpacing(SPACE.lg)
+        self.body.addLayout(self.chart_host)
+        self.chart_cards: List[QWidget] = []
+        self.note = label("", "caption")
+        self.note.setWordWrap(True)
+        self.body.addWidget(self.note)
+        self.body.addStretch(1)
+        self.refresh()
+        from ui.design.theme import theme_manager
+        theme_manager().theme_changed.connect(self._on_theme)     # row colours follow the theme
+
+    def _on_theme(self, *_a) -> None:
+        try:
+            if self.data.get("has_lots"):
+                self._fill_table(self.data)
+        except RuntimeError:                   # widget already deleted
+            pass
+
+    def _compute(self) -> dict:
+        from reports.lot_summary import lot_summary_data
+        try:
+            return lot_summary_data(self.model)
+        except Exception:       # noqa: BLE001 -- a preview must never break the editor
+            return {"has_lots": False, "rows": [], "charts": []}
+
+    def refresh(self) -> None:
+        self.title.setText(self.section.title or "Lot Summary")
+        self.data = d = self._compute()
+        has = bool(d.get("has_lots"))
+        self.empty.setVisible(not has)
+        self.table_card.setVisible(has)
+        for c in self.chart_cards:
+            c.setParent(None)
+            c.deleteLater()
+        self.chart_cards = []
+        if not has:
+            self.note.setText("")
+            return
+        self._fill_table(d)
+        from ui.pages.report_widgets import LotTrendChart
+        for ch in d.get("charts") or []:
+            card = Card(ch["title"])
+            chart = LotTrendChart()
+            chart.set_chart(ch)
+            card.add_widget(chart)
+            self.chart_host.addWidget(card)
+            self.chart_cards.append(card)
+        units = d.get("units") or {}
+        cal = ("Sizes in " + units.get("length", "") + " / " + units.get("area", "")
+               if units.get("calibrated") else
+               "Not every image is calibrated, so sizes are in pixels and ASTM G is left out")
+        off = "" if self.section.enabled else (
+            " This section is switched off — tick it in the outline to include it.")
+        self.note.setText(f"{cal}. Trendlines are straight-line fits across the lots of each "
+                          f"part (two or more lots). Excel: the Lot Summary sheet (blue tab); "
+                          f"PowerPoint: a job summary slide and lot-vs-lot chart slides.{off}")
+
+    def _fill_table(self, d: dict) -> None:
+        from PySide6.QtGui import QBrush, QColor, QFont
+        from reports.lot_summary import NUMERIC_KEYS, id_cells, table_headers
+        from ui.design.theme import current_tokens
+        from ui.pages.report_widgets import fmt_num
+        tok = current_tokens()
+        heads = table_headers(d)
+        rows = d.get("rows") or []
+        t = self.table
+        t.clear()
+        t.setColumnCount(len(heads))
+        t.setRowCount(len(rows))
+        t.setHorizontalHeaderLabels(heads)
+        hh = t.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.Interactive)
+        hh.setStretchLastSection(True)
+        fmts = {"n_images": "#,##0", "n_grains": "#,##0", "astm_g": "0.0"}
+        size_vals = [abs(r[k]) for r in rows for k in ("mean_diameter", "d10", "mean_area")
+                     if r.get(k) is not None]
+        size_fmt = "0.000" if size_vals and max(size_vals) < 1 else "0.00"
+        styles = {"part": tok.semantic("neutral"), "total": tok.semantic("accent")}
+        for ri, row in enumerate(rows):
+            cells = list(id_cells(row)) + [fmt_num(row.get(k), fmts.get(k, size_fmt))
+                                           for k in NUMERIC_KEYS]
+            kind = row.get("kind", "lot")
+            for ci, txt in enumerate(cells):
+                it = QTableWidgetItem(txt)
+                it.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter if ci < 2
+                                    else Qt.AlignRight | Qt.AlignVCenter)
+                if kind in styles:
+                    sem = styles[kind]
+                    it.setBackground(QBrush(QColor(sem.bg)))
+                    it.setForeground(QBrush(QColor(sem.fg)))
+                    f = QFont(t.font())
+                    f.setBold(True)
+                    it.setFont(f)
+                if kind == "total":
+                    it.setToolTip("Whole job: every included image pooled")
+                elif kind == "part":
+                    it.setToolTip("All lots of this part pooled")
+                t.setItem(ri, ci, it)
+        fm = hh.fontMetrics()
+        for ci, h in enumerate(heads):       # headers are never cut off
+            t.setColumnWidth(ci, max(120 if ci < 2 else 84, fm.horizontalAdvance(h) + 28))
+        t.setFixedHeight(hh.sizeHint().height() + 28 * len(rows) + 6
+                         + (t.horizontalScrollBar().sizeHint().height()
+                            if hh.length() > t.viewport().width() else 0))
+
+    def row_kinds(self) -> List[str]:
+        return [r.get("kind", "") for r in (self.data.get("rows") or [])]
+
+
 class ChartsPreview(SectionPreview):
     def __init__(self, page, section) -> None:
         super().__init__(page, "combined_distribution", "Summary charts")
@@ -797,12 +938,12 @@ def make_preview(page, key) -> Optional[SectionPreview]:
     if sec is None:
         return None
     cls = {"cover": CoverPreview, "overview_table": OverviewPreview,
-           "lot_comparison": LotComparisonPreview,
+           "lot_comparison": LotComparisonPreview, "lot_summary": LotSummaryPreview,
            "combined_distribution": ChartsPreview, "parameters": MethodsPreview,
            "raw_data": RawPreview, "custom_text": TextPreview}.get(sec.type)
     return cls(page, sec) if cls else None
 
 
 __all__ = ["make_preview", "SectionPreview", "ImagePreview", "OverviewPreview",
-           "LotComparisonPreview",
+           "LotComparisonPreview", "LotSummaryPreview",
            "GrainReportTable"]

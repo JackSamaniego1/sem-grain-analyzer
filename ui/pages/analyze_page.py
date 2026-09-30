@@ -169,6 +169,7 @@ class ParamPanel(QWidget):
         self._mode = default_mode()
         self._device_pref = ""            # "gpu" | "cpu" | "" (fresh install)
         self._probe = probe if probe is not None else device_probe()
+        self._closing = False
 
         self.sec_mode = CollapsibleSection("Detection mode", expanded=True)
         grid = QVBoxLayout()
@@ -289,8 +290,26 @@ class ParamPanel(QWidget):
         # the answer arrives.  Started after the window has painted.
         self._probe.ready.connect(self._on_device_info)
         self._apply_device_state()
+        self._last_sam_device = self.sam_device()
+        # owned timer: dies with the panel and is stopped when the window closes
+        self._probe_timer = QTimer(self)
+        self._probe_timer.setSingleShot(True)
+        self._probe_timer.timeout.connect(self._start_device_probe)
         if sam_ok and self._probe.info() is None:
-            QTimer.singleShot(DEVICE_PROBE_DELAY_MS, self._probe.start)
+            self._probe_timer.start(DEVICE_PROBE_DELAY_MS)
+
+    def _start_device_probe(self) -> None:
+        """Delayed start-up GPU check; skipped once the app is closing."""
+        from PySide6.QtCore import QCoreApplication
+        from ui.workers import is_shutting_down
+        if self._closing or is_shutting_down() or QCoreApplication.closingDown():
+            return
+        self._probe.start()
+
+    def stop_background(self) -> None:
+        """The main window is closing: never start the device check now."""
+        self._closing = True
+        self._probe_timer.stop()
 
     # ------------------------------------------------------------ AI device (item 10b)
     def _device_info(self):
@@ -340,7 +359,14 @@ class ParamPanel(QWidget):
             self._probe.start(again=True)
 
     def _on_device_info(self, _info) -> None:
+        before = getattr(self, "_last_sam_device", None)
         self._apply_device_state()
+        now = self.sam_device()
+        self._last_sam_device = now
+        if now != before:
+            # e.g. cpu -> gpu on a fresh install once the check says the card
+            # works: the session's saved parameters must follow
+            self._changed()
 
     def _apply_device_state(self) -> None:
         grp = self.mode_cards.get(AI_MODE)
@@ -504,6 +530,37 @@ class SetupTile(Card):
         row.addLayout(self.scan_col, 1)
         row.addLayout(self.scale_col, 1)
         b.addLayout(row)
+
+        # UPDATE 4 item 11: how the image was taken (read-only, filled on load)
+        self.details_row = QWidget()
+        self.details_row.setObjectName("imageDetails")
+        dcol = QVBoxLayout(self.details_row)
+        dcol.setContentsMargins(0, 0, 0, 0)
+        dcol.setSpacing(2)
+        dh = QHBoxLayout()
+        dh.setContentsMargins(0, 0, 0, 0)
+        dh.setSpacing(SPACE.sm)
+        dh.addWidget(label("IMAGE DETAILS", "overline"))
+        self.details_src = Badge("", "neutral")
+        self.details_src.setToolTip("Where these values came from")
+        dh.addWidget(self.details_src)
+        self.details_check = Badge("Please check", "warning", dot=True)
+        self.details_check.setToolTip("Read from the image automatically. Compare with the "
+                                      "image's data bar.")
+        self.details_check.hide()
+        dh.addWidget(self.details_check)
+        self.details_val = label("", "body")
+        self.details_val.setObjectName("imageDetailsValue")
+        self.details_val.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.details_val.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        dh.addWidget(self.details_val, 1)
+        dcol.addLayout(dh)
+        self.details_hint = label("", "caption")
+        self.details_hint.setObjectName("imageDetailsHint")
+        self.details_hint.setWordWrap(True)
+        self.details_hint.hide()
+        dcol.addWidget(self.details_hint)
+        b.addWidget(self.details_row)
 
         self.bar_row = QWidget()
         bcol = QVBoxLayout(self.bar_row)
@@ -751,8 +808,56 @@ class SetupTile(Card):
         badge.set_kind(kind)
         badge.setVisible(bool(text))
 
+    _DETAIL_SRC = {"metadata": ("From file", "info"), "info_bar": ("Data bar", "info"),
+                   "both": ("File + data bar", "info"), "": ("", "neutral")}
+
+    def show_details(self, state, im) -> None:
+        """UPDATE 4 item 11: instrument · magnification · kV · WD · detector
+        of the shown image, with "Please check" like the scale-bar label."""
+        from ui import image_details as idt
+        info = getattr(im, "image_info", None) if im is not None else None
+        svc = getattr(state, "image_details", None)
+        reading = im is not None and svc is not None and svc.is_reading(im.uid)
+        text = idt.summary_text(info)
+        hint, tone = "", None
+        if im is None or getattr(im, "loading", False):
+            text = "—"
+        elif not text:
+            if reading:
+                text = "Reading…"
+            elif info is not None and info.ocr_status == "engine_missing":
+                text = "—"
+                hint = ("The data bar could not be read: the text-reading part of the program "
+                        "is missing. Please reinstall SEM Grain Analyzer.")
+                tone = "warning"
+            elif info is not None and info.ocr_status == "not_run":
+                text = "Not stored in the image file — Auto-find also reads the data bar"
+            else:
+                text = "Not found in the image file or its data bar"
+        elif reading:
+            text += "  ·  reading the data bar…"
+        check = idt.check_text(info)
+        if check:
+            hint, tone = check, "warning"
+        key = idt.source_key(info) if idt.summary_text(info) else ""
+        s_text, s_kind = self._DETAIL_SRC.get(key, ("", "neutral"))
+        self.details_src.set_text(s_text)
+        self.details_src.set_kind(s_kind)
+        self.details_src.setVisible(bool(s_text))
+        self.details_check.setVisible(bool(check))
+        self.details_val.setText(text)
+        tip = idt.tooltip_text(info)
+        self.details_val.setToolTip(tip or "Instrument, magnification, accelerating voltage, "
+                                           "working distance and detector of this image")
+        self.details_hint.setText(hint)
+        self.details_hint.setProperty("tone", tone)
+        self.details_hint.style().unpolish(self.details_hint)
+        self.details_hint.style().polish(self.details_hint)
+        self.details_hint.setVisible(bool(hint))
+
     def refresh(self, state, im) -> None:
         """Show the readiness of every image and the current image's values."""
+        self.show_details(state, im)
         imgs = [x for x in state.images() if not x.loading and x.readable]
         n = len(imgs)
         ready = sum(1 for x in imgs if state.setup_ready(x))
@@ -1188,6 +1293,7 @@ class AnalyzePage(QWidget):
         st.info_bar_ready.connect(lambda uid: uid == st.current_uid and self._refresh_info_bar())
         st.sem_metadata_ready.connect(
             lambda uid: uid == st.current_uid and self._refresh_calibration())
+        st.image_details.ready.connect(self._on_image_details)
         st.profile_changed.connect(self._relabel)
         st.profile_changed.connect(self.table.relabel)
         self.params.changed.connect(lambda: st.set_params(self.params.get_params()))
@@ -1230,6 +1336,12 @@ class AnalyzePage(QWidget):
         self._refresh_summary()
         self._on_current(self.state.current_uid)
         self._set_idle()
+
+    def _on_image_details(self, uid) -> None:
+        """UPDATE 4 item 11: the shown image's details arrived."""
+        if uid == self.state.current_uid:
+            s = self.state.session
+            self.setup_tile.show_details(self.state, s.image(uid) if s is not None else None)
 
     def _on_image_updated(self, uid) -> None:
         self.film.update_item(uid)

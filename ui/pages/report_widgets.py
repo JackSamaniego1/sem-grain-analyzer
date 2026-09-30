@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from typing import Callable, List, Optional, Sequence
 
-from PySide6.QtCore import QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor, QFont, QFontMetricsF, QPainter, QPainterPath, QPen, QPixmap,
 )
@@ -609,8 +609,222 @@ def swatch_icon(color: str, size: int = 14):
     return QIcon(pm)
 
 
+# ======================================================================
+# Lot-vs-lot chart (UPDATE 4 item 15: Lot Summary preview)
+# ======================================================================
+
+def fmt_num(v, num_format: str = "0.00") -> str:
+    """A value as the Excel number format of ``reports.lot_summary`` shows it."""
+    if v is None:
+        return "—"
+    if num_format == "#,##0":
+        return f"{v:,.0f}"
+    if num_format == "0.0":
+        return f"{v:.1f}"
+    if num_format == "0.000":
+        return f"{v:.3f}"
+    return f"{v:.2f}"
+
+
+def _nice_ticks(lo: float, hi: float, n: int = 5) -> List[float]:
+    import math
+    if hi <= lo:
+        hi = lo + 1.0
+    raw = (hi - lo) / max(1, n - 1)
+    mag = 10 ** math.floor(math.log10(raw))
+    step = next(m * mag for m in (1, 2, 2.5, 5, 10) if m * mag >= raw)
+    start = math.floor(lo / step) * step
+    ticks, v = [round(start, 10)], start
+    while ticks[-1] < hi - 1e-12 or len(ticks) < 2:
+        v += step
+        ticks.append(round(v, 10))
+    return ticks
+
+
+class LotTrendChart(ThemeAware, QWidget):
+    """One chart of ``lot_summary_data()["charts"]``: a bar per lot and the
+    least-squares trendline of each part over it, axis titles with units;
+    hover a bar for its value.  Themed like the other report previews (the
+    exported workbook / deck draw the same numbers in their own style)."""
+
+    ML, MR, MT, MB = 64, 16, 44, 44
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.chart: Optional[dict] = None
+        self.setMinimumHeight(280)
+        self.setMouseTracking(True)
+        self._connect_theme()
+
+    def set_chart(self, chart: dict) -> None:
+        self.chart = dict(chart or {})
+        self.setAccessibleName(self.chart.get("title", "Lot chart"))
+        self.update()
+
+    def sizeHint(self) -> QSize:
+        return QSize(640, 300)
+
+    # geometry ----------------------------------------------------------
+    def _bottom(self) -> int:
+        return self.MB + (18 if self.chart and self.chart.get("multi_level") else 0)
+
+    def _plot(self) -> QRectF:
+        return QRectF(self.ML, self.MT, max(10.0, self.width() - self.ML - self.MR),
+                      max(10.0, self.height() - self.MT - self._bottom()))
+
+    def _range(self):
+        vals = [v for v in (self.chart.get("values") or []) if v is not None]
+        vals += [v for v in (self.chart.get("trend") or []) if v is not None]
+        lo = min([0.0] + vals)
+        hi = max([0.0] + vals) or 1.0
+        ticks = _nice_ticks(lo, hi * 1.05 if hi > 0 else hi)
+        return ticks[0], ticks[-1], ticks
+
+    def index_at(self, x: float) -> int:
+        n = len((self.chart or {}).get("values") or [])
+        r = self._plot()
+        if not n or not (r.left() <= x <= r.right()):
+            return -1
+        return min(n - 1, int((x - r.left()) / (r.width() / n)))
+
+    def mouseMoveEvent(self, e) -> None:
+        i = self.index_at(e.position().x())
+        tip = ""
+        if i >= 0:
+            c = self.chart
+            cat = c["categories"][i]
+            name = f"{cat['part']} / {cat['lot']}" if c.get("multi_level") else cat["lot"]
+            tip = f"{name}\n{c.get('y_title', '')}: {fmt_num(c['values'][i], c.get('num_format'))}"
+            tr = (c.get("trend") or [None] * (i + 1))[i]
+            if tr is not None:
+                tip += f"\nTrend: {fmt_num(tr, c.get('num_format'))}"
+        self.setToolTip(tip)
+        super().mouseMoveEvent(e)
+
+    # painting ----------------------------------------------------------
+    def paintEvent(self, _e) -> None:
+        t = tokens()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), qcolor(t.surface.surface1))
+        c = self.chart
+        if not c or not c.get("values"):
+            return
+        vals = c["values"]
+        cats = c["categories"]
+        trend = c.get("trend")
+        fmt = c.get("num_format", "0.00")
+        r = self._plot()
+        lo, hi, ticks = self._range()
+
+        def ypos(v):
+            return r.bottom() - (v - lo) / (hi - lo) * r.height()
+
+        small = ui_font(TypeStyle(10, 400, 14))
+        fm = QFontMetricsF(small)
+        p.setFont(small)
+        grid = qcolor(t.border.subtle)
+        step = (ticks[1] - ticks[0]) if len(ticks) > 1 else 1.0
+        nd = 0 if step >= 1 else 1 if step >= 0.1 else 2 if step >= 0.01 else 3
+        for tv in ticks:
+            yp = ypos(tv)
+            p.setPen(QPen(grid, 1, Qt.SolidLine if abs(tv) < 1e-12 else Qt.DotLine))
+            p.drawLine(QPointF(r.left(), yp), QPointF(r.right(), yp))
+            p.setPen(qcolor(t.text.tertiary))
+            p.drawText(QRectF(18, yp - 8, self.ML - 24, 16), int(Qt.AlignRight | Qt.AlignVCenter),
+                       f"{tv:,.{nd}f}")
+        n = len(vals)
+        bw = r.width() / n
+        parts: List[str] = []
+        for cat in cats:
+            if cat["part"] not in parts:
+                parts.append(cat["part"])
+        base = ypos(max(lo, 0.0))
+        show_vals = bw >= 34
+        for i, v in enumerate(vals):
+            x0 = r.left() + i * bw
+            if v is None:
+                p.setPen(qcolor(t.text.tertiary))
+                p.drawText(QRectF(x0, base - 18, bw, 16), int(Qt.AlignCenter), "—")
+            else:
+                col = QColor(t.dataviz[parts.index(cats[i]["part"]) % len(t.dataviz)]
+                             if c.get("multi_level") else t.dataviz[0])
+                top, bot = sorted((ypos(v), base))
+                rect = QRectF(x0 + bw * 0.18, top, bw * 0.64, max(1.0, bot - top))
+                path = QPainterPath()
+                path.addRoundedRect(rect, 2, 2)
+                p.fillPath(path, col)
+                if show_vals:
+                    p.setPen(qcolor(t.text.secondary))
+                    p.drawText(QRectF(x0, top - 16, bw, 14), int(Qt.AlignCenter),
+                               fmt_num(v, fmt))
+            p.setPen(qcolor(t.text.secondary))
+            p.drawText(QRectF(x0 + 1, r.bottom() + 4, bw - 2, 16),
+                       int(Qt.AlignHCenter | Qt.AlignTop),
+                       fm.elidedText(cats[i]["label"], Qt.ElideMiddle, bw - 4))
+        # trendline per part (dashed, with point markers)
+        if trend:
+            tcol = qcolor(t.text.primary)          # never a bar colour: reads on both
+            p.setPen(QPen(tcol, 2, Qt.DashLine, Qt.RoundCap))
+            for part in parts:
+                pts = [QPointF(r.left() + (i + 0.5) * bw, ypos(trend[i]))
+                       for i in range(n) if cats[i]["part"] == part and trend[i] is not None]
+                for a, b in zip(pts, pts[1:]):
+                    p.drawLine(a, b)
+            p.setPen(Qt.NoPen)
+            p.setBrush(tcol)
+            for i in range(n):
+                if trend[i] is not None:
+                    p.drawEllipse(QPointF(r.left() + (i + 0.5) * bw, ypos(trend[i])), 2.5, 2.5)
+        # part groups under the lot labels
+        if c.get("multi_level"):
+            p.setFont(ui_font(TypeStyle(10, 600, 14)))
+            i = 0
+            while i < n:
+                j = i
+                while j + 1 < n and cats[j + 1]["part"] == cats[i]["part"]:
+                    j += 1
+                gx0, gx1 = r.left() + i * bw, r.left() + (j + 1) * bw
+                p.setPen(QPen(grid, 1))
+                p.drawLine(QPointF(gx1, r.bottom()), QPointF(gx1, r.bottom() + 36))
+                p.setPen(qcolor(t.text.primary))
+                p.drawText(QRectF(gx0, r.bottom() + 20, gx1 - gx0, 16), int(Qt.AlignCenter),
+                           fm.elidedText(cats[i]["part"], Qt.ElideRight, gx1 - gx0 - 4))
+                i = j + 1
+        # axis titles
+        p.setFont(ui_font(TypeStyle(11, 600, 16)))
+        p.setPen(qcolor(t.text.secondary))
+        p.drawText(QRectF(r.left(), self.height() - 20, r.width(), 18), int(Qt.AlignCenter),
+                   c.get("x_title", ""))
+        p.save()
+        p.translate(12, r.center().y())
+        p.rotate(-90)
+        p.drawText(QRectF(-r.height() / 2, -8, r.height(), 18), int(Qt.AlignCenter),
+                   c.get("y_title", ""))
+        p.restore()
+        # legend (top right)
+        p.setFont(small)
+        items = [("bar", qcolor(t.dataviz[0]), "Lot value" if not c.get("multi_level")
+                  else "Lot value (colour = part)")]
+        if trend:
+            items.append(("line", qcolor(t.text.primary), "Trend (least squares)"))
+        x = r.right()
+        for kind, col, text in reversed(items):
+            tw = fm.horizontalAdvance(text)
+            x -= tw
+            p.setPen(qcolor(t.text.secondary))
+            p.drawText(QRectF(x, 4, tw + 2, 18), int(Qt.AlignLeft | Qt.AlignVCenter), text)
+            x -= 22
+            if kind == "bar":
+                p.fillRect(QRectF(x + 4, 8, 12, 10), col)
+            else:
+                p.setPen(QPen(col, 2, Qt.DashLine))
+                p.drawLine(QPointF(x + 2, 13), QPointF(x + 18, 13))
+            x -= 14
+
+
 __all__ = [
     "Paper", "CoverSlide", "ImageSlide", "TextSlide", "MethodsSlide", "OverviewSheet",
     "PerImageBars", "Banner", "Swatch", "swatch_icon", "bgr_pixmap", "file_pixmap",
-    "arr_thumb_qimage", "file_thumb_qimage",
+    "arr_thumb_qimage", "file_thumb_qimage", "LotTrendChart", "fmt_num",
 ]

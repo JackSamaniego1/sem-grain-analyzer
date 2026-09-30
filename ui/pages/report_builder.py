@@ -60,7 +60,7 @@ SECTION_TARGETS = {
     "cover": ("Overview sheet header", "Title slide"),
     "overview_table": ("Overview sheet", "Executive summary slide"),
     "lot_comparison": ("Lot Comparison sheet (blue tab)", "Lot comparison slide(s)"),
-    "lot_summary": ("Lot Summary sheet (blue tab)", "Not included in PowerPoint"),
+    "lot_summary": ("Lot Summary sheet (blue tab)", "Job summary + lot chart slides"),
     "combined_distribution": ("Summary Charts sheet", "2 distribution slides"),
     "image": ("One sheet per image", "One slide per image"),
     "parameters": ("Methods sheet", "Methods slide"),

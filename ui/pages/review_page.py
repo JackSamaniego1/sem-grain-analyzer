@@ -11,7 +11,8 @@ Layout
 Selection is two-way: click a grain on the canvas ↔ its row in the table.
 Delete removes the selection (undoable; non-destructive manual exclusion).
 Lasso (L) selects every grain inside a drawn loop; Merge (M) joins 2+
-touching selected grains; Cut (C) splits a grain along a drawn line - all
+touching selected grains; Cut (C) splits a grain along a drawn line; Add
+grain (A) turns a drawn outline into a grain the detector missed - all
 undoable, re-measured and saved with the session (UI-05 / INN-04).
 """
 from __future__ import annotations
@@ -209,10 +210,14 @@ class ReviewPage(QWidget):
                                          "grains; Ctrl adds to the selection", checkable=True)
         self.btn_tool_split = IconButton("split", "Cut a grain in two (C) - draw a line "
                                          "across the grain", checkable=True)
+        # UPDATE 4 item 8: draw a grain the detector missed (same pen as Cut)
+        self.btn_tool_add = IconButton("add_grain", "Add grain (A) - draw around a grain that "
+                                       "was missed; the outline closes back to its start",
+                                       checkable=True)
         self.tool_group = QButtonGroup(self)
         self.tool_group.setExclusive(True)
         for b, key in ((self.btn_tool_select, "select"), (self.btn_tool_lasso, "lasso"),
-                       (self.btn_tool_split, "split")):
+                       (self.btn_tool_split, "split"), (self.btn_tool_add, "add")):
             b.setProperty("tool", key)
             self.tool_group.addButton(b)
         self.btn_tool_select.setChecked(True)
@@ -229,14 +234,15 @@ class ReviewPage(QWidget):
             tool_group(self.view_seg),
             tool_group(self.btn_undo, self.btn_redo),
             tool_group(self.btn_tool_select, self.btn_tool_lasso, self.btn_tool_split,
-                       self.btn_merge, self.btn_del),
+                       self.btn_tool_add, self.btn_merge, self.btn_del),
             tool_group(self.btn_zo, self.btn_zi, self.btn_fit, self.btn_11)])
         tv.addWidget(self.toolbar)
         self.canvas = GrainCanvas(placeholder="Select an analysed image")
         self.canvas.enable_opacity_control()        # UPDATE 4 item 9
         tv.addWidget(self.canvas, 1)
         hint = label("Click a grain to select · Ctrl+click adds · L lasso · M merge · "
-                     "C cut · Delete removes · drag to pan · wheel zooms about the cursor",
+                     "C cut · A add grain · Delete removes · drag to pan · "
+                     "wheel zooms about the cursor",
                      "caption")
         tv.addWidget(hint)
         split.addWidget(top)

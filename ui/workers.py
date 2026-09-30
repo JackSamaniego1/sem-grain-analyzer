@@ -526,6 +526,19 @@ def load_pool() -> QThreadPool:
     return _LOAD_POOL
 
 
+_OCR_POOL: Optional[QThreadPool] = None
+
+
+def ocr_pool() -> QThreadPool:
+    """UPDATE 4 item 11: one thread for reading images' data bars in the
+    background -- 50 images added at once are read one after another."""
+    global _OCR_POOL
+    if _OCR_POOL is None:
+        _OCR_POOL = QThreadPool()
+        _OCR_POOL.setMaxThreadCount(1)
+    return _OCR_POOL
+
+
 def run_task(fn: Callable, *args, on_done=None, on_error=None,
              pool: Optional[QThreadPool] = None, **kwargs) -> Task:
     """Start ``fn`` off the GUI thread; ``on_done(value)`` / ``on_error(msg)``
@@ -542,6 +555,7 @@ def shutdown_tasks(timeout_ms: int = 10000) -> None:
     _SHUTTING_DOWN = True
     try:
         load_pool().waitForDone(timeout_ms)
+        ocr_pool().waitForDone(timeout_ms)   # at most one data-bar read in flight
         QThreadPool.globalInstance().waitForDone(timeout_ms)
         serial_pool().waitForDone(timeout_ms)
     finally:
@@ -565,5 +579,5 @@ __all__ = [
     "IMAGE_FILTER", "IMAGE_EXTS", "read_image", "bgr_to_qimage", "thumb_qimage",
     "load_thumb_file", "analyze_image", "snapshot_result", "redraw_overlay", "full_frame_overlay",
     "mask_to_display", "AnalysisWorker", "AnalysisJob", "AnalysisQueue",
-    "Task", "run_task", "serial_pool", "shutdown_tasks", "pending_tasks", "is_shutting_down",
+    "Task", "run_task", "serial_pool", "ocr_pool", "shutdown_tasks", "pending_tasks", "is_shutting_down",
 ]

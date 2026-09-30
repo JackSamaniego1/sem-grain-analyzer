@@ -25,6 +25,7 @@ class GrainEditController(QObject):
         self.toasts = toasts
         canvas.merge_requested.connect(self.merge)
         canvas.split_requested.connect(self.split)
+        canvas.add_requested.connect(self.add)
 
     # ------------------------------------------------------------------ actions
     def merge(self, ids: Optional[List[int]] = None) -> Optional[int]:
@@ -51,6 +52,21 @@ class GrainEditController(QObject):
         self._toast(f"Split grain #{pieces[0]} into {len(pieces)}",
                     "Measurements and ASTM G updated. Ctrl+Z to undo.", "success", undo=True)
         return pieces
+
+    def add(self, outline) -> Optional[int]:
+        """UPDATE 4 item 8: add a grain drawn by hand.  The tool stays active
+        (as Cut does) so the next missed grain can be drawn straight away."""
+        uid = self.state.current_uid
+        try:
+            gid = self.state.add_grain(uid, outline)
+        except GrainEditError as exc:
+            self._toast("No grain added", str(exc), "warning")
+            return None
+        self.canvas.select([gid])
+        self._toast(f"Added grain #{gid}",
+                    "Measured like a detected grain; statistics and ASTM G updated. "
+                    "Ctrl+Z to undo.", "success", undo=True)
+        return gid
 
     # ------------------------------------------------------------------ helpers
     def _toast(self, title: str, body: str, severity: str, undo: bool = False) -> None:

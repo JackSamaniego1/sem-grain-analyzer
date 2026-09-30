@@ -60,6 +60,7 @@ SHORTCUTS = {
                ("L", "Lasso select (hold Ctrl to add)"),
                ("M", "Merge selected touching grains"),
                ("C", "Cut a grain with a line"),
+               ("A", "Add a missed grain (draw around it)"),
                ("V / Esc", "Back to the select tool"),
                ("Delete", "Remove selected grains"),
                ("Ctrl+Z", "Undo"), ("Ctrl+Y", "Redo")],
@@ -902,6 +903,7 @@ class AppShell(QMainWindow):
         self.stack.setCurrentWidget(self.pages.get(last, self.projects))
 
     def closeEvent(self, e) -> None:
+        self.analyze.params.stop_background()      # no start-up GPU check while closing
         if self.analyze.queue.is_running():
             # The detector call in flight cannot be interrupted; tell the user
             # why closing takes a moment instead of appearing frozen.
