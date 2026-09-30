@@ -1094,3 +1094,27 @@ def test_hierarchy_header_fills_blank_values_from_images(tmp_path):
     assert model.hierarchy_header() == "Job #: 24-117 | Part Number: 7718-A | Lot: L-1, L-2"
     model.hierarchy[0]["value"] = "J-9"                     # an explicit value wins
     assert model.hierarchy_header().startswith("Job #: J-9 |")
+
+
+def test_safe_sheet_name_unique_case_insensitive_and_vs_generated():
+    from reports.excel_renderer import _safe_sheet_name
+    used = {}
+    names = [_safe_sheet_name(n, used) for n in
+             ["Raw - Sample", "Raw - sample", "Raw - Sample (1)", "Raw - Sample", "x" * 40, "X" * 40]]
+    assert len({n.lower() for n in names}) == len(names)
+    assert all(len(n) <= 31 for n in names)
+
+
+def test_export_with_duplicate_image_names_succeeds(tmp_path):
+    import openpyxl
+    model = _lot_model(tmp_path, lots=("L-1", "L-2"), per_lot=2)
+    # same file name in both lots, plus a case variant and a long-name clash
+    for img, nm in zip(model.images, ["image.tif", "image.tif", "IMAGE.tif",
+                                      "a_very_long_image_name_from_the_sem_0001.tif"]):
+        img.display_name = nm
+        img.original_name = nm
+    out = str(tmp_path / "dup.xlsx")
+    render_excel(model, out)
+    sheets = openpyxl.load_workbook(out).sheetnames
+    assert len({s.lower() for s in sheets}) == len(sheets)
+    assert sum(s.startswith("Raw") for s in sheets) == 4

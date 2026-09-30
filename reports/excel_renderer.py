@@ -81,13 +81,16 @@ def _autosize_width(header: str, values: List[object], min_w: int = 8, max_w: in
 
 def _safe_sheet_name(name: str, used: Dict[str, int]) -> str:
     clean = INVALID_SHEET_CHARS.sub("", name).strip() or "Sheet"
-    clean = clean[:31]
-    base = clean
-    n = used.get(base, 0)
-    if n:
+    base = clean[:31]
+    # Excel sheet names are unique case-insensitively; a generated "X (1)"
+    # may also collide with a real name, so check every candidate.
+    taken = {k.lower() for k in used}
+    clean, n = base, 0
+    while clean.lower() in taken:
+        n += 1
         suffix = f" ({n})"
-        clean = base[: 31 - len(suffix)] + suffix
-    used[base] = n + 1
+        clean = base[: 31 - len(suffix)].rstrip() + suffix
+    used[clean] = 1
     return clean
 
 
