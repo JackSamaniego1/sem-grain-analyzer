@@ -240,7 +240,7 @@ def test_late_results_after_close_are_dropped(env, qtbot, fake_ocr):
 # ---------------------------------------------------------------- shared with Auto-find
 def _auto_find(shell, qtbot):
     st = shell.state
-    shell.analyze.setup_tile.btn_auto.click()
+    shell.analyze.auto_find()          # both wizard steps at once
     qtbot.waitUntil(lambda: not st.is_setting_up(), timeout=TIMEOUT)
 
 
@@ -268,7 +268,7 @@ def test_auto_find_reading_fills_the_details_once(env, qtbot, fake_ocr):
     st, tile = shell.state, shell.analyze.setup_tile
     im = st.current_image()
     assert im.image_info.ocr_status == "not_run" and not f.calls
-    assert "Auto-find" in tile.details_val.text()
+    assert "step 2" in tile.details_val.text()            # batch 4: wizard step 2 reads it
     _auto_find(shell, qtbot)
     assert len(f.calls) == 1                                 # one reading for both
     assert im.image_info.ocr_status == "ok" and im.image_info.magnification == 20000.0

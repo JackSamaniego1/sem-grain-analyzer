@@ -1,6 +1,8 @@
 """UPDATE 4 item 5 (UI): "Resolution Profiles" in the Analyze right sidebar.
 
-Layout (sidebar section, below the Run card):
+Layout (batch 4: the optional first step of the Analyze wizard, which shows
+the title and the switch; picking a profile in the dropdown applies it to the
+image set -- every image, or the ticked ones -- filling steps 1 and 2):
   header   "Resolution Profiles"  ··········  [on/off switch]   (OFF by default, per PC)
   OFF      one caption: scan area & scale are set per image as usual.  Nothing else
            changes anywhere (the tile under the image shows as today).
@@ -206,7 +208,7 @@ class ResolutionProfilesCard(CollapsibleSection):
         self.btn_apply = AnimatedButton("Apply to this image", "check", "primary", "sm")
         self.btn_apply.setToolTip("Use this profile's scale and scan area. The image goes back "
                                   "to Not analysed, ready to analyse.")
-        self.btn_apply.clicked.connect(self.apply_selected)
+        self.btn_apply.clicked.connect(lambda: self.apply_selected())
         b.addWidget(self.btn_apply)
         br = QHBoxLayout()
         br.setSpacing(SPACE.xs)
@@ -233,6 +235,9 @@ class ResolutionProfilesCard(CollapsibleSection):
 
         self.switch.setChecked(bool(state.ui_state.get(UI_STATE_KEY, False)))
         self.switch.toggled.connect(self.set_enabled)
+        # batch 4 (D-38): picking a profile fills wizard steps 1 and 2 for the
+        # whole image set (only a user pick -- not a programmatic reload)
+        self.combo.activated.connect(lambda _i: self.apply_to_image_set())
         state.current_image_changed.connect(lambda _u: self._sync_buttons())
         state.images_changed.connect(self._sync_buttons)
         state.setup_finished.connect(self._on_setup_finished)
@@ -318,12 +323,35 @@ class ResolutionProfilesCard(CollapsibleSection):
             return ticked
         return [self.state.current_uid] if self.state.current_uid is not None else []
 
+    def compact(self):
+        """Batch 4: hosted in the wizard's "Resolution profile" step, which
+        shows the title -- hide this section's own header and hand back the
+        switch so the step can show it in its header."""
+        self._header.hide()
+        self.header_trailing().removeWidget(self.switch)
+        return self.switch
+
+    def image_set_uids(self) -> List:
+        """Ticked images when 2 or more are ticked, else every image in the
+        analyzer (wizard: a profile pick fills steps 1 and 2 for all)."""
+        ticked = list(self._checked() or [])
+        if len(ticked) > 1:
+            return ticked
+        return [im.uid for im in self.state.images()]
+
+    def apply_to_image_set(self) -> List:
+        """A profile was picked in the dropdown: apply it to the image set."""
+        if not self.is_on() or self.selected() is None:
+            return []
+        return self.apply_selected(self.image_set_uids())
+
     # -- apply ---------------------------------------------------------------
-    def apply_selected(self) -> List:
+    def apply_selected(self, uids=None) -> List:
         p = self.selected()
         if p is None:
             return []
-        done, notes = apply_profile(self.state, p, self.target_uids())
+        done, notes = apply_profile(self.state, p,
+                                    self.target_uids() if uids is None else list(uids))
         for n in notes[:3]:
             self._toast("Profile not applied", n, "warning")
         if len(notes) > 3:
@@ -564,8 +592,13 @@ def install_resolution_profiles(page, store: Optional[ProfileStore] = None):
     state = page.state
     card = ResolutionProfilesCard(state, store, page.toasts,
                                   checked_uids=lambda: page.film.checked_uids(), parent=page)
-    host = page.params.parentWidget().layout()
-    host.insertWidget(host.indexOf(page.params), card)
+    step = getattr(page, "profile_step", None)
+    if step is not None:                      # batch 4: the wizard's optional first step
+        step.header_trailing().addWidget(card.compact())
+        step.add_widget(card)
+    else:
+        host = page.params.parentWidget().layout()
+        host.insertWidget(host.indexOf(page.params), card)
     tile = ProfileSummaryTile()
     ip = page.setup_tile.parentWidget().layout()
     ip.insertWidget(ip.indexOf(page.setup_tile) + 1, tile)

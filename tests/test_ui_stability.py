@@ -645,7 +645,7 @@ def test_pan_zoom_view_allowed(env, qtbot):
     for v in ("original", "overlay", "mask"):
         cv.set_view(v)
     st.set_overlay_opacity(0.4)
-    shell.analyze.opacity.setValue(70)
+    shell.analyze.canvas.opacity_pill.slider.setValue(70)   # batch 4: the pill only
     st.set_current_image(b.uid)
     st.set_current_image(a.uid)
     QTest.mouseMove(cv, QPoint(60, 60))

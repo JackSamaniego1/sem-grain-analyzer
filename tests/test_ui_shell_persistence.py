@@ -118,14 +118,15 @@ def test_analyze_page_reset_buttons(env, qtbot):
     qtbot.waitUntil(lambda: shell.state.session is not None, timeout=15000)
     st, ap = shell.state, shell.analyze
     im = st.current_image()
+    h, w = im.image_bgr.shape[:2]
+    st.set_scan_rect((0, 0, w, h))                   # step 1 done: step 2 ("More options") lit
+    ap.sync_wizard()
     assert ap.btn_cal_reset.isHidden()
     st.set_calibration(4.0, im.uid)
     assert not ap.btn_cal_reset.isHidden()
     ap.btn_cal_reset.click()
     assert im.px_override == 0.0 and ap.btn_cal_reset.isHidden()
-    ap.scan_this.setChecked(True)
-    ap._clear_scan()                                 # "Full image" for this image only
-    h, w = im.image_bgr.shape[:2]
+    st.set_scan_rect((0, 0, w, h), im.uid)           # Edit… "Use full image" + Apply to current
     assert im.scan_rect == (0, 0, w, h) and not ap.btn_scan_reset.isHidden()
     ap.btn_scan_reset.click()
     assert im.scan_rect is None

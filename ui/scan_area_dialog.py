@@ -61,6 +61,20 @@ class RectDrawCanvas(QWidget):
         """Returns (x, y, w, h) in image pixel coordinates, or None."""
         return self._rect
 
+    def set_rect(self, rect) -> None:
+        """Show an existing rectangle (x, y, w, h) as the current choice."""
+        if self._orig_pixmap is None or not rect:
+            return
+        x, y, w, h = (int(v) for v in rect)
+        W, H = self._orig_pixmap.width(), self._orig_pixmap.height()
+        x, y = max(0, min(x, W - 1)), max(0, min(y, H - 1))
+        w, h = max(1, min(w, W - x)), max(1, min(h, H - y))
+        self._rect = (x, y, w, h)
+        self._drag_start = None
+        self._drag_end = None
+        self.update()
+        self.rect_changed.emit()
+
     def clear_rect(self):
         self._rect = None
         self._drag_start = None
@@ -193,17 +207,25 @@ class RectDrawCanvas(QWidget):
 
 
 class ScanAreaDialog(QDialog):
-    """Dialog for setting the analysis scan rectangle."""
+    """Dialog for setting the analysis scan rectangle.
+
+    Batch 4 (D-38): opened by "Edit…" in wizard step 1.  The current scan
+    area is shown first; "Use full image" selects the whole frame; the
+    choice is applied with "Apply to current" or "Apply to all"
+    (``apply_scope`` = "image" | "all")."""
     scan_area_set = Signal(int, int, int, int)   # x, y, w, h  (image coords)
+    apply_scope = "all"
 
     def __init__(self, image_bgr: np.ndarray, current_rect=None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Set Scan Area — Drag a rectangle over the analysis region")
+        self.setWindowTitle("Set scan area — drag a rectangle over the analysis region")
         self.setMinimumSize(860, 680)
         self.resize(960, 740)
         self._image_bgr = image_bgr
         self._current_rect = current_rect
         self._build_ui()
+        if current_rect:
+            self.canvas.set_rect(current_rect)
 
     def _build_ui(self):
         lay = QVBoxLayout(self)
@@ -231,9 +253,10 @@ class ScanAreaDialog(QDialog):
 
         btn_row = QHBoxLayout()
 
-        btn_reset = QPushButton("Use full image")
-        btn_reset.clicked.connect(self._reset)
-        btn_row.addWidget(btn_reset)
+        self.btn_full = QPushButton("Use full image")
+        self.btn_full.setToolTip("Select the whole frame (nothing left out), then apply it")
+        self.btn_full.clicked.connect(self._reset)
+        btn_row.addWidget(self.btn_full)
 
         btn_row.addStretch()
 
@@ -241,11 +264,19 @@ class ScanAreaDialog(QDialog):
         btn_cancel.clicked.connect(self.reject)
         btn_row.addWidget(btn_cancel)
 
-        self.btn_apply = QPushButton("Set scan area")
+        self.btn_apply_image = QPushButton("Apply to current")
+        self.btn_apply_image.setMinimumHeight(36)
+        self.btn_apply_image.setToolTip("Use this scan area for the current image only")
+        self.btn_apply_image.setEnabled(False)
+        self.btn_apply_image.clicked.connect(lambda: self._apply("image"))
+        btn_row.addWidget(self.btn_apply_image)
+
+        self.btn_apply = QPushButton("Apply to all")
         self.btn_apply.setProperty("variant", "primary")
         self.btn_apply.setMinimumHeight(36)
+        self.btn_apply.setToolTip("Use this scan area for every image in the analyzer")
         self.btn_apply.setEnabled(False)
-        self.btn_apply.clicked.connect(self._apply)
+        self.btn_apply.clicked.connect(lambda: self._apply("all"))
         btn_row.addWidget(self.btn_apply)
 
         lay.addLayout(btn_row)
@@ -254,23 +285,24 @@ class ScanAreaDialog(QDialog):
         r = self.canvas.get_rect()
         if r:
             x, y, w, h = r
-            self.lbl_rect.setText(f"Scan area: x={x}, y={y}, width={w}, height={h} px")
+            H, W = self._image_bgr.shape[:2]
+            full = (x, y, w, h) == (0, 0, W, H)
+            self.lbl_rect.setText("Scan area: full image" if full else
+                                  f"Scan area: x={x}, y={y}, width={w}, height={h} px")
             self.btn_apply.setEnabled(True)
+            self.btn_apply_image.setEnabled(True)
 
     def _reset(self):
-        self.canvas.clear_rect()
-        self.lbl_rect.setText("No area set — drag a rectangle on the image")
-        self.btn_apply.setEnabled(False)
-        # Emit full image size
+        """Select the whole frame; Apply to current / Apply to all use it."""
         h, w = self._image_bgr.shape[:2]
-        self.scan_area_set.emit(0, 0, w, h)
-        self.accept()
+        self.canvas.set_rect((0, 0, w, h))
 
-    def _apply(self):
+    def _apply(self, scope: str = "all"):
         r = self.canvas.get_rect()
         if r is None:
             QMessageBox.warning(self, "No area", "Please drag a rectangle first.")
             return
+        self.apply_scope = scope
         x, y, w, h = r
         self.scan_area_set.emit(x, y, w, h)
         self.accept()

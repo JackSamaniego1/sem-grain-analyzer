@@ -397,6 +397,7 @@ def test_analyze_meta_row_offers_metadata_scale(shell, env, qtbot, tmp_path):
     im.cal_suggestion = (5.0, "FEI", "medium")
     st.sem_metadata_ready.emit(im.uid)
     a = shell.analyze
+    a.scale_more.set_expanded(True, animate=False)     # batch 4: step 2 "More options"
     assert a.meta_row.isVisibleTo(a) and "5 px/µm" in a.meta_lbl.text()
     assert a.btn_meta_cal.isVisibleTo(a)
     a._use_meta_cal()

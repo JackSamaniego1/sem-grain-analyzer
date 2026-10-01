@@ -128,7 +128,7 @@ def _open(qtbot, root, n=2):
 
 def _auto_find(shell, qtbot):
     st = shell.state
-    shell.analyze.setup_tile.btn_auto.click()
+    shell.analyze.auto_find()          # both wizard steps at once
     qtbot.waitUntil(lambda: not st.is_setting_up(), timeout=TIMEOUT)
 
 
@@ -176,7 +176,7 @@ def test_read_scale_label_never_raises(monkeypatch):
 def test_confirmed_label_fills_number_unit_and_scale_off_the_gui_thread(env, qtbot, fake_ocr):
     f = fake_ocr(_reading(20.0, "µm", confirm=False, bar_px=120))
     shell = _open(qtbot, env)
-    st, tile = shell.state, shell.analyze.setup_tile
+    st, tile = shell.state, shell.analyze.scale_row
     _auto_find(shell, qtbot)
     assert f.calls and threading.get_ident() not in f.threads      # worker thread only
     for im in st.images():
@@ -193,7 +193,7 @@ def test_confirmed_label_fills_number_unit_and_scale_off_the_gui_thread(env, qtb
 def test_unsure_label_prefilled_with_please_check_and_not_applied(env, qtbot, fake_ocr):
     fake_ocr(_reading(500.0, "nm", confirm=True, bar_px=120))
     shell = _open(qtbot, env)
-    st, tile = shell.state, shell.analyze.setup_tile
+    st, tile = shell.state, shell.analyze.scale_row
     _auto_find(shell, qtbot)
     for im in st.images():
         assert st.setup_issues(im) == ["scale"]                    # operator confirms
@@ -214,7 +214,7 @@ def test_unsure_label_prefilled_with_please_check_and_not_applied(env, qtbot, fa
 def test_value_set_by_hand_is_never_overwritten(env, qtbot, fake_ocr):
     f = fake_ocr(_reading(50.0, "µm", confirm=False, bar_px=120))
     shell = _open(qtbot, env)
-    st, tile = shell.state, shell.analyze.setup_tile
+    st, tile = shell.state, shell.analyze.scale_row
     _auto_find(shell, qtbot)
     im0 = st.current_image()
     st.set_bar_length(im0.uid, 20.0, same_bar=False)             # typed + Apply
@@ -231,7 +231,7 @@ def test_value_set_by_hand_is_never_overwritten(env, qtbot, fake_ocr):
 def test_length_being_typed_survives_a_label_read(env, qtbot, fake_ocr):
     fake_ocr(_reading(500.0, "nm", confirm=True, bar_px=120))
     shell = _open(qtbot, env)
-    st, tile = shell.state, shell.analyze.setup_tile
+    st, tile = shell.state, shell.analyze.scale_row
     _auto_find(shell, qtbot)
     tile.bar_unit.setCurrentText("µm")                            # operator starts typing
     tile.bar_len.setValue(7.0)
@@ -251,7 +251,7 @@ def test_missing_text_reader_says_reinstall_quietly(env, qtbot, fake_ocr, monkey
     shell = _open(qtbot, env)
     shown = []
     monkeypatch.setattr(shell.analyze, "_toast", lambda *a: shown.append(a))
-    st, tile = shell.state, shell.analyze.setup_tile
+    st, tile = shell.state, shell.analyze.scale_row
     _auto_find(shell, qtbot)
     assert all(st.setup_issues(im) == ["scale"] for im in st.images())
     assert tile.bar_len.value() == 0.0                             # left for the operator
@@ -266,7 +266,7 @@ def test_missing_text_reader_says_reinstall_quietly(env, qtbot, fake_ocr, monkey
 def test_nothing_read_leaves_the_box_as_before(env, qtbot, fake_ocr):
     fake_ocr(InfoBarReading(status="no_text"))
     shell = _open(qtbot, env)
-    tile = shell.analyze.setup_tile
+    tile = shell.analyze.scale_row
     _auto_find(shell, qtbot)
     assert tile.bar_row.isVisibleTo(tile) and tile.bar_len.value() == 0.0
     assert not tile.bar_hint.isVisibleTo(tile) and not tile.bar_check.isVisibleTo(tile)
@@ -277,7 +277,7 @@ def test_label_disagreeing_with_file_metadata_asks_to_check(env, qtbot, fake_ocr
     f = fake_ocr(_reading(100.0, "µm", confirm=True, bar_px=120, meta_ok=False,
                           note="disagrees with the file metadata"))
     shell = _open(qtbot, env)
-    st, tile = shell.state, shell.analyze.setup_tile
+    st, tile = shell.state, shell.analyze.scale_row
     for im in st.images():
         im.cal_suggestion = (3.0, "Zeiss", "high")                # file says 3 px/µm
     _auto_find(shell, qtbot)
@@ -295,7 +295,7 @@ def test_results_are_per_image_and_dropped_after_the_session_closes(env, qtbot, 
     readings = iter([_reading(20.0, "µm", True), _reading(5.0, "µm", True)])
     fake_ocr(lambda: next(readings))
     shell = _open(qtbot, env)
-    st, tile = shell.state, shell.analyze.setup_tile
+    st, tile = shell.state, shell.analyze.scale_row
     _auto_find(shell, qtbot)
     a, b = st.images()
     got = {a.uid: a.bar_read["um"], b.uid: b.bar_read["um"]}

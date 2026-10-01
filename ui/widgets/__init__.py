@@ -19,6 +19,7 @@ from ui.widgets.opacity_pill import OpacityPill
 from ui.widgets.overlay import ShortcutOverlay
 from ui.widgets.segmented import SegmentedControl
 from ui.widgets.selection_bar import SelectionBar
+from ui.widgets.step_card import StepCard, StepConnector
 from ui.widgets.toast import Toast, ToastManager
 
 __all__ = [
@@ -28,5 +29,5 @@ __all__ = [
     "Breadcrumb", "SearchBox", "EmptyState", "NavRail", "FadeStackedWidget",
     "Divider", "KeyValueList", "ShortcutOverlay", "SelectionBar",
     "ResponsiveToolbar", "WrapLabel", "wrap_elide", "AttentionRing", "pulse_attention",
-    "OpacityPill",
+    "OpacityPill", "StepCard", "StepConnector",
 ]

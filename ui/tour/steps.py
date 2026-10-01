@@ -111,7 +111,7 @@ def _sam_body(shell) -> str:
             "the most accurate on difficult micrographs, and the slowest. Pick "
             "AI-Assisted (GPU) when this PC has a supported NVIDIA graphics card (much "
             "faster), otherwise AI-Assisted (CPU); the results are the same. Minimum and "
-            "maximum grain size are under Advanced parameters.")
+            "maximum grain size are under Advanced….")
     try:
         if not shell.analyze.params.mode_cards["sam_astm"].available:
             text += (" The AI model is not installed on this computer; reinstall the Grain "
@@ -139,18 +139,18 @@ def default_steps() -> Tuple[TourStep, ...]:
                  "above the image strip (Ctrl+O). TIFF, PNG and JPEG are supported.",
                  kind="click", page="analyze", targets=("tourAddImages",),
                  fallbacks=(("tourAnalyzeEmpty",), (rail_anchor("analyze"),))),
-        TourStep("scale", "Set the scale",
-                 "Every image needs a scan area and a scale before analysis. Auto-find "
-                 "under the image does both for all images: the SEM info bar is left out "
-                 "and the scale comes from the image's own data or its scale bar. Use Set "
-                 "scale bar here to measure a bar by hand.",
-                 page="analyze", targets=("tourCalibration",),
+        TourStep("scale", "Set the scan area and scale",
+                 "Every image needs a scan area and a scale before analysis. Step 1 "
+                 "(All images) leaves the SEM info bar out of the scan area; step 2 reads "
+                 "the scale from the image's own data or its scale bar. Edit… lets you "
+                 "draw the area or measure the bar by hand.",
+                 page="analyze", targets=("wizard_step_scan", "wizard_step_scale"),
                  fallbacks=((rail_anchor("analyze"),),)),
         TourStep("sam", "Choose AI-assisted detection", _sam_body,
                  kind="click", page="analyze", targets=("tourSamMode",),
-                 fallbacks=(("tourDetectionMode",), (rail_anchor("analyze"),))),
+                 fallbacks=(("wizard_step_mode",), (rail_anchor("analyze"),))),
         TourStep("run", "Run the analysis", _run_body,
-                 kind="click", page="analyze", targets=("tourRunRing", "tourAnalyzeAll"),
+                 kind="click", page="analyze", targets=("wizard_step_run", "wizard_progress"),
                  fallbacks=((rail_anchor("analyze"),),)),
         TourStep("review", "Review the grains",
                  "Detected grains are outlined on the image. Use the filters to hide "
@@ -192,13 +192,11 @@ def tag_anchors(shell) -> None:
     a = shell.analyze
     tag("tourAnalyzeEmpty", lambda: a.empty.action_button)
     tag("tourAddImages", lambda: a.film.add_btn)
-    tag("tourCalibration", lambda: a.sec_cal)
+    # batch 4: the Analyze wizard's own objectNames (wizard_step_*, run_all, ...)
+    # are targeted directly and never renamed here
     tag("tourSetupTile", lambda: a.setup_tile)
-    tag("tourAutoFind", lambda: a.setup_tile.btn_auto)
-    tag("tourDetectionMode", lambda: a.params.sec_mode)
     tag("tourSamMode", lambda: a.params.mode_cards["sam_astm"])
     tag("tourRunRing", lambda: a.ring)
-    tag("tourAnalyzeAll", lambda: a.btn_all)
     r = shell.review
     tag("tourReviewCanvas", lambda: r.canvas)
     for k, attr in (("count", "c_count"), ("area", "c_area"), ("diam", "c_diam"),

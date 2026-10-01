@@ -137,7 +137,7 @@ def test_opacity_persists_across_images_pages_and_restart(analysed3, qtbot):
     a.canvas.opacity_pill.slider.setValue(35)
     a.canvas.opacity_pill.slider.sliderReleased.emit()               # drag ends
     assert st.overlay_opacity == pytest.approx(0.35)
-    assert a.opacity.value() == 35                                   # side slider in sync
+    assert not hasattr(a, "opacity")                                 # batch 4: no side slider
     assert load_ui_state()["overlay_opacity"] == pytest.approx(0.35)
     for uid in (uids[1], uids[2]):                                   # image switches
         _pick(shell, qtbot, uid)
@@ -232,11 +232,11 @@ def test_review_tree_status_updates(analysed3, qtbot):
 # ---------------------------------------------------------------- follow-ups a / b
 def test_tiny_bar_length_is_not_rounded_to_zero(qapp, qtbot):
     from ui.calibration_dialog import length_decimals_for, set_length_value, split_length_um
-    from ui.pages.analyze_page import SetupTile
+    from ui.pages.analyze_page import ScaleLengthRow
     v, unit = split_length_um(0.0000004)                              # 0.0004 nm
     assert unit == "nm" and v == pytest.approx(0.0004)
     assert length_decimals_for(50.0) == 3 and length_decimals_for(0.0004) >= 6
-    t = SetupTile()
+    t = ScaleLengthRow()
     qtbot.addWidget(t)
     t.set_bar_length_um(0.0000004)
     assert t.bar_len.value() > 0 and t.bar_len.text() != t.bar_len.specialValueText()
@@ -252,26 +252,37 @@ def test_tiny_bar_length_is_not_rounded_to_zero(qapp, qtbot):
     assert spin.value() == pytest.approx(0.0004)
 
 
+def _row(qtbot):
+    """Batch 4: the length row (wizard step 2) inside a host standing in
+    for its page."""
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+    from ui.pages.analyze_page import ScaleLengthRow
+    host = QWidget()
+    t = ScaleLengthRow()
+    QVBoxLayout(host).addWidget(t)
+    t.hide()
+    qtbot.addWidget(host)
+    t.host = host
+    return t
+
+
 def test_attention_waits_until_the_row_is_on_screen(qapp, qtbot):
-    from ui.pages.analyze_page import SetupTile
     from ui.widgets.attention import AttentionRing
-    t = SetupTile()
-    qtbot.addWidget(t)
-    t.resize(900, 200)
+    t = _row(qtbot)
+    t.host.resize(900, 200)
     t.bar_row.show()                        # row wanted, but its page is not shown yet
     assert not t.bar_row.isVisible()
     assert t.draw_attention_to_length()     # deferred, not dropped
     assert t.attention_pending()
     assert getattr(t.bar_len, "_attention_ring", None) is None
-    t.show()                                # page appears -> pulse
+    t.host.show()                           # page appears -> pulse
     qtbot.waitUntil(lambda: isinstance(getattr(t.bar_len, "_attention_ring", None),
                                        AttentionRing), timeout=3000)
     assert not t.attention_pending()
     # a hidden row (nothing to enter) never queues a pulse
-    t2 = SetupTile()
-    qtbot.addWidget(t2)
+    t2 = _row(qtbot)
     assert not t2.draw_attention_to_length() and not t2.attention_pending()
-    t2.show()
+    t2.host.show()
     t2.bar_row.show()
     qtbot.wait(50)
     assert getattr(t2.bar_len, "_attention_ring", None) is None
@@ -354,38 +365,39 @@ COMMIT_WAIT = 600
 
 
 def test_deferred_attention_is_cancelled_and_expires(qapp, qtbot, monkeypatch):
-    import ui.pages.analyze_page as ap
-    t = ap.SetupTile()
-    qtbot.addWidget(t)
+    t = _row(qtbot)
     t.bar_row.show()
     assert t.draw_attention_to_length() and t.attention_pending()
     t.cancel_attention()                                    # image / scale changed
     assert not t.attention_pending()
-    t.show()
+    t.host.show()
     qtbot.wait(50)
     assert getattr(t.bar_len, "_attention_ring", None) is None
     # expiry: a pulse requested long before the row shows is dropped
-    t2 = ap.SetupTile()
-    qtbot.addWidget(t2)
+    t2 = _row(qtbot)
     t2._attention_expiry.setInterval(30)
     t2.bar_row.show()
     assert t2.draw_attention_to_length()
     qtbot.waitUntil(lambda: not t2.attention_pending(), timeout=2000)
-    t2.show()
+    t2.host.show()
     qtbot.wait(50)
     assert getattr(t2.bar_len, "_attention_ring", None) is None
     # the tile going away with a pulse queued is harmless (timer owned by the tile)
-    t3 = ap.SetupTile()
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+    host3 = QWidget()
+    from ui.pages.analyze_page import ScaleLengthRow
+    t3 = ScaleLengthRow()
+    QVBoxLayout(host3).addWidget(t3)
     t3.bar_row.show()
     t3.draw_attention_to_length()
-    t3.show()
-    t3.deleteLater()
+    host3.show()
+    host3.deleteLater()
     qtbot.wait(50)
 
 
 def test_analyze_page_cancels_deferred_attention_on_image_change(analysed3, qtbot):
     shell = analysed3
-    tile = shell.analyze.setup_tile
+    tile = shell.analyze.scale_row
     shell.go("review")                                      # Analyze not on screen
     tile.bar_row.show()
     assert tile.draw_attention_to_length() and tile.attention_pending()

@@ -57,13 +57,28 @@ def make_session(root: Path, n: int = 2, label: str = "Session A", project: str 
 
 def confirm_setup(shell, qtbot, px_per_um: float = 2.0, timeout: int = 60000) -> None:
     """UX-02 gate: give an uncalibrated session a scale (as the operator
-    would with Set scale bar) and click "Auto-find scan area & scale bar
-    (all images)", then wait until every image is ready for analysis."""
+    would with Set scale bar), run wizard steps 1 and 2 ("All images") and
+    pick the detection mode shown (step 3), then wait until every image is
+    ready for analysis."""
     st = shell.state
+    a = shell.analyze
     qtbot.waitUntil(lambda: not st.is_loading(), timeout=timeout)
     if px_per_um and all(st.px_for(im) <= 0 for im in st.images()):
         st.set_calibration(px_per_um)
-    shell.analyze.setup_tile.btn_auto.click()
+    a.sync_wizard()
+    a.btn_scan_all.click()                                   # step 1
+    qtbot.waitUntil(lambda: not st.is_setting_up(), timeout=timeout)
+    a.sync_wizard()
+    a.btn_scale_all.click()                                  # step 2
     qtbot.waitUntil(lambda: not st.is_setting_up(), timeout=timeout)
     assert all(st.setup_ready(im) for im in st.images()), \
         [st.setup_issues(im) for im in st.images()]
+    choose_mode(shell)
+
+
+def choose_mode(shell, mode=None) -> None:
+    """Wizard step 3: the operator picks a detection mode (default: the one
+    shown) -- saved with the session, which lights step 4."""
+    p = shell.analyze.params
+    p.set_mode(mode or p.mode(), emit=True)
+    shell.analyze.sync_wizard()

@@ -142,7 +142,22 @@ def set_length_value(spin, value: float) -> None:
 
 class CalibrationDialog(QDialog):
     calibration_set = Signal(float)   # px_per_um; ``apply_scope`` = "image" | "all"
+    metadata_requested = Signal()     # "Use metadata scale" (current image)
     apply_scope = "all"
+
+    def offer_metadata_scale(self, px_per_um: float, source: str = "") -> None:
+        """Show "Use metadata scale" (the file's own pixel size)."""
+        if px_per_um and px_per_um > 0:
+            self.btn_meta.setText(f"Use metadata scale ({px_per_um:.4g} px/µm)")
+            if source:
+                self.btn_meta.setToolTip(f"Use the pixel size stored in this image file "
+                                         f"({source}) as this image's scale")
+            self.btn_meta.show()
+
+    def _use_metadata(self) -> None:
+        self.apply_scope = "image"
+        self.metadata_requested.emit()
+        self.accept()
 
     def __init__(self, image_bgr: np.ndarray, auto_bar_px=None, parent=None,
                  mode: Optional[str] = None, prefs_path=None):
@@ -268,14 +283,21 @@ class CalibrationDialog(QDialog):
         btn_cancel.clicked.connect(self.reject)
         btn_row.addWidget(btn_cancel)
         # UX-03: this image only, or every image in the analyzer
-        self.btn_apply_image = QPushButton("Apply to this image only")
+        # batch 4 (D-38): the file's own scale, offered when the page knows one
+        self.btn_meta = QPushButton("Use metadata scale")
+        self.btn_meta.setToolTip("Use the pixel size stored in this image file by the "
+                                 "microscope as this image's scale")
+        self.btn_meta.clicked.connect(self._use_metadata)
+        self.btn_meta.hide()
+        btn_row.insertWidget(1, self.btn_meta)
+        self.btn_apply_image = QPushButton("Apply to current")
         self.btn_apply_image.setMinimumHeight(36)
         self.btn_apply_image.setToolTip("Use this scale for the current image only "
                                         "(e.g. a different magnification)")
         self.btn_apply_image.setEnabled(False)
         self.btn_apply_image.clicked.connect(lambda: self._apply("image"))
         btn_row.addWidget(self.btn_apply_image)
-        self.btn_apply = QPushButton("Apply to all images")
+        self.btn_apply = QPushButton("Apply to all")
         self.btn_apply.setProperty("variant", "primary")
         self.btn_apply.setMinimumHeight(36)
         self.btn_apply.setToolTip("Use this scale for every image in the analyzer")

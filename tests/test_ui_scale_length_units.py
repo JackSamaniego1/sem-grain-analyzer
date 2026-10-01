@@ -19,9 +19,16 @@ def test_split_length_um_picks_natural_unit():
 
 
 def _tile(qtbot):
-    from ui.pages.analyze_page import SetupTile
-    t = SetupTile()
-    qtbot.addWidget(t)
+    """Batch 4: the length row moved from the tile under the image into
+    wizard step 2 (ScaleLengthRow); hosted like it is there."""
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+    from ui.pages.analyze_page import ScaleLengthRow
+    host = QWidget()
+    t = ScaleLengthRow()
+    QVBoxLayout(host).addWidget(t)
+    t.hide()
+    qtbot.addWidget(host)
+    t.host = host
     return t
 
 
@@ -67,8 +74,8 @@ def test_attention_ring_pulses_then_goes(qapp, qtbot):
     from ui.design.theme import reduced_motion, set_reduced_motion
     from ui.widgets.attention import AttentionRing
     t = _tile(qtbot)
-    t.resize(900, 200)
-    t.show()
+    t.host.resize(900, 200)
+    t.host.show()
     assert not t.draw_attention_to_length()                  # row hidden -> nothing
     t.bar_row.show()
     was = reduced_motion()
@@ -89,9 +96,12 @@ def test_autofind_highlights_and_focuses_length_box(env, qtbot):  # noqa: F811
     lot = next(p for p in sample.iterdir() if p.is_dir() and (p / "lot.json").exists())
     rec = next(d for d in lot.iterdir() if (d / "manifest.json").exists())
     shell = _open(qtbot, rec)
-    st, tile = shell.state, shell.analyze.setup_tile
+    st, tile = shell.state, shell.analyze.scale_row
     shell.activateWindow()
-    tile.btn_auto.click()
+    shell.analyze.btn_scan_all.click()                       # wizard step 1
+    qtbot.waitUntil(lambda: not st.is_setting_up(), timeout=TIMEOUT)
+    shell.analyze.sync_wizard()
+    shell.analyze.btn_scale_all.click()                      # step 2: finds the bar
     qtbot.waitUntil(lambda: not st.is_setting_up(), timeout=TIMEOUT)
     qtbot.waitUntil(lambda: getattr(tile.bar_len, "_attention_ring", None) is not None,
                     timeout=5000)

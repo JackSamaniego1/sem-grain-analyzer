@@ -124,10 +124,14 @@ def test_ux01_modes_ai_first_default_no_automatic(env, qtbot, monkeypatch):
 def test_ux01_settings_panel_order(env, qtbot):
     shell = _open(qtbot, make_session(env, 1))
     a = shell.analyze
+    # batch 4 (D-38): step 3 = mode tiles, then "Advanced…" (parameters, filters)
     lay = a.params.layout()
     order = [lay.itemAt(i).widget() for i in range(lay.count()) if lay.itemAt(i).widget()]
-    assert order == [a.params.sec_mode, a.sec_cal, a.sec_scan, a.filters_host,
-                     a.params.sec_invalid, a.params.sec_adv, a.sec_overlay]
+    assert order == [a.params.sec_mode, a.params.advanced]
+    adv = a.params.advanced.content_layout()
+    inside = [adv.itemAt(i).widget() for i in range(adv.count()) if adv.itemAt(i).widget()]
+    assert inside[:2] == [a.params.sec_adv, a.filters_host]
+    assert not a.params.advanced.is_expanded()              # collapsed by default
     shell.close()
 
 
@@ -138,7 +142,9 @@ def test_ux02_gate_blocks_until_scan_and_scale_confirmed(env, qtbot):
     st, a = shell.state, shell.analyze
     a.params.set_mode("threshold")
     assert all(st.setup_issues(im) == ["scan", "scale"] for im in st.images())
-    a.btn_all.click()
+    a.sync_wizard()
+    assert not a.btn_all.isEnabled()                        # batch 4: step 4 greyed
+    a.analyze_all()                                         # F5: the gate explains why
     assert not a.queue.is_running()
     hint = shell.setup_hint
     qtbot.waitUntil(lambda: hint.is_active(), timeout=5000)
@@ -165,7 +171,7 @@ def test_ux02_autofind_info_bar_scale_bar_and_length_entry(env, qtbot):
     rec = next(d for d in lot.iterdir() if (d / "manifest.json").exists())
     shell = _open(qtbot, rec)
     st, a = shell.state, shell.analyze
-    a.setup_tile.btn_auto.click()
+    a.auto_find()                                           # wizard steps 1 + 2
     qtbot.waitUntil(lambda: not st.is_setting_up(), timeout=TIMEOUT)
     for im in st.images():
         h, w = im.image_bgr.shape[:2]
@@ -175,11 +181,12 @@ def test_ux02_autofind_info_bar_scale_bar_and_length_entry(env, qtbot):
         assert im.bar_px == pytest.approx(120, abs=3)       # scale bar found
         assert st.setup_issues(im) == ["scale"]
     im0 = st.current_image()
-    assert a.setup_tile.bar_row.isVisibleTo(a.setup_tile)
-    a.setup_tile.bar_len.setValue(20.0)                     # unit dropdown defaults to µm
-    assert a.setup_tile.bar_unit.currentText() == "µm"
-    a.setup_tile.bar_same.setChecked(True)
-    a.setup_tile.btn_bar.click()
+    row = a.scale_row                                       # batch 4: in wizard step 2
+    assert row.isVisibleTo(a)
+    row.bar_len.setValue(20.0)                              # unit dropdown defaults to µm
+    assert row.bar_unit.currentText() == "µm"
+    row.bar_same.setChecked(True)
+    row.btn_bar.click()
     for im in st.images():                                  # same bar -> same scale
         assert st.px_for(im) == pytest.approx(im.bar_px / 20.0)
         assert st.setup_ready(im)
@@ -196,7 +203,8 @@ def test_ux03_scale_bar_this_image_only_or_all(env, qtbot):
     im0, im1, im2 = st.images()
     dlg = CalibrationDialog(image_bgr=im0.image_bgr)
     qtbot.addWidget(dlg)
-    assert dlg.btn_apply_image.text() == "Apply to this image only"
+    assert dlg.btn_apply_image.text() == "Apply to current"
+    assert dlg.btn_apply.text() == "Apply to all"
     got = []
     dlg.calibration_set.connect(got.append)
     dlg._px_distance = 100.0
@@ -235,7 +243,9 @@ def test_ux05_overlay_opacity_slider_persisted(env, qtbot):
     shell = _open(qtbot, make_session(env, 1))
     a = shell.analyze
     assert shell.state.overlay_opacity == 1.0
-    a.opacity.setValue(45)
+    pill = a.canvas.opacity_pill                            # batch 4: the on-image pill
+    pill.slider.setValue(45)
+    pill.slider.sliderReleased.emit()
     assert shell.state.overlay_opacity == pytest.approx(0.45)
     assert a.canvas.overlay_opacity() == pytest.approx(0.45)
     assert load_ui_state()["overlay_opacity"] == pytest.approx(0.45)

@@ -321,10 +321,12 @@ def test_journey_uncalibrated_image_report_flags_missing_calibration(env, qtbot)
     # spotlighted (tour-style) with the gate text and nothing starts ----
     from ui.pages.analyze_page import GATE_TEXT
     shell.analyze.params.set_mode("threshold")
-    shell.analyze.setup_tile.btn_auto.click()
+    shell.analyze.auto_find()
     qtbot.waitUntil(lambda: not st.is_setting_up(), timeout=TIMEOUT)
     assert st.setup_issues(im) == ["scale"]
-    shell.analyze.btn_all.click()
+    shell.analyze.sync_wizard()
+    assert not shell.analyze.btn_all.isEnabled()          # batch 4: step 4 is greyed
+    shell.analyze.analyze_all()                           # F5 still meets the gate
     assert not shell.analyze.queue.is_running()
     hint = shell.setup_hint
     qtbot.waitUntil(lambda: hint.is_active() and hint.overlay.callout.isVisible(),

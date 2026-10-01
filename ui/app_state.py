@@ -98,6 +98,11 @@ def flush_ui_state(timeout: float = 10.0) -> bool:
     return ui_state_store.flush(timeout)
 
 
+#: batch 4 (D-38): wizard state kept with the session's detection parameters
+#: (a nested dict: params_from_dict and the reports ignore it)
+WIZARD_PARAMS_KEY = "wizard"
+
+
 def params_to_dict(p: DetectionParams) -> dict:
     return asdict(p)
 
@@ -223,6 +228,9 @@ class ImageDoc:
     # (app_state._scale_reading_summary dict; None = not read).  In memory
     # only -- the applied scale itself is saved as before.
     bar_read: Optional[dict] = None
+    # batch 4 (D-38): where Auto-find found the scale-bar line (x, y, w, h;
+    # in memory only) -- highlighted on the canvas by step 2 of the wizard
+    bar_rect: Optional[tuple] = None
     # UPDATE 4 item 11: acquisition details (core.image_info.ImageInfo; None =
     # not read yet).  Saved next to the manifest (ui.image_details).
     image_info: Optional[Any] = None
@@ -677,6 +685,8 @@ def setup_probe(image_bgr, path=None, want_meta: bool = True, want_ocr: bool = F
             bar = find_scale_bar_line(image_bgr, info_bar=ib)
             if bar and bar.get("length_px", 0) >= 10:
                 out["bar_px"] = float(bar["length_px"])
+                if bar.get("rect"):              # batch 4 (D-38): highlighted on the canvas
+                    out["bar_rect"] = tuple(int(v) for v in bar["rect"])
             else:
                 bar = None
     except Exception:
@@ -1087,6 +1097,7 @@ class AppState(QObject):
         self._save_timer.timeout.connect(self.save_now)
         self._records_pending = 0
         self._setup_pending: set = set()
+        self._setup_parts: dict = {}               # uid -> frozenset of "scan" / "scale"
         self._setup_stats: dict = {}
         self._px_lru: "OrderedDict[object, int]" = OrderedDict()   # uid -> bytes
         self._px_pins: Dict[object, int] = {}
@@ -1686,6 +1697,7 @@ class AppState(QObject):
         self.overlays.clear()
         self._records_pending = 0
         self._setup_pending = set()
+        self._setup_parts = {}
         self.undo_stack.clear()
         self._set_save_state("none", "")
         self.session_closed.emit()
@@ -1857,16 +1869,19 @@ class AppState(QObject):
     def is_setting_up(self) -> bool:
         return bool(self._setup_pending)
 
-    def auto_setup(self, uids=None) -> int:
+    def auto_setup(self, uids=None, parts=None) -> int:
         """"Auto-find scan area & scale bar" on the given images (default:
         every image in the analyzer), off the GUI thread.  Per image: the
         SEM info bar becomes the scan area boundary (else the full frame),
         and the scale comes from the file's own metadata or from the scale
         bar found in the info bar.  Values the operator set by hand are
-        kept.  Returns how many images are being examined."""
+        kept.  ``parts`` (batch 4, D-38): ``{"scan"}`` sets only the scan
+        area (wizard step 1, no label reading), ``{"scale"}`` only the scale
+        (step 2); default both.  Returns how many images are being examined."""
         doc = self.session
         if doc is None:
             return 0
+        parts = frozenset(parts) if parts else frozenset(("scan", "scale"))
         wanted = None if uids is None else set(uids)
         busy = self.analysis_lock.busy_uids()
         targets = [im for im in doc.images if (wanted is None or im.uid in wanted)
@@ -1882,13 +1897,25 @@ class AppState(QObject):
             self._setup_stats = dict(total=0, done=0, info_bar=0, full_frame=0, kept_scan=0,
                                      scale_meta=0, scale_bar=0, kept_scale=0,
                                      needs_length=0, no_scale=0, label_read=0,
-                                     label_check=0, ocr_missing=0)
+                                     label_check=0, ocr_missing=0, parts=set())
+            self._setup_parts = {}
         self._setup_stats["total"] += len(targets)
+        self._setup_stats.setdefault("parts", set()).update(parts)
         for im in targets:
             self._setup_pending.add(im.uid)
+            self._setup_parts[im.uid] = parts
         self.setup_progress.emit(self._setup_stats["done"], self._setup_stats["total"])
         from ui.image_details import label_reading
+        scale = "scale" in parts
         for im in targets:
+            if not scale:
+                # step 1: the info bar (and the bar line) only -- quick
+                run_task(setup_probe, im.image_bgr, str(im.path) if im.path else None,
+                         False, False, None, None, False,
+                         on_done=lambda out, im=im: self._apply_setup(doc, im, out),
+                         on_error=lambda _m, im=im: self._apply_setup(doc, im, {}),
+                         pool=filter_pool())
+                continue
             # UPDATE 4 item 4: read the scale-bar label unless the operator
             # already set this image's scale by hand.  Item 11: a label the
             # details reading found is used once instead of reading again,
@@ -1921,12 +1948,15 @@ class AppState(QObject):
         if self.session is not doc or im.uid not in self._setup_pending:
             return
         self._setup_pending.discard(im.uid)
+        parts = self._setup_parts.pop(im.uid, None) or frozenset(("scan", "scale"))
         if out.get("details"):                     # UPDATE 4 item 11: same reading
             self.image_details.adopt(doc, im, out["details"])
         st = self._setup_stats
         st["done"] += 1
         if out.get("shape") and not im.shape:
             im.shape = tuple(out["shape"])
+        if out.get("bar_rect"):
+            im.bar_rect = tuple(out["bar_rect"])
         if self.analysis_lock.is_busy(im.uid):
             # UPDATE 4 item 7: queued for analysis meanwhile -- its scan area
             # and scale are already handed to the analysis; keep them
@@ -1938,8 +1968,10 @@ class AppState(QObject):
                 im.info_bar = info
             # scan area
             ar = info.get("analysis_rect")
-            if im.scan_source == "manual" or (doc.scan_rect is not None and im.scan_rect is None
-                                              and not ar):
+            if "scan" not in parts:
+                pass                               # wizard step 2: the scale only
+            elif im.scan_source == "manual" or (doc.scan_rect is not None
+                                                and im.scan_rect is None and not ar):
                 st["kept_scan"] += 1
             else:
                 if ar:
@@ -1968,7 +2000,9 @@ class AppState(QObject):
             sure = read_um > 0 and not rd.get("confirm", True)
             agrees = im.bar_um <= 0 or abs(im.bar_um - read_um) <= 0.01 * read_um
             cal = im.cal_suggestion
-            if im.scale_source == "manual":
+            if "scale" not in parts:
+                pass                           # wizard step 1: the scan area only
+            elif im.scale_source == "manual":
                 st["kept_scale"] += 1          # never overwrite what the operator set
             elif cal and str(cal[2]) in ("high", "medium") and float(cal[0]) > 0:
                 im.px_override = float(cal[0])
@@ -2384,10 +2418,28 @@ class AppState(QObject):
         self.setup_changed.emit()
         self.schedule_save()
 
-    def set_params(self, params: DetectionParams) -> None:
+    def mode_chosen(self) -> bool:
+        """Batch 4 (D-38) wizard step 3: the operator has picked the
+        detection mode for this session (the mode itself always has a
+        default).  Saved with the session's detection parameters as a
+        nested dict (reports skip nested values); a session that already
+        holds results counts as chosen."""
+        doc = self.session
+        if doc is None:
+            return False
+        if (doc.params.get(WIZARD_PARAMS_KEY) or {}).get("mode_chosen"):
+            return True
+        return any(im.raw is not None or im.result is not None for im in doc.images)
+
+    def set_params(self, params: DetectionParams, mode_chosen: bool = False) -> None:
         if self.session is None:
             return
         d = params_to_dict(params)
+        wiz = dict(self.session.params.get(WIZARD_PARAMS_KEY) or {})
+        if mode_chosen:
+            wiz["mode_chosen"] = True
+        if wiz:
+            d[WIZARD_PARAMS_KEY] = wiz
         if d != self.session.params:
             self.session.params = d
             self._meta_dirty = True

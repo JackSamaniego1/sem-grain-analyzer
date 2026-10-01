@@ -643,7 +643,11 @@ class AppShell(QMainWindow):
                 if sug else None
             dlg.prefill(bar, length)
         n = len(self.state.images())
-        dlg.btn_apply.setText(f"Apply to all {n} images" if n > 1 else "Apply to all images")
+        dlg.btn_apply.setToolTip(f"Use this scale for all {n} images in the analyzer"
+                                 if n > 1 else "Use this scale for every image in the analyzer")
+        if im.cal_suggestion:                   # batch 4: "Use metadata scale" lives here
+            dlg.offer_metadata_scale(float(im.cal_suggestion[0]), str(im.cal_suggestion[1]))
+            dlg.metadata_requested.connect(self.analyze.use_metadata_scale)
 
         def apply(px):
             per_image = dlg.apply_scope == "image"
@@ -731,9 +735,9 @@ class AppShell(QMainWindow):
     def _open_scan_area(self, im, pixels) -> None:
         from ui.scan_area_dialog import ScanAreaDialog
         dlg = ScanAreaDialog(image_bgr=pixels, current_rect=self.state.scan_for(im), parent=self)
-        this_only = self.analyze.scan_this.isChecked()
 
         def apply(x, y, w, h):
+            this_only = dlg.apply_scope == "image"       # batch 4: Apply to current / all
             H, W = pixels.shape[:2]
             full = w >= W and h >= H
             # session: full frame = no scan area; this image only: an explicit
@@ -1034,7 +1038,7 @@ class AppShell(QMainWindow):
             old.finish()
         self.search_popup.hide()
         step = TourStep("setup_gate", title, text, kind="point", page="analyze",
-                        targets=("tourSetupTile",), fallbacks=(("tourCalibration",),))
+                        targets=("tourSetupTile",), fallbacks=(("wizard_step_scan",),))
         self.setup_hint = TourController(self, [step], hint=True)
         self.setup_hint.start()
 

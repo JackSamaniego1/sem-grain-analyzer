@@ -179,7 +179,7 @@ def test_missing_anchor_is_skipped_both_directions(shell):
 def test_hidden_target_uses_fallback(shell):
     from ui.tour import TourController, TourStep
     from ui.tour.steps import rail_anchor
-    step = TourStep("run", "Run", "x", page="analyze", targets=("tourAnalyzeAll",),
+    step = TourStep("run", "Run", "x", page="analyze", targets=("run_all",),
                     fallbacks=((rail_anchor("analyze"),),))
     t = TourController(shell, [step])
     t.start()                                          # no session: Analyze shows its empty state
@@ -214,11 +214,13 @@ def test_analyze_targets_resolve_with_open_session(env, shell, qtbot):
     steps = {s.key: s for s in default_steps()}
     shell.go("analyze")
     qtbot.wait(50)
-    for key, name in (("add_images", "tourAddImages"), ("scale", "tourCalibration"),
-                      ("run", "tourAnalyzeAll")):
+    for key, name in (("add_images", "tourAddImages"), ("scale", "wizard_step_scale"),
+                      ("run", "run_all")):
         from PySide6.QtWidgets import QWidget
         w = shell.findChild(QWidget, name)
         assert w.isVisible(), key
+        from ui.tour.controller import _ensure_visible
+        _ensure_visible(w)                # batch 4: the run step sits low in the sidebar
         r = shell.tour.resolve(steps[key])
         c = QRectF(QRect(w.mapTo(shell, w.rect().topLeft()), w.size())).center()
         assert r.contains(c), key

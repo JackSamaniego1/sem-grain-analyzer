@@ -83,6 +83,8 @@ class GrainCanvas(ThemeAware, QWidget):
         self._overlay_opacity = 1.0     # UX-05
         self._scan_rect = None
         self._info_bar_rect = None      # DET-05: detected SEM data bar (never analysed)
+        self._scale_bar_rect = None     # batch 4: scale bar found by Auto-find (step 2)
+        self._bar_glow = 0.0
         self._grains: Dict[int, object] = {}
         self._labels = None
         self._excluded: Dict[int, list] = {}
@@ -345,6 +347,26 @@ class GrainCanvas(ThemeAware, QWidget):
 
     def info_bar_rect(self):
         return self._info_bar_rect
+
+    def set_scale_bar_rect(self, rect, pulse: bool = False) -> None:
+        """Batch 4 (D-38): outline the scale bar Auto-find found (wizard
+        step 2); ``pulse`` draws attention to it once (200 ms tween)."""
+        r = tuple(int(v) for v in rect) if rect else None
+        if r != getattr(self, "_scale_bar_rect", None):
+            self._scale_bar_rect = r
+            self.update()
+        if r and pulse:
+            from ui.widgets._base import animate_value
+            from ui.design.tokens import MOTION
+            self._bar_glow = 1.0
+            animate_value(self, 1.0, 0.0, MOTION.slow * 4, self._set_bar_glow)
+
+    def _set_bar_glow(self, v) -> None:
+        self._bar_glow = float(v)
+        self.update()
+
+    def scale_bar_rect(self):
+        return getattr(self, "_scale_bar_rect", None)
 
     def selected(self) -> List[int]:
         return list(self._selected)
@@ -657,6 +679,27 @@ class GrainCanvas(ThemeAware, QWidget):
             p.setPen(pen)
             p.setBrush(Qt.NoBrush)
             p.drawRect(QRectF(x, y, w, h))
+        sb = getattr(self, "_scale_bar_rect", None)
+        if sb:
+            x, y, w, h = sb
+            pad = 4.0 / max(self._scale, 1e-6)
+            glow = float(getattr(self, "_bar_glow", 0.0))
+            acc = qcolor(t.accent.text)
+            if glow > 0.01:
+                halo = QColor(acc)
+                halo.setAlphaF(0.55 * glow)
+                hp = QPen(halo, 4.0 + 8.0 * glow)
+                hp.setCosmetic(True)
+                p.setPen(hp)
+                p.setBrush(Qt.NoBrush)
+                p.drawRoundedRect(QRectF(x - pad, y - pad, w + 2 * pad, h + 2 * pad), pad, pad)
+            pen = QPen(acc, 2.0)
+            pen.setCosmetic(True)
+            p.setPen(pen)
+            fill = QColor(acc)
+            fill.setAlphaF(0.18)
+            p.setBrush(fill)
+            p.drawRoundedRect(QRectF(x - pad, y - pad, w + 2 * pad, h + 2 * pad), pad, pad)
         if self._hover_path is not None and self._hover_id not in self._selected:
             pen = QPen(QColor(255, 255, 255, 220), 1.4)
             pen.setCosmetic(True)

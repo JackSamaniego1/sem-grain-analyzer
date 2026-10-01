@@ -53,6 +53,11 @@ class _Header(ThemeAware, QWidget):
             self.activated.emit()
         super().mouseReleaseEvent(e)
 
+    def changeEvent(self, e) -> None:
+        if e.type() == e.Type.EnabledChange:      # greyed with a locked wizard step
+            self.update()
+        super().changeEvent(e)
+
     def keyPressEvent(self, e) -> None:
         if e.key() in (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter):
             self.activated.emit()
@@ -76,7 +81,8 @@ class _Header(ThemeAware, QWidget):
         path = QPainterPath(QPointF(-2.5, -5))
         path.lineTo(QPointF(2.5, 0))
         path.lineTo(QPointF(-2.5, 5))
-        pen = QPen(qcolor(t.text.secondary), 1.6)
+        on = self.isEnabled()
+        pen = QPen(qcolor(t.text.secondary if on else t.text.disabled), 1.6)
         pen.setCapStyle(Qt.RoundCap)
         pen.setJoinStyle(Qt.RoundJoin)
         p.setPen(pen)
@@ -84,7 +90,7 @@ class _Header(ThemeAware, QWidget):
         p.drawPath(path)
         p.restore()
         p.setFont(ui_font(TYPE.body_strong))
-        p.setPen(qcolor(t.text.primary))
+        p.setPen(qcolor(t.text.primary if on else t.text.disabled))
         p.drawText(QRectF(SPACE.md + 20, 0, r.width() - 60, r.height()),
                    Qt.AlignVCenter | Qt.AlignLeft, self.title)
 

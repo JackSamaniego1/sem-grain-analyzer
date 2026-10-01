@@ -248,8 +248,6 @@ def capture(out_dir: str) -> List[str]:
         imgs = state.images()
         state.set_current_image(imgs[1].uid)
         _pump(app, 300)
-        win.analyze.params.sec_mode.set_expanded(True, animate=False)
-        win.analyze.sec_scan.set_expanded(True, animate=False)
         cur = state.current_image()
         from core.scale_bar import find_scale_bar_line
         bar = find_scale_bar_line(cur.image_bgr)
@@ -264,12 +262,20 @@ def capture(out_dir: str) -> List[str]:
         p = os.path.join(out_dir, "app_analyze.png")
         win.grab().save(p)
         saved.append(p)
-        # side panel: metadata scale row + info-bar chip (DET-05 / INN-05)
-        win.analyze.params.sec_mode.set_expanded(False, animate=False)
+        # batch 4 (D-38): the step wizard, and the page at a laptop size
+        win.analyze.scale_more.set_expanded(True, animate=False)
         _pump(app, 400)
         p = os.path.join(out_dir, "app_analyze_side.png")
-        win.analyze.params.grab().save(p)
+        win.analyze.side_scroll.widget().grab().save(p)
         saved.append(p)
+        win.analyze.scale_more.set_expanded(False, animate=False)
+        win.resize(1366, 768)
+        _pump(app, 900)
+        p = os.path.join(out_dir, "app_analyze_1366.png")
+        win.grab().save(p)
+        saved.append(p)
+        win.resize(1600, 960)
+        _pump(app, 500)
 
         # ---- Calibration dialog: scale bar found, length from metadata
         from ui.calibration_dialog import CalibrationDialog, suggest_bar_length_um
