@@ -57,6 +57,10 @@ class Card(ThemeAware, QFrame):
         self._title = label(title or "", "h3", parent=self._header)
         self._subtitle = label(subtitle or "", "caption", parent=self._header)
         self._subtitle.setVisible(bool(subtitle))
+        # round 3c (display scaling): long titles wrap instead of forcing the
+        # card -- and its whole column -- wider than the window
+        self._title.setWordWrap(True)
+        self._subtitle.setWordWrap(True)
         titles.addWidget(self._title)
         titles.addWidget(self._subtitle)
         hl.addLayout(titles, 1)

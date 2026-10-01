@@ -1166,6 +1166,7 @@ class ProjectsPage(QWidget):
         # --- tree panel
         left = Panel("right")
         left.setMinimumWidth(240)
+        self._tree_panel = left
         lv = QVBoxLayout(left)
         lv.setContentsMargins(SPACE.md, SPACE.lg, SPACE.md, SPACE.md)
         lv.setSpacing(SPACE.sm)
@@ -1212,17 +1213,19 @@ class ProjectsPage(QWidget):
         self.btn_secondary.clicked.connect(self.import_files)
         self.btn_more = IconButton("more", "More actions for this item")
         self.btn_more.clicked.connect(lambda: self._node_menu(self._node, self.btn_more))
+        for b in (self.btn_secondary, self.btn_primary):
+            b.setMinimumWidth(72)            # round 3c: elide (tooltip) when narrow
         self.header.actions.addWidget(self.btn_secondary)
         self.header.actions.addWidget(self.btn_primary)
         self.header.actions.addWidget(self.btn_more)
         cv.addWidget(self.header)
-        sr = QHBoxLayout()
-        sr.setSpacing(SPACE.md)
         self.metrics = [MetricCard("", 0, "", 0) for _ in range(4)]
         for m in self.metrics:
             m.setMaximumHeight(92)
-            sr.addWidget(m)
-        cv.addLayout(sr)
+        # round 3c: 4 across when there is room, else 2 x 2 (never clipped)
+        self.metrics_grid = CardGrid(min_col=150, max_cols=4, spacing=SPACE.md)
+        self.metrics_grid.adopt(self.metrics)
+        cv.addWidget(self.metrics_grid)
         self.confirm = ConfirmBar()
         cv.addWidget(self.confirm)
         self.form = NodeForm()
@@ -1234,14 +1237,17 @@ class ProjectsPage(QWidget):
         self.filter.setToolTip("Filter the cards below (does not search other folders — "
                                "use the search box in the top bar for that)")
         self.filter.search_changed.connect(lambda _t: self._render_items())
+        self.filter.setMinimumWidth(120)
         self.sort = QComboBox()
         self.sort.addItems(["Newest first", "Oldest first", "Name A–Z", "Operator A–Z",
                             "Most grains"])
         self.sort.setToolTip("Sort order")
-        self.sort.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.sort.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.sort.setMinimumContentsLength(8)
         self.sort.currentIndexChanged.connect(lambda _i: self._render_items())
         self.op_filter = QComboBox()
-        self.op_filter.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.op_filter.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.op_filter.setMinimumContentsLength(8)
         self.op_filter.setToolTip("Show sessions by one operator only")
         self.op_filter.currentIndexChanged.connect(lambda _i: self._render_items())
         self.count_lbl = label("", "caption")
@@ -1268,7 +1274,7 @@ class ProjectsPage(QWidget):
         lwl.setContentsMargins(4, 4, 4, 4)
         lwl.addWidget(self.loading_grid)
         lwl.addStretch(1)
-        self.stack.addWidget(lw)
+        self.stack.addWidget(scroll(lw))          # round 3c: never forces the height
         # grid
         self.grid = CardGrid(260)
         gw = QWidget()
@@ -1313,8 +1319,26 @@ class ProjectsPage(QWidget):
         split.setStretchFactor(1, 1)
         split.setStretchFactor(2, 0)
         split.setSizes([270, 900, 300])
+        self._split = split
 
     # ------------------------------------------------------------------ tree
+    COMPACT_W = 1100       # round 3c: narrower side panels below this page width
+    COMPACT_H = 560        # ... and no summary cards below this page height
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        compact = self.width() < self.COMPACT_W
+        tree, det = (190, 220) if compact else (240, 270)
+        if self._tree_panel.minimumWidth() != tree:
+            self._tree_panel.setMinimumWidth(tree)
+        if self.details.minimumWidth() != det:
+            self.details.setMinimumWidth(det)
+        # 1080p at 200 %: the cards the operator works with get the height;
+        # the four totals are in the Details panel / tree anyway
+        short = self.height() < self.COMPACT_H
+        if self.metrics_grid.isHidden() != short:
+            self.metrics_grid.setVisible(not short)
+
     def reload(self) -> None:
         """Rescan the tree (off-thread) and reload the current node."""
         self._tree_gen += 1

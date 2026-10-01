@@ -131,7 +131,7 @@ class AppShell(QMainWindow):
         self.state = state or AppState()
         self.setWindowTitle(f"{APP_NAME}")
         self.setWindowIcon(install_app_icon())    # UI-08: window + taskbar icon
-        self.setMinimumSize(1180, 640)   # UI-08: fits 1080p at 150 % (1280x~690 usable)
+        self.setMinimumSize(940, 520)   # UI-08 + round 3c: fits 1080p at 200 % (960x~520 usable)
         self.resize(1600, 960)
         self._search_gen = 0
         self._meta_cal: list = []                 # INN-05 toasts, batched

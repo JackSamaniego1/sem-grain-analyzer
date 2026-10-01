@@ -6,7 +6,8 @@ from typing import Callable, List, Optional, Sequence
 from PySide6.QtCore import QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QFrame, QGridLayout, QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
+    QBoxLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QScrollArea, QSizePolicy,
+    QVBoxLayout, QWidget,
 )
 
 from ui.design import icons
@@ -67,6 +68,7 @@ class PageHeader(QWidget):
         self.overline.setVisible(bool(overline))
         self.title = label(title, "h1")
         self.title.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.title.setWordWrap(True)          # round 3c: wraps at small window sizes
         self.subtitle = label(subtitle, tone="secondary")
         self.subtitle.setWordWrap(True)
         self.subtitle.setVisible(bool(subtitle))
@@ -77,6 +79,24 @@ class PageHeader(QWidget):
         self.actions = QHBoxLayout()
         self.actions.setSpacing(SPACE.sm)
         lay.addLayout(self.actions)
+        self._lay = lay
+
+    #: room kept for the title before the actions move under it
+    TITLE_ROOM = 260
+
+    def is_stacked(self) -> bool:
+        return self._lay.direction() == QBoxLayout.TopToBottom
+
+    def resizeEvent(self, e) -> None:
+        """Round 3c (display scaling): when the action buttons and the title
+        do not fit side by side, the buttons move onto their own row under
+        the title instead of being squeezed / elided."""
+        super().resizeEvent(e)
+        want = self.actions.sizeHint().width() + self.TITLE_ROOM
+        stack = self.width() < want
+        if stack != self.is_stacked():
+            self._lay.setDirection(QBoxLayout.TopToBottom if stack else QBoxLayout.LeftToRight)
+            self._lay.setAlignment(self.actions, Qt.AlignLeft if stack else Qt.Alignment())
 
     def set_text(self, overline: str, title: str, subtitle: str = "") -> None:
         self.overline.setText(overline.upper())

@@ -390,9 +390,12 @@ class ReportsPage(QWidget):
         (+ the vertical scroll bar) so nothing is ever clipped on the right:
         the scroll area scrolls vertically only. Long texts inside the
         inspector wrap or elide, so this floor is the Document grid's."""
-        sb = self.inspector_scroll.verticalScrollBar()
-        sbw = max(sb.sizeHint().width(), sb.width() if sb.isVisible() else 0)
-        need = self.inspector.minimumSizeHint().width() + sbw + 2
+        try:
+            sb = self.inspector_scroll.verticalScrollBar()
+            sbw = max(sb.sizeHint().width(), sb.width() if sb.isVisible() else 0)
+            need = self.inspector.minimumSizeHint().width() + sbw + 2
+        except RuntimeError:          # queued call after the window was destroyed
+            return
         panel = self.inspector_panel
         lo = max(340, need)
         if panel.minimumWidth() != lo:
@@ -403,7 +406,7 @@ class ReportsPage(QWidget):
         from PySide6.QtCore import QEvent
         if obj is getattr(self, "inspector", None) and ev.type() in (
                 QEvent.LayoutRequest, QEvent.FontChange, QEvent.StyleChange, QEvent.Show):
-            QTimer.singleShot(0, self.fit_inspector_width)
+            QTimer.singleShot(0, self, self.fit_inspector_width)   # dies with the page
         return super().eventFilter(obj, ev)
 
     def _install(self, model: ReportModel, select=None, animate: bool = True) -> None:

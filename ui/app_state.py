@@ -1113,6 +1113,8 @@ class AppState(QObject):
         self._save_timer.timeout.connect(self.save_now)
         self._records_pending = 0
         self._removals: List[List] = []           # round 3b: undo-remove stack
+        self._scope: Optional[set] = None          # round 3c: record keys (guided tour)
+        self._scope_mode_chosen = False
         self._setup_pending: set = set()
         self._setup_parts: dict = {}               # uid -> frozenset of "scan" / "scale"
         self._setup_stats: dict = {}
@@ -1422,18 +1424,18 @@ class AppState(QObject):
     def _make_image(self, doc: SessionDoc, d: dict, rec: Optional[RecordRef] = None,
                     into: Optional[ImageDoc] = None) -> ImageDoc:
         """ImageDoc from a loaded image dict.  ``rec`` is the record the image
-        belongs to: its own session-level scale / scan area / filters become
-        per-image values when they differ from the analyzer's shared ones
-        (UX-09).  ``into`` fills an existing placeholder instead."""
+        belongs to.  Round 3c: an image without a scale / scan area of its own
+        follows ITS record's session-level values (``px_for`` / ``scan_for``)
+        -- never another record's; the record's filters become a per-image
+        override when they differ from the analyzer's shared ones (UX-09).
+        ``into`` fills an existing placeholder instead."""
         rec = rec or (doc.records[0] if doc.records else None)
         res = d.get("result")
         px = float(d.get("px") or 0.0)
-        eff = px if px > 0 else (rec.px_per_um if rec is not None else doc.px_per_um)
-        override = eff if (eff > 0 and (doc.px_per_um <= 0
-                                        or abs(eff - doc.px_per_um) > 1e-9)) else 0.0
+        base_px = rec.px_per_um if rec is not None else doc.px_per_um
+        override = px if (px > 0 and (base_px <= 0 or abs(px - base_px) > 1e-9)) else 0.0
         excluded = d.get("excluded") or {}
-        scan = tuple(d["scan_rect"]) if d.get("scan_rect") else (
-            rec.scan_rect if rec is not None else None)
+        scan = tuple(d["scan_rect"]) if d.get("scan_rect") else None
         ov = d.get("override")
         if not ov and rec is not None and rec.filters and doc.records and \
                 rec is not doc.records[0] and \
@@ -1472,7 +1474,8 @@ class AppState(QObject):
         im.loading = False
         if not im.readable:
             im.status, im.message = "error", "Image file is missing or unreadable"
-        if im.scan_rect is not None and im.scan_rect == doc.scan_rect:
+        if im.scan_rect is not None and im.scan_rect == (
+                rec.scan_rect if rec is not None else doc.scan_rect):
             im.scan_rect = None
         if im.profile:                          # UPDATE 4 item 5
             if self.profile_matches(im):
@@ -1725,6 +1728,7 @@ class AppState(QObject):
             doc.path, doc.meta = r0.path, r0.meta
             doc.project_meta, doc.sample_meta, doc.lot_meta = (
                 r0.project_meta, r0.sample_meta, r0.lot_meta)
+            doc.px_per_um, doc.scan_rect = float(r0.px_per_um or 0.0), r0.scan_rect
             self.current_node = NodeRef("lot" if doc.is_lot else "session", doc.path)
             self.node_changed.emit(self.current_node)
         for im in dropped:
@@ -2088,7 +2092,8 @@ class AppState(QObject):
         parts = frozenset(parts) if parts else frozenset(("scan", "scale"))
         wanted = None if uids is None else set(uids)
         busy = self.analysis_lock.busy_uids()
-        targets = [im for im in doc.images if (wanted is None or im.uid in wanted)
+        pool_imgs = doc.images if wanted is not None else self.scoped_images()
+        targets = [im for im in pool_imgs if (wanted is None or im.uid in wanted)
                    and not im.loading and im.readable
                    and im.uid not in self._setup_pending and im.uid not in busy]
         if not targets:
@@ -2174,7 +2179,7 @@ class AppState(QObject):
             ar = info.get("analysis_rect")
             if "scan" not in parts:
                 pass                               # wizard step 2: the scale only
-            elif im.scan_source == "manual" or (doc.scan_rect is not None
+            elif im.scan_source == "manual" or (self._base_scan(im) is not None
                                                 and im.scan_rect is None and not ar):
                 st["kept_scan"] += 1
             else:
@@ -2262,7 +2267,7 @@ class AppState(QObject):
             return []
         targets = [im]
         if same_bar:
-            targets += [o for o in doc.images if o is not im and o.bar_px > 0
+            targets += [o for o in self.scoped_images() if o is not im and o.bar_px > 0
                         and abs(o.bar_px - im.bar_px) <= 2
                         and o.scale_source not in ("manual", "metadata")]
         if not self._guard("Setting the scale", [o.uid for o in targets],
@@ -2294,6 +2299,8 @@ class AppState(QObject):
         for item in snap:
             if item[0] == "session":
                 doc.px_per_um = float(item[1])
+                for r, v in (item[2] if len(item) > 2 else []):
+                    r.px_per_um = float(v)
                 continue
             o = doc.image(item[0])
             if o is not None:
@@ -2313,12 +2320,13 @@ class AppState(QObject):
         doc = self.session
         if doc is None:
             return []
-        if not self._guard("Setting the scale", [o.uid for o in doc.images],
+        imgs = self.scoped_images()
+        if not self._guard("Setting the scale", [o.uid for o in imgs],
                            resync="calibration"):
             return []
-        snap = [("session", doc.px_per_um)] + [self._scale_item(o) for o in doc.images]
-        doc.px_per_um = float(px_per_um)
-        for o in doc.images:
+        snap = [self._session_snap("scale")] + [self._scale_item(o) for o in imgs]
+        self._set_session_px(px_per_um)
+        for o in imgs:
             o.px_override = 0.0
             o.scale_source = "manual"
             o.profile = None
@@ -2336,12 +2344,13 @@ class AppState(QObject):
         doc = self.session
         if doc is None:
             return []
-        if not self._guard("Changing the scan area", [o.uid for o in doc.images],
+        imgs = self.scoped_images()
+        if not self._guard("Changing the scan area", [o.uid for o in imgs],
                            resync="calibration"):
             return []
-        snap = [("session", doc.scan_rect)] + [self._scan_item(o) for o in doc.images]
+        snap = [self._session_snap("scan")] + [self._scan_item(o) for o in imgs]
         rect = tuple(int(v) for v in rect) if rect else None
-        for o in doc.images:
+        for o in imgs:
             o.scan_full_pending = False
             if rect is None and o.shape:
                 h, w = o.shape[:2]
@@ -2369,6 +2378,8 @@ class AppState(QObject):
         for item in snap:
             if item[0] == "session":
                 doc.scan_rect = item[1]
+                for r, v in (item[2] if len(item) > 2 else []):
+                    r.scan_rect = v
                 continue
             o = doc.image(item[0])
             if o is not None:
@@ -2449,10 +2460,101 @@ class AppState(QObject):
             self.schedule_save()
         return lk
 
+    # ------------------------------------------------------------------ round 3c: scope
+    def set_scope(self, record_paths) -> None:
+        """Limit every "all images" action (scan area / scale for all,
+        auto-find, Analyze all, the wizard's step states) to the images of
+        these records -- the guided tour scopes them to the Tutorial job so
+        the operator's own loaded images are never touched.  ``None`` = all."""
+        new = None if record_paths is None else {self._path_key(p) for p in record_paths}
+        if new != self._scope:
+            self._scope = new
+            self._scope_mode_chosen = False
+            self.setup_changed.emit()
+
+    def scope_active(self) -> bool:
+        return self._scope is not None
+
+    def in_scope(self, im: ImageDoc) -> bool:
+        if self._scope is None:
+            return True
+        rec = self.session.record_for(im) if self.session is not None else None
+        return rec is not None and self._path_key(rec.path) in self._scope
+
+    def scoped_images(self) -> List[ImageDoc]:
+        """The images the "all images" actions apply to (see set_scope)."""
+        return [im for im in self.images() if self.in_scope(im)]
+
+    def _scoped_records(self) -> List[RecordRef]:
+        doc = self.session
+        if doc is None:
+            return []
+        if self._scope is None:
+            return list(doc.records)
+        return [r for r in doc.records if self._path_key(r.path) in self._scope]
+
+    def _primary_in_scope(self) -> bool:
+        doc = self.session
+        return self._scope is None or not doc.records or doc.records[0] in self._scoped_records()
+
+    def _base_px(self, im: ImageDoc) -> float:
+        """Round 3c: the session-level scale of the image's OWN record (a job
+        added next to a calibrated one never borrows that one's scale)."""
+        doc = self.session
+        if doc is None:
+            return 0.0
+        return self._rec_px(doc.record_for(im))
+
+    def _rec_px(self, rec: Optional[RecordRef]) -> float:
+        """A record's session-level scale: the primary record's lives on the
+        doc (``doc.px_per_um``), every other record keeps its own."""
+        doc = self.session
+        if rec is None or not doc.records or rec is doc.records[0]:
+            return float(doc.px_per_um or 0.0)
+        return float(rec.px_per_um or 0.0)
+
+    def _rec_scan(self, rec: Optional[RecordRef]) -> Optional[tuple]:
+        doc = self.session
+        primary = rec is None or not doc.records or rec is doc.records[0]
+        r = doc.scan_rect if primary else rec.scan_rect
+        return tuple(r) if r else None
+
+    def _base_scan(self, im: ImageDoc) -> Optional[tuple]:
+        """Round 3c: the session-level scan area of the image's OWN record."""
+        doc = self.session
+        if doc is None:
+            return None
+        return self._rec_scan(doc.record_for(im))
+
+    def _set_session_px(self, value: float) -> None:
+        """Session-level scale for every record in the analyzer ("all
+        images"; only the scoped records while a scope is set)."""
+        doc = self.session
+        if self._primary_in_scope():
+            doc.px_per_um = float(value)
+        for r in self._scoped_records():
+            r.px_per_um = float(value)
+
+    def _set_session_scan(self, rect) -> None:
+        doc = self.session
+        rect = tuple(rect) if rect else None
+        if self._primary_in_scope():
+            doc.scan_rect = rect
+        for r in self._scoped_records():
+            r.scan_rect = rect
+
+    def _session_snap(self, what: str) -> tuple:
+        """Undo item of the session-level scale / scan area: the analyzer's
+        value plus every record's own (they may differ after a mixed load)."""
+        doc = self.session
+        if what == "scale":
+            return ("session", doc.px_per_um, [(r, r.px_per_um) for r in doc.records])
+        return ("session", doc.scan_rect, [(r, r.scan_rect) for r in doc.records])
+
     def px_for(self, im: ImageDoc) -> float:
         if im.px_override > 0:
             return im.px_override
-        return self.session.px_per_um if self.session else 0.0
+        return self._base_px(im)
 
     def scan_for(self, im: ImageDoc) -> Optional[tuple]:
         if im.scan_rect:
@@ -2463,7 +2565,7 @@ class AppState(QObject):
             self._meta_dirty = True
             self.schedule_save()
             return im.scan_rect
-        return self.session.scan_rect if self.session else None
+        return self._base_scan(im)
 
     # ------------------------------------------------------------------ out-of-date results
     @staticmethod
@@ -2570,7 +2672,7 @@ class AppState(QObject):
                            resync="calibration"):
             return
         if uid is None:
-            self.session.px_per_um = float(px_per_um)
+            self._set_session_px(px_per_um)
             self._meta_dirty = True
         else:
             im = self.session.image(uid)
@@ -2617,9 +2719,9 @@ class AppState(QObject):
             return
         rect = tuple(int(v) for v in rect) if rect else None
         if uid is None:
-            self.session.scan_rect = rect
+            self._set_session_scan(rect)
             self._meta_dirty = True
-            if not self.session.filters_touched:
+            if not self.session.filters_touched and self._scope is None:
                 # v2.3 discarded border grains whenever a scan area was set;
                 # that is now the default of the visible toggle.
                 self.session.filters.exclude_border = rect is not None
@@ -2646,6 +2748,11 @@ class AppState(QObject):
         doc = self.session
         if doc is None:
             return False
+        if self._scope is not None:
+            # round 3c (guided tour): chosen for the scoped job only -- the
+            # operator's own results / choice never pre-satisfy the step
+            return self._scope_mode_chosen or any(
+                im.raw is not None or im.result is not None for im in self.scoped_images())
         if (doc.params.get(WIZARD_PARAMS_KEY) or {}).get("mode_chosen"):
             return True
         return any(im.raw is not None or im.result is not None for im in doc.images)
@@ -2654,6 +2761,8 @@ class AppState(QObject):
         if self.session is None:
             return
         d = params_to_dict(params)
+        if mode_chosen and self._scope is not None:
+            self._scope_mode_chosen = True
         wiz = dict(self.session.params.get(WIZARD_PARAMS_KEY) or {})
         # always explicit, so a reopen can tell "not chosen yet" (wizard-era
         # save) from a pre-wizard session (no key: chosen, see _loaded_params)
@@ -2865,9 +2974,10 @@ class AppState(QObject):
         of it changes them)."""
         if self.session is None:
             return []
+        imgs = self.scoped_images()
         if what == "scale":
-            return [im.uid for im in self.session.images if im.px_override <= 0]
-        return [im.uid for im in self.session.images if not im.scan_rect]
+            return [im.uid for im in imgs if im.px_override <= 0]
+        return [im.uid for im in imgs if not im.scan_rect]
 
     @staticmethod
     def _snap_uids(snap) -> List:
@@ -2879,8 +2989,7 @@ class AppState(QObject):
         out = []
         for item in before:
             if item[0] == "session":
-                out.append(("session", doc.px_per_um if cls is ScaleCommand
-                            else doc.scan_rect))
+                out.append(self._session_snap("scale" if cls is ScaleCommand else "scan"))
                 continue
             o = doc.image(item[0])
             if o is None:
@@ -3234,9 +3343,8 @@ class AppState(QObject):
             entries, meta = self._record_payload(doc, rec, with_result)
             if entries or meta:
                 jobs.append((rec.path, entries, meta))
-            if "px_per_um" in meta:        # the record now follows the shared values
-                rec.px_per_um, rec.scan_rect = doc.px_per_um, doc.scan_rect
-                rec.filters = options_to_dict(doc.filters)
+            if "filters" in meta:          # the record now follows the shared filters
+                rec.filters = dict(meta["filters"])
         if doc.acquisition_dirty:
             doc.acquisition_dirty = False
         self._dirty.clear()
@@ -3305,11 +3413,18 @@ class AppState(QObject):
                 entries.append(ImageEntry(filename=im.filename, **self._image_fields(im)))
         meta = {}
         if self._meta_dirty or rec_result:
-            meta = dict(px_per_um=doc.px_per_um,
-                        scan_rect=list(doc.scan_rect) if doc.scan_rect else CLEAR,
-                        detection_params=dict(doc.params),
-                        filters=options_to_dict(doc.filters),
-                        detector_mode=doc.params.get("detection_mode", ""))
+            # Round 3c: each record keeps ITS OWN session-level scale and scan
+            # area (never the primary record's).  The analyzer-wide analysis
+            # settings (detection parameters, grain filters) are written only
+            # where they apply: the primary record, or a record whose images
+            # were (re)measured with them.
+            own_scan = self._rec_scan(rec)
+            meta = dict(px_per_um=self._rec_px(rec),
+                        scan_rect=list(own_scan) if own_scan else CLEAR)
+            if rec_result or not doc.records or rec is doc.records[0]:
+                meta.update(detection_params=dict(doc.params),
+                            filters=options_to_dict(doc.filters),
+                            detector_mode=doc.params.get("detection_mode", ""))
             from version import __version__
             meta["software_version"] = __version__
         if doc.acquisition_dirty and doc.records and rec is doc.records[0]:

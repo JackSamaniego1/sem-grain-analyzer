@@ -127,6 +127,8 @@ class TourController(QObject):
         if prepare and not self.hint and index == 0:
             self.seen = set()
             self.prepare_tutorial()
+        elif not self.hint and self.tutorial_record is not None:
+            self._scope_to_tutorial()
         self._unbind()
         self.index = -1
         self._go(max(0, min(index, len(self.steps) - 1)), +1)
@@ -198,6 +200,13 @@ class TourController(QObject):
         gen = self._prep_gen
         root = st.root
         self.tutorial_record, self.tutorial_failed = None, False
+        if not self.hint:
+            # round 3c: until the Tutorial job is ready, "all images" actions
+            # touch nothing (never the operator's own loaded images)
+            try:
+                st.set_scope([])
+            except Exception:
+                pass
         try:
             from data.tutorial import find_tutorial_record
             rec = find_tutorial_record(root)
@@ -208,6 +217,7 @@ class TourController(QObject):
                                                      for r in (s.records or [])):
             if self._busy():
                 self.tutorial_record = Path(rec)     # being analysed: leave it as it is
+                self._scope_to_tutorial()
                 self.tutorial_ready.emit(self.tutorial_record)
                 return
             # a reset needs it out of the analyzer -- round 3: only the
@@ -226,6 +236,8 @@ class TourController(QObject):
             if gen != self._prep_gen:
                 return
             self.tutorial_record = Path(res["record"])
+            if self.is_active():
+                self._scope_to_tutorial()
             try:
                 self.shell.projects.reload()
                 self.shell.projects.select_node(self.tutorial_record)
@@ -239,6 +251,10 @@ class TourController(QObject):
                 return
             self.tutorial_record = None
             self.tutorial_failed = True
+            try:
+                self.shell.state.set_scope(None)    # no Tutorial job: any session
+            except Exception:
+                pass
             toasts = getattr(self.shell, "toasts", None)
             if toasts is not None:
                 from core.resources import REINSTALL_MESSAGE
@@ -249,6 +265,17 @@ class TourController(QObject):
 
         from ui.workers import run_task
         run_task(work, on_done=done, on_error=failed)
+
+    def _scope_to_tutorial(self) -> None:
+        """Round 3c: while the tour runs, the wizard's "All images" steps,
+        Analyze all and the step states act on the Tutorial job ONLY -- the
+        operator's own loaded images are never touched."""
+        if self.hint or self.tutorial_record is None:
+            return
+        try:
+            self.shell.state.set_scope([self.tutorial_record])
+        except Exception:
+            pass
 
     def _busy(self) -> bool:
         try:
@@ -481,6 +508,11 @@ class TourController(QObject):
         ov, self.overlay = self.overlay, None
         self.index = -1
         self._persist()
+        if not self.hint:
+            try:
+                self.shell.state.set_scope(None)      # round 3c: tour scope off
+            except Exception:
+                pass
         if ov is not None:
             def gone(o=ov):
                 try:

@@ -57,8 +57,10 @@ def _two_lot_state(tmp_path, monkeypatch):
     for lot in (lot1, lot2):
         lot.mkdir(parents=True)
         (lot / "lot.json").write_text("{}", encoding="utf-8")
-    rec1 = RecordRef(path=lot1, meta=SessionMeta())
-    rec2 = RecordRef(path=lot2, meta=SessionMeta())
+    # round 3c: each record has its own session-level scale (a record never
+    # borrows the first record's); both lots were measured at 8 px/µm
+    rec1 = RecordRef(path=lot1, meta=SessionMeta(), px_per_um=8.0)
+    rec2 = RecordRef(path=lot2, meta=SessionMeta(), px_per_um=8.0)
     doc.records = [rec1, rec2]
 
     images = []

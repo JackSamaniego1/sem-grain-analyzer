@@ -806,6 +806,7 @@ class SetupTile(Card):
         self.details_val = label("", "body")
         self.details_val.setObjectName("imageDetailsValue")
         self.details_val.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.details_val.setWordWrap(True)          # round 3c: wraps, never clipped
         self.details_val.setTextInteractionFlags(Qt.TextSelectableByMouse)
         dh.addWidget(self.details_val, 1)
         dcol.addLayout(dh)
@@ -1049,6 +1050,7 @@ class AnalyzePage(QWidget):
         self.film.setMaximumWidth(320)
         fl.addWidget(self.film)
         h.addWidget(film_panel)
+        self._film_panel = film_panel
 
         centre = QWidget()
         cv = QVBoxLayout(centre)
@@ -1087,6 +1089,7 @@ class AnalyzePage(QWidget):
         ip.setContentsMargins(0, 0, 0, 0)
         ip.setSpacing(SPACE.sm)
         self.canvas = GrainCanvas(placeholder="Select an image in the list")
+        self.canvas.setMinimumHeight(200)            # round 3c: never crushed (column scrolls)
         self.canvas.enable_opacity_control()        # UPDATE 4 item 9
         ip.addWidget(self.canvas, 1)
         self.setup_tile = SetupTile()
@@ -1106,7 +1109,13 @@ class AnalyzePage(QWidget):
         self.stats_grid = CardGrid(min_col=168, max_cols=4, spacing=SPACE.md)
         self.stats_grid.adopt([self.st_images, self.st_grains, self.st_diam, self.st_g])
         cv.addWidget(self.stats_grid)
-        h.addWidget(centre, 1)
+        # round 3c (display scaling): at small logical sizes (e.g. 1080p at
+        # 200 %) the centre column scrolls vertically instead of squeezing
+        # the canvas, the details strip and the stat cards into each other
+        self.centre_stack.setMinimumWidth(240)
+        self.centre_scroll = scroll(centre)
+        self.centre_scroll.setObjectName("analyzeCentreScroll")
+        h.addWidget(self.centre_scroll, 1)
 
         # ---- right sidebar: the step wizard (batch 4, D-38) ----------------
         side = Panel("left")
@@ -1114,6 +1123,7 @@ class AnalyzePage(QWidget):
         # vertical scroll bar (1366 × 768 checked by the tests)
         side.setMinimumWidth(392)
         side.setMaximumWidth(420)
+        self._side_panel = side
         sv = QVBoxLayout(side)
         sv.setContentsMargins(0, 0, 0, 0)
         inner = QWidget()
@@ -1712,7 +1722,9 @@ class AnalyzePage(QWidget):
         im = self.state.current_image()
         if s is None:
             return
-        rows = [(self._scale_key, fmt_px_per_um(s.px_per_um))]
+        # round 3c: the session scale shown is the current image's own job's
+        base = self.state._base_px(im) if im is not None else s.px_per_um
+        rows = [(self._scale_key, fmt_px_per_um(base))]
         if im is not None and im.px_override > 0:
             rows.append(("This image", fmt_px_per_um(im.px_override)))
         self.cal_kv.set_items(rows)
@@ -1721,7 +1733,7 @@ class AnalyzePage(QWidget):
         self.cal_override.blockSignals(False)
         self.cal_spin.blockSignals(True)
         self.cal_spin.setEnabled(self.cal_override.isChecked())
-        self.cal_spin.setValue(im.px_override if (im is not None and im.px_override > 0) else s.px_per_um)
+        self.cal_spin.setValue(im.px_override if (im is not None and im.px_override > 0) else base)
         self.cal_spin.blockSignals(False)
         rect = self.state.scan_for(im) if im is not None else s.scan_rect
         self.canvas.set_scan_rect(rect)
@@ -2050,7 +2062,7 @@ class AnalyzePage(QWidget):
         return set(self.queue.pending_uids()) | ({cur} if cur is not None else set())
 
     def analyze_all(self) -> None:
-        imgs = [im for im in self.state.images() if im.readable or im.loading]
+        imgs = [im for im in self.state.scoped_images() if im.readable or im.loading]
         self._start(imgs, self.btn_all)
 
     def analyze_current(self) -> None:
@@ -2254,6 +2266,9 @@ class AnalyzePage(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(SPACE.sm)
         for b in buttons:
+            # round 3c: at small logical sizes (200 %) the labels elide (full
+            # text in the tooltip) instead of pushing "Edit…" out of the panel
+            b.setMinimumWidth(56)
             row.addWidget(b, 1)
         return row
 
@@ -2266,10 +2281,26 @@ class AnalyzePage(QWidget):
                               mode_chosen=not self.params.is_device_update())
         self._wizard_timer.start()
 
+    #: below this page width the side panels use their compact minimums
+    #: (round 3c: 1080p at 200 % = 960 × 540 logical)
+    COMPACT_W = 1100
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        compact = self.width() < self.COMPACT_W
+        film = 200 if compact else 260
+        side = 340 if compact else 392
+        if self.film.minimumWidth() != film:
+            self.film.setMinimumWidth(film)
+            self.film.setMaximumWidth(230 if compact else 320)
+        if self._side_panel.minimumWidth() != side:
+            self._side_panel.setMinimumWidth(side)
+
     def wizard_images(self) -> List:
         """The images the wizard's steps are about: every loaded, readable
         image in the analyzer."""
-        return [im for im in self.state.images() if im.readable and not im.loading]
+        # round 3c: only the scoped images while the guided tour runs
+        return [im for im in self.state.scoped_images() if im.readable and not im.loading]
 
     def step_done(self) -> Dict[str, bool]:
         """Step "done" flags derived from the data (never stored):

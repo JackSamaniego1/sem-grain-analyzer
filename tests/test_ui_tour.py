@@ -694,3 +694,96 @@ def test_help_menu_restarts_the_tour(shell, qtbot):
     shell.act_tour.trigger()
     assert t.is_active() and t.index == 0 and _key(t) == "welcome"
     t.finish()
+
+
+# ---------------------------------------------------------------------- round 3c: scope
+def _user_lot_from_tutorial_images(root):
+    """A user job whose images carry a readable scale bar (Auto-find reads
+    the label), next to which the tour runs."""
+    from core.resources import tutorial_images
+    from data.catalog import Catalog
+    from data.models import ImageEntry
+    from data.session_io import save_session
+    from data.workspace import Workspace
+    ws = Workspace(root)
+    pp = ws.create_project("Mine")
+    sp = ws.create_sample(pp, "P-9", material="Steel")
+    lp = ws.create_lot(pp, sp, "L-9")
+    ref = save_session(lp, {"operator": "Tester"},
+                       [ImageEntry(source_path=str(p)) for p in tutorial_images()[:2]],
+                       label="Mine", catalog=Catalog(root))
+    return Path(ref.path)
+
+
+def _user_snapshot(st, im):
+    return dict(uid=im.uid, px=st.px_for(im), scan=st.scan_for(im),
+                px_override=im.px_override, scan_rect=im.scan_rect,
+                scale_source=im.scale_source, scan_source=im.scan_source,
+                result=id(im.result), n=len(im.result.grains),
+                stale=st.stale_reason(im), status=im.status)
+
+
+def test_tour_never_touches_the_users_loaded_images(shell, qtbot, env):
+    """Round 3c: with the operator's own images loaded (one job set up by
+    Auto-find from the scale-bar label, one by hand, both analysed), a
+    complete tour run -- open the Tutorial job, "All images" scan area and
+    scale, Analyze all -- acts on the Tutorial job only: the user's images
+    are bit-for-bit unchanged and the tour's steps are not pre-satisfied by
+    them."""
+    import cv2
+    from core.grain_detector import DetectionParams
+    from ui.workers import analyze_image
+    st, a = shell.state, shell.analyze
+    auto_rec = _user_lot_from_tutorial_images(env)
+    hand_rec = make_session(env, 2, label="Hand", project="ByHand", sample="P-8", lot="L-8")
+    shell.load_into_analyzer([auto_rec, hand_rec])
+    qtbot.waitUntil(lambda: len(st.images()) == 4 and not st.is_loading(), timeout=TIMEOUT)
+    auto = [im for im in st.images() if st.session.record_for(im).path == auto_rec]
+    hand = [im for im in st.images() if im not in auto]
+    assert st.auto_setup([im.uid for im in auto]) == 2
+    qtbot.waitUntil(lambda: not st.is_setting_up(), timeout=TIMEOUT)
+    assert all(im.scale_source == "label" and st.setup_ready(im) for im in auto), \
+        [(im.scale_source, st.setup_issues(im)) for im in auto]
+    for im in hand:
+        st.set_calibration(3.0, im.uid)
+        st.set_scan_rect((5, 5, 180, 180), im.uid)
+    for im in auto + hand:
+        pix = im.image_bgr if im.image_bgr is not None else cv2.imread(str(im.path))
+        st.set_result(im.uid, analyze_image(pix, st.px_for(im),
+                                            DetectionParams(detection_mode="threshold"),
+                                            st.scan_for(im)))
+    qtbot.waitUntil(lambda: all(im.result is not None for im in auto + hand)
+                    and not st.is_filtering(), timeout=TIMEOUT)
+    mine = auto + hand
+    before = [_user_snapshot(st, im) for im in mine]
+
+    t = _start(shell, qtbot)
+    qtbot.mouseClick(shell.projects.btn_primary, Qt.LeftButton)       # open the Tutorial job
+    qtbot.waitUntil(lambda: len(st.images()) == 7 and not st.is_loading(), timeout=TIMEOUT)
+    qtbot.wait(200)
+    assert _key(t) == "scan"                       # not pre-satisfied by the user's images
+    tut = [im for im in st.images() if im not in mine]
+    assert len(tut) == 3 and not a.step_done()["scan"] and not a.step_done()["scale"]
+    a.sync_wizard()
+    a.btn_scan_all.click()
+    qtbot.waitUntil(lambda: _key(t) == "scale", timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: a.btn_scale_all.isEnabled(), timeout=5000)
+    a.btn_scale_all.click()
+    qtbot.waitUntil(lambda: not st.is_setting_up(), timeout=TIMEOUT)
+    qtbot.wait(300)
+    assert _key(t) == "mode", (_key(t), a.step_done(), [(st.px_for(im), im.scale_source,
+                                                          st.setup_issues(im)) for im in tut])
+    assert all(st.px_for(im) == pytest.approx(16.0, rel=0.02) for im in tut)
+    a.params.mode_cards["boundary"].clicked.emit()
+    qtbot.waitUntil(lambda: _key(t) == "run", timeout=5000)
+    assert a.btn_all.isEnabled()
+    a.btn_all.click()
+    qtbot.wait(500)
+    qtbot.waitUntil(lambda: not a.queue.is_running(), timeout=TIMEOUT)
+    qtbot.wait(500)
+    assert _key(t) in ("go_review", "select"), _key(t)        # past the run step
+    assert all(im.result is not None for im in tut)
+    assert [_user_snapshot(st, im) for im in mine] == before
+    t.finish()
+    assert not st.scope_active()
+    assert [_user_snapshot(st, im) for im in mine] == before

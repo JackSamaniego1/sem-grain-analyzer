@@ -415,22 +415,49 @@ def test_toast_undo_uses_same_stack(env, qtbot):
 
 # ============================================================ 6. mixed scales
 def test_uncalibrated_job_added_to_calibrated_analyzer(env, qtbot):
-    """FINDING probe: what scale does an uncalibrated job get when it is
-    added next to a calibrated one?"""
+    """Round 3c: an uncalibrated job added next to a calibrated one keeps
+    ITS OWN (unset) scale and scan area -- it never borrows job A's -- and
+    the set-up gate asks for both; job A is untouched."""
     shell, ja, jb, lot_a, lot_b = _calibrated_analysed(env, qtbot)
     st = shell.state
     _load(shell, qtbot, [jb], 5)
-    new = st.images()[2:]
-    pxs = [st.px_for(im) for im in new]
-    scans = [st.scan_for(im) for im in new]
-    # Desired: the new, never-calibrated job stays uncalibrated so the
-    # set-up gate asks for its scale.  Observed behaviour is asserted in
-    # test below; this one documents the desired state.
-    if any(p > 0 for p in pxs) or any(s for s in scans):
-        pytest.xfail(f"new uncalibrated job silently inherits the first job's session "
-                     f"scale/scan area: px={pxs} scan={scans}")
+    old, new = st.images()[:2], st.images()[2:]
+    assert [st.px_for(im) for im in new] == [0.0] * 3
+    assert [st.scan_for(im) for im in new] == [None] * 3
     assert all(st.setup_issues(im) == ["scan", "scale"] for im in new)
+    assert all(st.px_for(im) == 2.0 and st.scan_for(im) == SCAN and not st.setup_issues(im)
+               and not st.stale_reason(im) for im in old)
+    # wizard steps 1 / 2 are not done while job B is unset
+    done = shell.analyze.step_done()
+    assert not done.get("scan") and not done.get("scale")
     shell.close()
+
+
+def test_mixed_load_saves_each_jobs_own_values(env, qtbot):
+    """Round 3c: autosave after a mixed load never writes job A's scale /
+    scan area into job B's files (and B's own later values stay B's)."""
+    shell, ja, jb, lot_a, lot_b = _calibrated_analysed(env, qtbot)
+    st = shell.state
+    _load(shell, qtbot, [jb], 5)
+    b_imgs = st.images()[2:]
+    st.set_calibration(5.0, b_imgs[0].uid)          # one B image by hand
+    st.save_now()
+    st.flush()
+    ma, mb = load_session(lot_a).manifest, load_session(lot_b).manifest
+    assert ma.px_per_um == pytest.approx(2.0) and tuple(ma.scan_rect) == SCAN
+    assert not mb.px_per_um and not mb.scan_rect
+    by = {e.filename: e for e in mb.images}
+    assert by[b_imgs[0].filename].px_per_um == pytest.approx(5.0)
+    assert all(not by[im.filename].px_per_um for im in b_imgs[1:])
+    # reload B alone: still its own values
+    shell.close()
+    from ui.app_state import AppState
+    st2 = AppState()
+    st2.open_session(lot_b)
+    qtbot.waitUntil(lambda: st2.session is not None, timeout=TIMEOUT)
+    px = {im.filename: st2.px_for(im) for im in st2.images()}
+    assert px[b_imgs[0].filename] == pytest.approx(5.0)
+    assert all(px[im.filename] == 0.0 for im in b_imgs[1:])
 
 
 # ============================================================ 7. tutorial next to user images

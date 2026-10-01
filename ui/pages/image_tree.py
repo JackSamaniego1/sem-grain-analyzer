@@ -403,6 +403,8 @@ class ImageTree(ThemeAware, QWidget):
                                              "ghost", "sm")
         self.remove_sel_btn.setObjectName("analyzer_remove_selected")
         self.remove_sel_btn.clicked.connect(self._remove_checked)
+        for b in (self.select_all_btn, self.remove_sel_btn):
+            b.setMinimumWidth(56)            # round 3c: elide (tooltip) when narrow
         tools.addWidget(self.select_all_btn)
         tools.addWidget(self.remove_sel_btn)
         tools.addStretch(1)
@@ -448,6 +450,14 @@ class ImageTree(ThemeAware, QWidget):
         self._connect_theme()
         self._sync_tools()
 
+    #: below this width the header tools use short labels (round 3c)
+    NARROW_W = 250
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        if (e.oldSize().width() < self.NARROW_W) != (self.width() < self.NARROW_W):
+            self._sync_tools()
+
     # ------------------------------------------------------------------ round 3 tools
     def all_checked(self) -> bool:
         return bool(self._items) and all(u in self.tree._checked for u in self._items)
@@ -474,11 +484,16 @@ class ImageTree(ThemeAware, QWidget):
             return
         n = len(self.checked_uids())
         every = self.all_checked()
-        self.select_all_btn.setText("Select none" if every else "Select all")
+        if self.width() and self.width() < self.NARROW_W:
+            # round 3c (200 % scaling): short labels instead of "S…" / "Remove s…"
+            self.select_all_btn.setText("None" if every else "All")
+            self.remove_sel_btn.setText(f"Remove ({n})" if n else "Remove")
+        else:
+            self.select_all_btn.setText("Select none" if every else "Select all")
+            self.remove_sel_btn.setText(f"Remove selected ({n})" if n else "Remove selected")
         self.select_all_btn.setToolTip("Untick every image" if every
                                        else "Tick every image in the analyzer")
         self.select_all_btn.setEnabled(bool(self._items))
-        self.remove_sel_btn.setText(f"Remove selected ({n})" if n else "Remove selected")
         block = getattr(self, "_remove_block", "")
         self.remove_sel_btn.setEnabled(n > 0 and not block)
         self.remove_sel_btn.setToolTip(

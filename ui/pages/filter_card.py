@@ -184,9 +184,11 @@ class FilterCard(Card):
         self.more.add_widget(host)
         b.addWidget(self.more)
 
-        self.show_ex = QCheckBox("Show excluded grains (grayed) on the overlay")
+        # round 3c: shorter so the card fits the side panel at 200 % scaling
+        self.show_ex = QCheckBox("Show excluded grains (grayed)")
         self.show_ex.setChecked(True)
-        self.show_ex.setToolTip("Hide or show the grains removed by filters or by hand")
+        self.show_ex.setToolTip("Hide or show, on the overlay, the grains removed by filters "
+                                "or by hand (drawn grayed)")
         self.show_ex.toggled.connect(self.show_excluded_toggled)
         b.addWidget(self.show_ex)
 

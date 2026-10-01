@@ -688,8 +688,9 @@ def test_open_session_blocked(env, qtbot):
     st.open_session(p2, on_done=res.append)
     assert stopped == [1] and st.session.path == p1
     lock.set_active(False)                         # the queue has finished
-    qtbot.waitUntil(lambda: st.session is not None and st.session.path == p2, timeout=15000)
-    assert res[-1] is True
+    # round 3: opening ADDS to the analyzer (p1 stays, p2 joins it)
+    qtbot.waitUntil(lambda: st.session is not None and st.record_loaded(p2), timeout=15000)
+    assert st.record_loaded(p1) and res[-1] is True
 
 
 def test_flush_waits_only_for_own_work(env, qtbot):

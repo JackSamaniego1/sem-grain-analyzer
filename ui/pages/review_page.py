@@ -25,7 +25,7 @@ from PySide6.QtCore import (
     Qt, QTimer, Signal,
 )
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QCheckBox, QGridLayout, QHBoxLayout, QHeaderView, QSizePolicy,
+    QAbstractItemView, QButtonGroup, QCheckBox, QHBoxLayout, QHeaderView, QSizePolicy,
     QSpinBox, QSplitter,
     QTableView, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
@@ -38,7 +38,7 @@ from ui.format import (
     area_value, astm_g, diam_value, fmt_int, fmt_opt, smart_format, units_for,
 )
 from ui.pages.charts import ThemedHistogram
-from ui.pages.common import MetricCard, Panel, scroll
+from ui.pages.common import CardGrid, MetricCard, Panel, scroll
 from ui.pages.filmstrip import status_text
 from ui.pages.image_tree import ImageTree
 from ui.pages.filter_card import FilterCard, Reveal
@@ -178,6 +178,7 @@ class ReviewPage(QWidget):
         self.film.setMaximumWidth(290)
         fl.addWidget(self.film)
         h.addWidget(fp)
+        self._film_panel = fp
 
         split = QSplitter(Qt.Vertical)
         split.setChildrenCollapsible(False)
@@ -234,7 +235,9 @@ class ReviewPage(QWidget):
             tool_group(self.view_seg),
             tool_group(self.btn_undo, self.btn_redo),
             tool_group(self.btn_tool_select, self.btn_tool_lasso, self.btn_tool_split,
-                       self.btn_tool_add, self.btn_merge, self.btn_del),
+                       self.btn_tool_add),
+            # round 3c: Merge / Remove wrap as their own group when narrow
+            tool_group(self.btn_merge, self.btn_del),
             tool_group(self.btn_zo, self.btn_zi, self.btn_fit, self.btn_11)])
         tv.addWidget(self.toolbar)
         self.canvas = GrainCanvas(placeholder="Select an analyzed image")
@@ -244,6 +247,7 @@ class ReviewPage(QWidget):
                      "C cut · A add grain · Delete removes · drag to pan · "
                      "wheel zooms about the cursor",
                      "caption")
+        hint.setWordWrap(True)                      # round 3c: never forces the width
         tv.addWidget(hint)
         split.addWidget(top)
 
@@ -276,19 +280,23 @@ class ReviewPage(QWidget):
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 1)
         split.setSizes([620, 240])
-        h.addWidget(split, 1)
+        # round 3c (display scaling): at small logical sizes the canvas +
+        # comparison table scroll vertically instead of being squeezed
+        self.canvas.setMinimumHeight(200)
+        self.centre_scroll = scroll(split)
+        self.centre_scroll.setObjectName("reviewCentreScroll")
+        h.addWidget(self.centre_scroll, 1)
 
         side = Panel("left")
         side.setMinimumWidth(400)
         side.setMaximumWidth(460)
+        self._side_panel = side
         sv = QVBoxLayout(side)
         sv.setContentsMargins(0, 0, 0, 0)
         inner = QWidget()
         iv = QVBoxLayout(inner)
         iv.setContentsMargins(SPACE.lg, SPACE.lg, SPACE.lg, SPACE.lg)
         iv.setSpacing(SPACE.md)
-        g = QGridLayout()
-        g.setSpacing(SPACE.sm)
         self.c_count = MetricCard("Grains", 0, "", 0)
         self.c_area = MetricCard("Mean area", 0, "µm²", 2)
         self.c_diam = MetricCard("Mean diameter", 0, "µm", 2)
@@ -299,10 +307,11 @@ class ReviewPage(QWidget):
         self.c_inv.setToolTip("Share of the frame excluded from analysis (black regions, "
                               "outside the scan area)")
         self.c_g.setToolTip("ASTM E112 grain size number (needs a calibrated image)")
-        for i, c in enumerate((self.c_count, self.c_area, self.c_diam, self.c_cov, self.c_inv,
-                               self.c_g)):
-            g.addWidget(c, i // 2, i % 2)
-        iv.addLayout(g)
+        # round 3c: 2 across when there is room, else one column (never clipped)
+        self.stats_grid = CardGrid(min_col=140, max_cols=2, spacing=SPACE.sm)
+        self.stats_grid.adopt([self.c_count, self.c_area, self.c_diam, self.c_cov, self.c_inv,
+                               self.c_g])
+        iv.addWidget(self.stats_grid)
         self.filters = FilterCard()
         self.filters_host = Reveal(self.filters)
         iv.addWidget(self.filters_host)
@@ -477,6 +486,20 @@ class ReviewPage(QWidget):
             self.state.persist_ui_state()
 
     # ------------------------------------------------------------------ sync
+    COMPACT_W = 1100       # round 3c: narrower side panels below this page width
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        compact = self.width() < self.COMPACT_W
+        film, side = (190, 300) if compact else (230, 400)
+        if self.film.minimumWidth() != film:
+            self.film.setMinimumWidth(film)
+            self.film.setMaximumWidth(220 if compact else 290)
+            # the 4-way view switch elides its labels rather than overflow
+            self.view_seg.setFixedWidth(250 if compact else 330)
+        if self._side_panel.minimumWidth() != side:
+            self._side_panel.setMinimumWidth(side)
+
     def _on_session(self) -> None:
         self.stack.set_current_index(1 if self.state.session is not None else 0)
         self._on_images()
