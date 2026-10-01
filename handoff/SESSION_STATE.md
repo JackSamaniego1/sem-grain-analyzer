@@ -1,46 +1,48 @@
 # SESSION STATE - read this first when resuming
 
-**Last updated:** 2026-09-30 (late night: UPDATE 4 fully code-complete with item 5 follow-up done)  
-**Branch:** `v3-dev` | **Last commit:** `9ccaf90` (item 5 follow-up: `result_scan` persisted, scan-area reopen survives) | **Phase:** UPDATE 4 code-complete; all 16 items done; GPU trial build pending NSIS; manual spot checks pending user  
-**Resume with:** read this file only. All code-complete; GPU trial build & manual spot checks pending user.
+**Last updated:** 2026-09-30 (evening: UPDATE 4 batch 4 pre-release UX overhaul in progress)  
+**Branch:** `v3-dev` | **Last commit:** `fac4fb7` (Analyze sidebar step wizard + read-only details A-done) | **Phase:** UPDATE 4 batch 4 workstreams A (done), B (in progress), C (built)  
+**Resume with:** read this file only. Workstream A merged; B & C uncommitted; spot checks all passed; D-38/39/40/41 logged.
 
 ## Done and committed
 
 **v3.0.1 shipped** to user (PPTX summary slide + Excel fixes, 862 tests green).
 
-**UPDATE 4 COMPLETE (code & tests; 2026-09-29 to 2026-09-30):**
-- **Batch 1 (2026-09-29):**
-  - **42e44a2**: Item 1 — New Lot/Part dialog: multiple entry boxes, stays on page.
-  - **b343d3f + f42fdab**: Item 2 — Drag images into lot (copy into job folder).
-  - **05435d7**: Item 3 — Image checkboxes + "Analyze selected (N)" button.
-  - **e09677f**: Item 16 — Units & bins fix (nm²↔µm² rescale, equal-width bins).
-  - **fa6c95f + 2ce1e24**: Item 18 — PPTX percentile slide per part & lot.
+**UPDATE 4 COMPLETE (code & tests; 2026-09-29 to 2026-09-30):** All 16 items code-complete (batches 1–3).
+- **Batch 1 (2026-09-29)**: Items 1–3, 16, 18 (New Lot/Part multi-entry, drag images, checkboxes, units rescale, percentile slide).
+- **Batch 2 (2026-09-30)**: Items 6, 14, 10a, 17, 4 core, 19, 9, 13, 10b core, 10b packaging (scale dropdown, display persist, distribution slides, OCR, contents page, opacity pill, grouped tree, GPU/CUDA, pack scaffolding).
+- **Batch 3 (2026-09-30)**: Items 15, 11, 5, 10b installer page, 7, 8, 12 (lot summary charts, auto-fill metadata, profiles + out-of-date rule, GC guard, Add grain lasso, overlay LUT/patch + lazy imports). Full suite: **1377 passed, 2 skipped, 0 failed**.
 
-- **Batch 2 (2026-09-30):**
-  - **83a864e**: Item 17 — PPTX per-lot grain distribution slides (area + diameter bars + KDE trendline) + lot-to-lot comparison.
-  - **7a70d74**: Items 6, 14, 10a — scale-length unit dropdown + accent pulse; display mode persists; "AI runs on CPU" tile removed.
-  - **8a059e0** (reviewed): Item 4 core — RapidOCR offline info-bar OCR (JEOL 100 nm, Thermo 100 µm, vendor logo, beam current parsed).
-  - **1c3eec9**: Item 19 — PPTX contents page as slide 2 with page numbers/ranges and clickable links.
-  - **822bfb3**: Item 10b core — core/ai_device.py (`ai_devices()`, `resolve_device`, GPU OOM→CPU redo, device notes in results).
-  - **fcf57cc**: Item 10b packaging — GPU pack scaffolding (OFF by default), make_gpu_pack.py, create_gpu_pack_nsis.py, requirements-gpu.txt.
-  - **4127728**: Items 9, 13 — Overlay opacity pill (top-right image, persisted); Review image list grouped Job › Part › Lot.
+**User manual spot checks (2026-09-30):** All 7 checks on real SEM images PASSED (Add grain, image details JEOL/Thermo, sample report, Resolution Profiles, edit during lock, crash log, scaling 150/200%).
 
-## Test suite status
-- **1366 passed** (full suite with item 5 follow-up scan persistence & scan-area reopen tests; 2 skipped, 0 failed; `-X faulthandler` confirms no fatal crashes)
-- Offline guard clean (no network egress)
-- Installer builds locally: GrainAnalyzer_Setup.exe 644 MB
-- **NSIS not installed on dev PC** (no makensis on PATH) — GPU trial build remains blocked pending build-engineer environment setup
+## In progress — UPDATE 4 Batch 4 (pre-release UX overhaul)
 
-## Completed follow-ups & deferred items
-- **Item 5 follow-ups DONE**: out-of-date results rule (flag + exclude from reports/exports until re-analysed, survive reopen), label cleared by hand changes, card tests added. Pending: scan-area-only reopen flag needs data/session model field (low priority).
-- **Item 10b GPU trial build DEFERRED**: code complete (core ai_device modes, installer GPU page, pack scripts); NSIS not installed on dev PC → trial build + manual install test pending user's environment.
-- **Item 12 DONE (f440f40)**: overlay_layer rebuilt with per-grain LUT on uint32 view (2048×1536: 69→19 ms; with exclusions 112→39 ms) + overlay_patch() for changed rectangles; grain_canvas patches only changed rect after edits (no 3 full rebuilds); skimage/scipy.stats import lazily on first use; draw_overlay=False in analyze_image; app startup 980→510 ms. Tests: test_ui_overlay_patch (pixel-identical), test_startup_lazy_imports. Full suite 1360 passed, 2 skipped; smoke launch OK.
+**Workstream A (sidebar wizard) DONE (fac4fb7)**
+- Analyze right sidebar rebuilt as tiered step wizard: Resolution profile → Set scan area → Set scale bar → Detection mode → Start analysis → Progress at bottom.
+- Step gating: each step active only when previous done; check badges on completion.
+- Under-image SetupTile becomes read-only details strip (scan rect, scale, image metadata).
+- Removed: overlay opacity slider + excluded-regions section from sidebar (canvas pill stays per D-34).
+- Test suite: 1377 passed, 2 skipped. Code review independent APPROVE (pending).
+
+**Workstream B (tutorial) IN PROGRESS — uncommitted**
+- Action-driven tour: each step points at one control, auto-advances on signal (no Next/Back buttons).
+- Bundled 3 synthetic SEM images in assets/tutorial/ (JEOL-style 10 µm scale; generated by tools/make_tutorial_images.py).
+- Tour creates/reuses "Tutorial" job › "Sample part" › "Lot 1" on first start.
+- Steps auto-advance on: session open, scan/scale set, mode chosen, analysis done, grain selected, report exported.
+- ui/tour/steps.py rebuilt for signal-driven advancement.
+
+**Workstream C (splash) BUILT — uncommitted (animation fix in progress)**
+- Animated grain microstructure splash: Voronoi polycrystal (~60 grains), 1.2 s animation, QPainter only.
+- Respects GRAIN_REDUCED_MOTION env var (static final frame).
+- Splash runs while main window loads; closes when window ready + animation completes ≥1 pass.
+- Files: main.py, ui/widgets/splash.py, tests/test_ui_splash.py (headless render test).
+- No startup delay; zero new dependencies; offline-compliant.
 
 ## NEXT 3 ACTIONS
 
-1. **User manual spot checks on real SEM images**: Add grain; image details (JEOL/Thermo); sample report (Lot Summary, percentile, distribution, contents slides in PPTX + Lot Summary/raw data in Excel); Resolution Profiles end-to-end; editing during analysis lock; crash log after forced error; display scaling 150/200%.
-2. **GPU trial build (build-engineer)** once NSIS is on PATH: build GrainAnalyzer_GPU_Pack.exe → manual pack install + GPU device detection on a work PC.
-3. **Release prep for v3.1** after spot checks pass (version bump via version.py, CHANGELOG, tag) — only when user asks.
+1. **Finish + commit C (splash animation fix)** so the animation always plays for one full pass before splash closes.
+2. **Finish + commit B (tutorial action-driven tour)** with bundled synthetic images and signal-based advancement.
+3. **Apply code-review findings on A** (sidebar wizard) + user re-tests new Analyze wizard, tutorial, splash.
 
 **Batch 3 final status (code & tests complete; 2026-09-30):**
 - [x] Item 15 DONE (b4e38a5): Lot Summary in Excel (per-lot distribution chart + subtotals) + PowerPoint (job summary table + bar+trendline charts).
@@ -68,6 +70,9 @@
 - D-36: App is "universal": one install, GPU if usable else CPU (auto).
 - D-37: JEOL 110–135 mm check stays as is (user has no images at other magnifications).
 
+## Blocked items
+- **GPU trial build (item 10b)**: NSIS not installed on dev PC (no makensis on PATH). Awaiting build-engineer environment or user build on a machine with NSIS.
+
 ## How to run
 ```powershell
 cd "C:\Users\saman\GRAIN ANALYSIS TOOL"
@@ -76,9 +81,10 @@ cd "C:\Users\saman\GRAIN ANALYSIS TOOL"
 ```
 
 ## Handoff bookmarks
-- `handoff/UPDATE_4.md` — 16-item checklist; read before starting
+- `handoff/UPDATE_4.md` — 16-item checklist (batch 4 added to this folder; see UPDATE_4_BATCH4.md)
+- `handoff/UPDATE_4_BATCH4.md` — batch 4 spec (workstreams A/B/C, decisions D-38..D-41)
 - `handoff/02_TEAM_ROSTER.md` — agent roster and concurrency rules
-- `handoff/03_TASK_BOARD.md` — task tracking (flip status todo→doing→review→done/blocked)
-- `handoff/05_DECISIONS.md` — ADR-style decision log (D-01..D-37)
+- `handoff/03_TASK_BOARD.md` — task tracking (items 4A/4B/4C batch 4 rows added)
+- `handoff/05_DECISIONS.md` — ADR-style decision log (D-01..D-42)
 - `handoff/07_IDEAS_BACKLOG.md` — ideas (top 25 active; rest archived)
 

@@ -174,3 +174,10 @@ See handoff/UPDATE_4.md: 19 items, 3 batches, execution checklist.
 | 7 | Stability on weak CPUs during analysis | ui-designer + detection-engineer | done | 502d8c8 UI + a51a2d2 core + d880550 GC guard; wired startup call, AnalysisQueue fix, crash log, lock, undo cleanup, thread caps, GC safety. Full suite 1360 passed. |
 | 8 | Review: "Add grain" tool | ui-designer + detection-engineer | done | 37e6040 UI + 273750b core; split-tool lasso on Review page, shortcut A |
 | 12 | Fable: speed & usability optimisation | fable | done | f440f40: detection (b5b1e7b thread cap) + UI-side (overlay LUT+patch, lazy imports, 980→510 ms startup); full suite 1360 passed |
+
+**Batch 4 (2026-09-30 evening; pre-release UX overhaul):**
+| # | Item | Owner | Status | Notes |
+|---|------|-------|--------|-------|
+| 4A | Analyze sidebar step wizard (D-38) | ui-designer (opus) | done | fac4fb7: tiered profile > scan > scale > mode > run > progress; read-only details strip; removed overlay slider + excluded regions. 1377 tests passed. Code review independent APPROVE pending. |
+| 4B | Tutorial rebuild with action-drive auto-advance (D-39) | ui-designer | doing | Action-driven tour; points at control, auto-advances on signal (session open, scan/scale/mode set, analysis done, grain select, export done). Bundled 3 synthetic SEM images (assets/tutorial/ + JEOL-style 10 µm scale). ui/tour/steps.py rebuild. Uncommitted. |
+| 4C | Launcher splash animated grain rendering (D-40, D-41) | ui-designer | doing | Voronoi polycrystal splash (QPainter, 1.2 s animation, respects GRAIN_REDUCED_MOTION). Files: main.py, ui/widgets/splash.py, tests/test_ui_splash.py. Animation fix in progress (ensure one full pass before close). Uncommitted. |
