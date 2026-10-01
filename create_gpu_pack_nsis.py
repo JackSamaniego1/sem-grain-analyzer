@@ -29,10 +29,12 @@ NSIS_TEMPLATE = r"""
 Name "${APP_NAME} ${APP_VERSION} - GPU Pack"
 OutFile "GrainAnalyzer_GPU_Pack.exe"
 RequestExecutionLevel admin
-; ~3.5 GB of CUDA libraries: solid LZMA keeps the installer under the 2 GB
-; NSIS / GitHub Release limit (CI fails the build if it does not).
-SetCompressor /SOLID lzma
-SetCompressorDictSize 64
+; ~3.7 GB of CUDA libraries. NOT /SOLID: 32-bit makensis aborts with
+; "Internal compiler error #12345: error mmapping file" once the solid
+; stream passes ~1.9 GB. Per-file LZMA gives ~1.4 GB (< 2 GB NSIS / GitHub
+; Release limit; BUILD_WINDOWS.bat fails the build if it is exceeded).
+SetCompressor lzma
+SetCompressorDictSize 32
 
 !include "MUI2.nsh"
 !define MUI_ABORTWARNING
