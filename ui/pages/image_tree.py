@@ -38,7 +38,7 @@ from ui.design import icons
 from ui.design.theme import ui_font
 from ui.design.tokens import RADII, SPACE, TYPE, TypeStyle
 from ui.format import fmt_int
-from ui.widgets import IconButton, label
+from ui.widgets import AnimatedButton, IconButton, label
 from ui.widgets._base import ThemeAware, qcolor, tokens
 from ui.workers import IMAGE_EXTS
 
@@ -345,6 +345,7 @@ class ImageTree(ThemeAware, QWidget):
     remove_requested = Signal(list)         # uids
     restore_requested = Signal(object)      # list of record Paths, or None = all
     checked_changed = Signal(list)          # uids ticked now (only when checkable)
+    remove_checked_requested = Signal(list)  # round 3: "Remove selected" (ticked uids)
 
     def __init__(self, state, parent: Optional[QWidget] = None,
                  checkable: bool = False, manage: bool = True) -> None:
@@ -385,6 +386,27 @@ class ImageTree(ThemeAware, QWidget):
         self.add_btn.setVisible(self._manage)
         head.addWidget(self.add_btn)
         v.addLayout(head)
+        # Round 3: Select all / none + Remove selected (Analyze page list only)
+        tools = QHBoxLayout()
+        tools.setSpacing(SPACE.xs)
+        self.select_all_btn = AnimatedButton("Select all", "mdi6.checkbox-multiple-outline",
+                                             "ghost", "sm")
+        self.select_all_btn.setObjectName("analyzer_select_all")
+        self.select_all_btn.setToolTip("Tick every image in the analyzer")
+        self.select_all_btn.clicked.connect(self.toggle_select_all)
+        self.remove_sel_btn = AnimatedButton("Remove selected", "mdi6.playlist-remove",
+                                             "ghost", "sm")
+        self.remove_sel_btn.setObjectName("analyzer_remove_selected")
+        self.remove_sel_btn.clicked.connect(self._remove_checked)
+        tools.addWidget(self.select_all_btn)
+        tools.addWidget(self.remove_sel_btn)
+        tools.addStretch(1)
+        self._tools = QWidget()
+        self._tools.setLayout(tools)
+        tools.setContentsMargins(0, 0, 0, 0)
+        self._tools.setVisible(bool(checkable) and self._manage)
+        v.addWidget(self._tools)
+        self.checked_changed.connect(lambda _u: self._sync_tools())
         self.tree = _Tree()
         self.tree.checkable = checkable
         self.tree.check_toggled.connect(self._toggle_item)
@@ -419,6 +441,46 @@ class ImageTree(ThemeAware, QWidget):
         self.hint.setWordWrap(True)
         v.addWidget(self.hint)
         self._connect_theme()
+        self._sync_tools()
+
+    # ------------------------------------------------------------------ round 3 tools
+    def all_checked(self) -> bool:
+        return bool(self._items) and all(u in self.tree._checked for u in self._items)
+
+    def toggle_select_all(self) -> None:
+        """Select all <-> Select none (every image currently in the list)."""
+        if not self.tree.checkable:
+            return
+        self._set_checked(set() if self.all_checked() else set(self._items))
+        self._sync_tools()
+
+    def _remove_checked(self) -> None:
+        uids = self.checked_uids()
+        if uids:
+            self.remove_checked_requested.emit(uids)
+
+    def set_remove_blocked(self, why: str) -> None:
+        """Analyze page: a run touches the ticked images -> explain, disable."""
+        self._remove_block = why or ""
+        self._sync_tools()
+
+    def _sync_tools(self) -> None:
+        if not hasattr(self, "remove_sel_btn"):
+            return
+        n = len(self.checked_uids())
+        every = self.all_checked()
+        self.select_all_btn.setText("Select none" if every else "Select all")
+        self.select_all_btn.setToolTip("Untick every image" if every
+                                       else "Tick every image in the analyzer")
+        self.select_all_btn.setEnabled(bool(self._items))
+        self.remove_sel_btn.setText(f"Remove selected ({n})" if n else "Remove selected")
+        block = getattr(self, "_remove_block", "")
+        self.remove_sel_btn.setEnabled(n > 0 and not block)
+        self.remove_sel_btn.setToolTip(
+            block or ("Tick images to remove them from the analyzer" if not n else
+                      f"Take the {n} ticked image{'s' if n != 1 else ''} out of the analyzer "
+                      "only — files and saved results stay in their job; load them again "
+                      "from Projects"))
 
     def sizeHint(self) -> QSize:
         return QSize(260, 600)
@@ -439,6 +501,8 @@ class ImageTree(ThemeAware, QWidget):
         if not on:
             self._set_checked(set())
         self.tree.viewport().update()
+        self._tools.setVisible(bool(on) and self._manage)
+        self._sync_tools()
 
     def is_checked(self, uid) -> bool:
         return uid in self.tree._checked
@@ -558,6 +622,7 @@ class ImageTree(ThemeAware, QWidget):
             self.set_current(self._current)
         if self.tree._checked:            # ticks survive rebuilds; removed images drop out
             self._set_checked({u for u in self.tree._checked if u in self._items})
+        self._sync_tools()
 
     def _fill(self, it: QTreeWidgetItem, im) -> None:
         tone, text = image_status(im)

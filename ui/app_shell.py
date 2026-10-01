@@ -332,6 +332,7 @@ class AppShell(QMainWindow):
         st.profile_changed.connect(self._on_profile_changed)
         st.metadata_calibration.connect(self._on_metadata_calibration)
         st.session_opened.connect(self._on_session_opened)
+        st.records_added.connect(self._on_session_opened)     # round 3: title / breadcrumb
         st.session_closed.connect(self._on_session_closed)
         st.save_state_changed.connect(self._on_save_state)
         st.current_image_changed.connect(lambda _u: self._update_cal_chip())
@@ -530,9 +531,9 @@ class AppShell(QMainWindow):
                 "Opening the new lot or session",
                 retry=lambda: self._on_wizard_created(path)):
             return
-        s = self.state.session
-        if s is not None and s.path == path:
-            self.state.close_session()      # images were appended on disk: reload
+        # Round 3: ADD to what is in the analyzer.  A record that is already
+        # loaded picks up the images appended on disk (open_session ->
+        # add_records -> restore_images); nothing else is reloaded or wiped.
         self.open_session(path, prefer="analyze", probe=True)
 
     def open_session(self, path, prefer: Optional[str] = None, probe: bool = False,

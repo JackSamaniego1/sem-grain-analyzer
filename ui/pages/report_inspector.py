@@ -16,8 +16,8 @@ from typing import List, Optional
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QSpinBox, QVBoxLayout,
-    QWidget,
+    QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QSizePolicy, QSpinBox,
+    QVBoxLayout, QWidget,
 )
 
 from reports.charts import (
@@ -46,6 +46,38 @@ CHART_METRIC_LABELS = dict(CHART_METRICS)
 
 def _cap(text: str):
     lab = label(text, "caption")
+    lab.setWordWrap(True)
+    return lab
+
+
+class _ElidedLabel(QLabel):
+    """Single-line label that elides (middle) to its width instead of forcing
+    the inspector column wider than its panel; the full text is the tooltip
+    unless one is set explicitly."""
+
+    def __init__(self, text: str, role: Optional[str] = None,
+                 tone: Optional[str] = None) -> None:
+        super().__init__()
+        self._full = text or ""
+        if role:
+            self.setProperty("role", role)
+        if tone:
+            self.setProperty("tone", tone)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setMinimumWidth(40)
+        self.setToolTip(self._full)
+        super().setText(self._full)
+
+    def full_text(self) -> str:
+        return self._full
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        super().setText(self.fontMetrics().elidedText(self._full, Qt.ElideMiddle,
+                                                      max(20, self.width())))
+
+
+def _wrap(lab: QLabel) -> QLabel:
     lab.setWordWrap(True)
     return lab
 
@@ -132,6 +164,9 @@ class ReportInspector(QWidget):
             sb.setSpecialValueText("Auto")
             sb.setToolTip(f"Histogram bins for grain {what} (Auto = square-root rule)")
         self.palette = QComboBox()
+        # Long palette names must not force the column wider than its panel.
+        self.palette.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.palette.setMinimumContentsLength(8)
         self._reload_palette_combo()
         self.palette.setToolTip("Color scheme of the exported workbook and deck (navy titles, "
                                 "color-coded sheet tabs). \"New custom palette...\" picks 3 "
@@ -488,8 +523,8 @@ class ReportInspector(QWidget):
         _clear_layout(self.sel_lay)
         m = self.model
         if m is None or key is None:
-            self.sel_lay.addWidget(label("Select a section or an image in the outline.",
-                                         tone="secondary"))
+            self.sel_lay.addWidget(_wrap(label("Select a section or an image in the outline.",
+                                               tone="secondary")))
             return
         kind, ident = key
         if kind == "image":
@@ -497,8 +532,8 @@ class ReportInspector(QWidget):
             if img is None:
                 return
             self.sec_sel.setToolTip("")
-            name = label(img.display(), "body_strong")
-            name.setToolTip(img.image_path)
+            name = _ElidedLabel(img.display(), "body_strong")
+            name.setToolTip(img.image_path or img.display())
             self.sel_lay.addWidget(name)
             cb = QCheckBox("Include this image")
             cb.setChecked(img.include)
@@ -520,9 +555,9 @@ class ReportInspector(QWidget):
             return
         if ident == "images":
             self.sel_lay.addWidget(label("Images", "body_strong"))
-            self.sel_lay.addWidget(label("Tick images in the outline to include them; drag them "
-                                         "to set the order of sheets and slides.",
-                                         tone="secondary"))
+            self.sel_lay.addWidget(_wrap(label("Tick images in the outline to include them; "
+                                               "drag them to set the order of sheets and "
+                                               "slides.", tone="secondary")))
             return
         sec = next((s for s in m.sections if s.id == ident), None)
         if sec is None:
@@ -537,7 +572,8 @@ class ReportInspector(QWidget):
             self.sel_lay.addWidget(t)
             self.text_title = t
         else:
-            self.sel_lay.addWidget(label(SECTION_LABELS.get(sec.type, sec.title), "body_strong"))
+            self.sel_lay.addWidget(_wrap(label(SECTION_LABELS.get(sec.type, sec.title),
+                                               "body_strong")))
         self.sel_lay.addWidget(_cap(f"Excel: {xl}\nPowerPoint: {pp}"))
         if sec.type != "cover":
             cb = QCheckBox("Include in the report")
@@ -580,7 +616,8 @@ class ReportInspector(QWidget):
             ic = QLabel()
             ic.setPixmap(icons.pixmap("success", 16, t.success.fg))
             row.addWidget(ic, 0, Qt.AlignTop)
-            row.addWidget(label("Ready to export — no problems found.", tone="success"), 1)
+            row.addWidget(_wrap(label("Ready to export — no problems found.",
+                                      tone="success")), 1)
             self.checks_lay.addLayout(row)
             return
         for sev, text, hint in problems:
@@ -617,8 +654,8 @@ class ReportInspector(QWidget):
             row.addWidget(ic)
             col = QVBoxLayout()
             col.setSpacing(0)
-            name = label(e.get("file", ""), "body_strong")
-            name.setToolTip(e.get("path", ""))
+            name = _ElidedLabel(e.get("file", ""), "body_strong")
+            name.setToolTip(e.get("path", "") or e.get("file", ""))
             col.addWidget(name)
             col.addWidget(_cap(f"{e.get('time', '')} · {e.get('operator', '')}"))
             row.addLayout(col, 1)

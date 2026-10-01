@@ -204,12 +204,15 @@ class TourController(QObject):
         except Exception:
             rec = None
         s = st.session
-        if rec is not None and s is not None and _same(s.path, rec):
+        if rec is not None and s is not None and any(_same(r.path, rec)
+                                                     for r in (s.records or [])):
             if self._busy():
                 self.tutorial_record = Path(rec)     # being analysed: leave it as it is
                 self.tutorial_ready.emit(self.tutorial_record)
                 return
-            st.close_session()                       # a reset needs it closed
+            # a reset needs it out of the analyzer -- round 3: only the
+            # Tutorial job's images, never the user's other loaded images
+            st.drop_records([rec])
         try:
             operator = st.operator() or ""
         except Exception:

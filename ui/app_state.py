@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import itertools
 import logging
+import os
 from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -1072,6 +1073,8 @@ class AppState(QObject):
     info_bar_ready = Signal(object)              # uid: info bar detected (or not)
     records_loading = Signal(int, int)           # UX-09: records loaded, total
     records_loaded = Signal()                    # UX-09: every record's pixels are in
+    records_added = Signal()                     # round 3: records added to / dropped from
+                                                 # the open analyzer set (no reset)
     setup_changed = Signal()                     # UX-02: scan area / scale readiness changed
     setup_progress = Signal(int, int)            # UX-02: auto-find done, total
     setup_finished = Signal(dict)                # UX-02: auto-find summary
@@ -1341,8 +1344,14 @@ class AppState(QObject):
         return node_chain(self.root, self.current_node)
 
     # ------------------------------------------------------------------ session
-    def open_session(self, path, on_done=None) -> None:
+    def open_session(self, path, on_done=None, replace: bool = False) -> None:
+        """Open a lot / session record.  Round 3: while images are already in
+        the analyzer the record is ADDED to them (:meth:`add_records`);
+        ``replace=True`` (or nothing open) installs it on its own."""
         path = Path(path)
+        if self.session is not None and not replace:
+            self.add_records([path], on_done)
+            return
         if self.session is not None and self.session.path == path and not self.session.multi:
             if on_done:
                 on_done(True)
@@ -1482,17 +1491,21 @@ class AppState(QObject):
         return im
 
     # ------------------------------------------------------------------ UX-09 several records
-    def open_records(self, paths, on_done=None) -> None:
+    def open_records(self, paths, on_done=None, replace: bool = False) -> None:
         """Load the images of several lots / sessions into the analyzer.
 
         The manifests are indexed first (fast, off-thread) so every image is
         listed at once; pixels and saved results then stream in record by
         record on the thread pool (``records_loading`` / ``records_loaded``)
-        -- the GUI never waits for them.  One record = :meth:`open_session`."""
+        -- the GUI never waits for them.  One record = :meth:`open_session`.
+        Round 3: added to what is already in the analyzer unless ``replace``."""
         paths = list(dict.fromkeys(Path(p) for p in paths))
         if not paths:
             if on_done:
                 on_done(False)
+            return
+        if self.session is not None and not replace:
+            self.add_records(paths, on_done)
             return
         if len(paths) == 1:
             self.open_session(paths[0], on_done)
@@ -1570,6 +1583,159 @@ class AppState(QObject):
                      on_done=lambda b, r=rec: self._fill_record(doc, r, b),
                      on_error=lambda msg, r=rec: self._record_failed(doc, r, msg),
                      pool=load_pool())          # bounded: never every lot at once
+
+    # ------------------------------------------------------------------ round 3: additive load
+    @staticmethod
+    def _path_key(p) -> str:
+        try:
+            return os.path.normcase(str(Path(p).resolve()))
+        except OSError:
+            return os.path.normcase(str(Path(p).absolute()))
+
+    def record_loaded(self, path) -> bool:
+        """True when the lot / session folder ``path`` is in the analyzer."""
+        doc = self.session
+        if doc is None:
+            return False
+        k = self._path_key(path)
+        return any(self._path_key(r.path) == k for r in doc.records)
+
+    def add_records(self, paths, on_done=None) -> None:
+        """Round 3: ADD the images of lots / sessions to what is already in the
+        analyzer.  Images already there stay exactly as they are (results,
+        scale, scan area, ticks, current image, undo history); a record that is
+        already loaded only gets back the images that were removed from the
+        analyzer (plus files added to it on disk meanwhile) -- never twice."""
+        doc = self.session
+        if doc is None:
+            self.open_records(paths, on_done, replace=True)
+            return
+        paths = list(dict.fromkeys(Path(p) for p in paths or []))
+        if not paths:
+            if on_done:
+                on_done(False)
+            return
+        if not self.analysis_lock.guard_session(
+                "Loading other images", retry=lambda: self.add_records(paths, on_done)):
+            if on_done:
+                on_done(False)
+            return
+        have = {self._path_key(r.path): r for r in doc.records}
+        known = [have[self._path_key(p)].path for p in paths if self._path_key(p) in have]
+        new = [p for p in paths if self._path_key(p) not in have]
+        if known:
+            self.restore_images(record_paths=known)
+        if not new:
+            if on_done:
+                on_done(True)
+            return
+        self.flush()
+
+        def done(index):
+            if self.session is not doc:
+                if on_done:
+                    on_done(False)
+                return
+            keys = {self._path_key(r.path) for r in doc.records}
+            index = [d for d in (index or []) if self._path_key(d["path"]) not in keys]
+            if index:
+                self._append_records(doc, index)
+            elif not known:
+                self.message.emit("Nothing to load", "The selected folders contain no images.",
+                                  "info")
+            if on_done:
+                on_done(bool(index) or bool(known))
+
+        def failed(msg):
+            self.message.emit("Could not load the images", msg.splitlines()[0], "danger")
+            if on_done:
+                on_done(False)
+
+        run_task(_index_records, new, on_done=done, on_error=failed)
+
+    def _append_records(self, doc: SessionDoc, index: List[dict]) -> None:
+        """Placeholders for the new records' images, then stream them in
+        (same pipeline as :meth:`_install_records`, nothing existing touched)."""
+        recs = []
+        first_new = None
+        for d in index:
+            m = d["meta"]
+            rec = RecordRef(path=d["path"], meta=m, project_meta=d["project_meta"],
+                            sample_meta=d["sample_meta"], lot_meta=d["lot_meta"],
+                            px_per_um=float(m.px_per_um or 0.0),
+                            scan_rect=tuple(m.scan_rect) if m.scan_rect else None,
+                            filters=dict(m.filters or {}), loaded=False)
+            doc.records.append(rec)
+            recs.append(rec)
+            for fn in d["filenames"]:
+                ph = ImageDoc(filename=fn, record=rec, loading=True,
+                              status="queued", message="Loading…")
+                doc.images.append(ph)
+                first_new = first_new or ph
+        self._records_pending += len(recs)
+        if self.current_uid is None and first_new is not None:
+            self.current_uid = first_new.uid
+            self.current_image_changed.emit(self.current_uid)
+        self.records_added.emit()
+        self.images_changed.emit()
+        self.calibration_changed.emit()
+        self.setup_changed.emit()
+        total = len(doc.records)
+        self.records_loading.emit(total - self._records_pending, total)
+        for rec in recs:
+            run_task(_load_record_bundle, rec.path,
+                     on_done=lambda b, r=rec: self._fill_record(doc, r, b),
+                     on_error=lambda msg, r=rec: self._record_failed(doc, r, msg),
+                     pool=load_pool())
+
+    def drop_records(self, paths) -> int:
+        """Take whole records out of the analyzer (their files and saved
+        results stay on disk) -- e.g. the Tutorial job before it is reset.
+        Closes the analyzer when nothing is left.  Returns images dropped."""
+        doc = self.session
+        if doc is None:
+            return 0
+        want = {self._path_key(p) for p in paths}
+        gone = [r for r in doc.records if self._path_key(r.path) in want]
+        if not gone:
+            return 0
+        if len(gone) == len(doc.records):
+            n = len(doc.images)
+            self._close_now()
+            return n
+        self.flush()
+        gone_ids = {id(r) for r in gone}
+        dropped = [im for im in doc.images if id(doc.record_for(im)) in gone_ids]
+        idx = doc.index_of(self.current_uid)
+        doc.images = [im for im in doc.images if id(doc.record_for(im)) not in gone_ids]
+        doc.removed = [im for im in doc.removed if id(doc.record_for(im)) not in gone_ids]
+        # images that relied on the "first record" fallback keep their record
+        for im in doc.images + doc.removed:
+            if im.record is None and doc.records:
+                im.record = doc.records[0]
+        doc.records = [r for r in doc.records if id(r) not in gone_ids]
+        for r in gone:
+            if not r.loaded:
+                self._records_pending = max(0, self._records_pending - 1)
+        if self._path_key(doc.path) in want:     # re-base on the first remaining record
+            r0 = doc.records[0]
+            doc.path, doc.meta = r0.path, r0.meta
+            doc.project_meta, doc.sample_meta, doc.lot_meta = (
+                r0.project_meta, r0.sample_meta, r0.lot_meta)
+            self.current_node = NodeRef("lot" if doc.is_lot else "session", doc.path)
+            self.node_changed.emit(self.current_node)
+        for im in dropped:
+            self.overlays.discard_uid(im.uid)
+            self._arr_lru.pop(im.uid, None)
+            self._px_lru.pop(im.uid, None)
+        if all(im.uid != self.current_uid for im in doc.images):
+            self.current_uid = (doc.images[min(max(idx, 0), len(doc.images) - 1)].uid
+                                if doc.images else None)
+            self.current_image_changed.emit(self.current_uid)
+        self.records_added.emit()
+        self.images_changed.emit()
+        self.setup_changed.emit()
+        return len(dropped)
 
     def is_loading(self) -> bool:
         """True while a multi-record load is still streaming pixels in."""

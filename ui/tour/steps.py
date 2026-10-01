@@ -178,7 +178,11 @@ def tutorial_open(shell) -> bool:
         # still being prepared: wait; not available (assets missing): any session
         return bool(getattr(getattr(shell, "tour", None), "tutorial_failed", False))
     try:
-        return Path(s.path).resolve() == rec.resolve()
+        want = rec.resolve()
+        # round 3: loads add to the analyzer -- the Tutorial job may be one
+        # of several records (its images must be there and loaded)
+        return any(Path(r.path).resolve() == want for r in (s.records or [])) \
+            or Path(s.path).resolve() == want
     except OSError:
         return False
 
@@ -546,7 +550,8 @@ def default_steps() -> Tuple[TourStep, ...]:
         TourStep("open_job", _open_title, _open_body, kind="click", page="projects",
                  targets=("tourNewSession",),
                  fallbacks=(("tourProjectsTree",), (rail_anchor("projects"),)),
-                 advance_on=when(lambda sh: [st(sh).session_opened], tutorial_open),
+                 advance_on=when(lambda sh: [st(sh).session_opened, st(sh).records_added],
+                                 tutorial_open),
                  done=tutorial_open),
         TourStep("scan", "Set the scan area",
                  "Click All images. The app finds the microscope's info bar at the bottom of "

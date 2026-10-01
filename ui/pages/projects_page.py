@@ -469,7 +469,18 @@ class NodeCard(SelectableCard):
             self.check.blockSignals(False)
         self.set_selected(on)
 
+    def mouseDoubleClickEvent(self, e) -> None:
+        # Round 3: a click toggles the tile, so the release that ends a
+        # double-click must not toggle it back (it opens the item instead).
+        self._eat_release = e.button() == Qt.LeftButton
+        super().mouseDoubleClickEvent(e)
+
     def mouseReleaseEvent(self, e) -> None:
+        if getattr(self, "_eat_release", False):
+            self._eat_release = False
+            self.last_modifiers = Qt.NoModifier
+            QWidget.mouseReleaseEvent(self, e)
+            return
         self.last_modifiers = e.modifiers()
         super().mouseReleaseEvent(e)
 
@@ -1463,9 +1474,21 @@ class ProjectsPage(QWidget):
         the folder must then not be renamed, moved or deleted."""
         s = self.state.session
         if s is not None:
-            try:
-                s.path.relative_to(path)
-            except ValueError:
+            def under(p: Path) -> bool:
+                try:
+                    Path(p).relative_to(path)
+                    return True
+                except ValueError:
+                    return False
+            # round 3: several records can be in the analyzer -- release
+            # every one under ``path`` (the others stay loaded)
+            hit = [r.path for r in (s.records or []) if under(r.path)]
+            if not hit and not under(s.path):
+                return True
+            if not self.state.analysis_lock.guard_session("Renaming, moving or deleting"):
+                return False
+            if hit and len(hit) < len(s.records or []):
+                self.state.drop_records(hit)
                 return True
             return self.state.close_session() is not False
         return True
@@ -1948,10 +1971,16 @@ class ProjectsPage(QWidget):
     def cards(self) -> List[NodeCard]:
         return [w for w in self.grid.widgets() if isinstance(w, NodeCard)]
 
-    def _card_clicked(self, card: NodeCard) -> None:
+    def _card_clicked(self, card: NodeCard, exclusive: bool = False) -> None:
+        """Round 3: a plain click (or Space) on a tile's body TOGGLES that
+        tile only and never clears the others -- same as its check box.
+        Shift-click still selects a range; ``exclusive`` (programmatic
+        "reveal this item") selects just the one card."""
         mods = card.take_modifiers()
         key = str(card.item["path"])
-        if not card.selectable:
+        if exclusive and card.selectable:
+            self._set_selection([key])
+        elif not card.selectable:
             self._set_selection([])
             card.set_selected(True)
         elif mods & Qt.ShiftModifier and self._anchor is not None:
@@ -1963,10 +1992,8 @@ class ProjectsPage(QWidget):
                 self._set_selection(base + [k for k in rng if k not in base], anchor=False)
             else:
                 self._set_selection([key])
-        elif mods & Qt.ControlModifier:
+        else:                               # plain click / Ctrl+click / Space
             self._toggle(key)
-        else:
-            self._set_selection([key])
         self._selected_card = card
         self._show_card_details(card)
 
@@ -2005,7 +2032,7 @@ class ProjectsPage(QWidget):
         for c in self.cards():
             if Path(c.item["path"]) == Path(path):
                 c.last_modifiers = Qt.NoModifier
-                self._card_clicked(c)
+                self._card_clicked(c, exclusive=True)
                 self.grid_scroll.ensureWidgetVisible(c)
                 return
 

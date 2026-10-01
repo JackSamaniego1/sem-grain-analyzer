@@ -1408,6 +1408,8 @@ class AnalyzePage(QWidget):
         # UPDATE 4 item 7: the one analysis gate (AppState.analysis_lock)
         st.analysis_lock.bind(busy_uids=self.busy_uids, stop=self.cancel)
         self.busy_changed.connect(st.analysis_lock.set_active)
+        self.busy_changed.connect(lambda _on: self._sync_remove_block())       # round 3
+        self.film.remove_checked_requested.connect(self.remove_selected)
         self._sync_opacity(st.overlay_opacity)
 
     # ------------------------------------------------------------------ state sync
@@ -1959,6 +1961,38 @@ class AnalyzePage(QWidget):
                                lambda u=uids: self.state.restore_images(uids=u))
         return n
 
+    def _remove_blocked_reason(self, uids) -> str:
+        """Round 3: "Remove selected" waits while a run touches those images
+        (the analysis lock decides what is busy)."""
+        lock = self.state.analysis_lock
+        busy = set(lock.busy_uids()) if lock.is_active() else set()
+        if busy & set(uids):
+            return ("Analysis is running on some of the ticked images — wait for it to "
+                    "finish (or Cancel) before removing them")
+        return ""
+
+    def _sync_remove_block(self) -> None:
+        self.film.set_remove_blocked(self._remove_blocked_reason(self.film.checked_uids()))
+
+    def remove_selected(self, uids=None) -> int:
+        """Round 3: take the ticked images out of the analyzer ONLY (files,
+        results and job folders untouched -- Projects loads them again)."""
+        uids = list(uids if uids is not None else self.film.checked_uids())
+        if not uids:
+            return 0
+        why = self._remove_blocked_reason(uids)
+        if why:
+            self._toast("Analysis is running", why + ".", "info")
+            return 0
+        self.state.flush()                    # pending edits/results are on disk first
+        n = self.state.remove_images(uids)
+        if n:
+            self._toast_action(f"Removed {n} image{'s' if n != 1 else ''} from the Analyzer "
+                               "— still saved in their job",
+                               "Load them again from Projects (results intact), or Undo.",
+                               "info", "Undo", lambda u=uids: self.state.restore_images(uids=u))
+        return n
+
     def restore_images(self, record_paths=None) -> int:
         n = self.state.restore_images(record_paths)
         if n:
@@ -2022,6 +2056,7 @@ class AnalyzePage(QWidget):
         self.btn_sel.setVisible(n >= 2 or self._run_btn is self.btn_sel)
         if hasattr(self, "steps"):              # "Analyze selected" gates on the ticked
             self.sync_wizard()
+        self._sync_remove_block()
 
     def analyze_selected(self) -> None:
         """Run the ticked images through the same batch path as Analyze all."""
@@ -2073,6 +2108,7 @@ class AnalyzePage(QWidget):
                 self._end_run_controls()       # never leave the edit lock on
         if started:
             self.sync_wizard()                 # steps 1-2 wait while it runs
+            self._sync_remove_block()
         if not started:
             for im in images:
                 self.state.set_image_status(im.uid, "done" if im.result is not None else "pending")

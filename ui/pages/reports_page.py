@@ -194,12 +194,16 @@ class ReportsPage(QWidget):
         rv = QVBoxLayout(right)
         rv.setContentsMargins(0, 0, 0, 0)
         self.inspector = ReportInspector(self)
-        rv.addWidget(scroll(self.inspector))
+        self.inspector_scroll = scroll(self.inspector)     # vertical only
+        rv.addWidget(self.inspector_scroll)
+        self.inspector_panel = right
         right.setMinimumWidth(340)
-        right.setMaximumWidth(420)
+        right.setMaximumWidth(440)
         self.designer.addWidget(right)
         self.designer.setStretchFactor(1, 1)
-        self.designer.setSizes([260, 900, 360])
+        self.designer.setSizes([260, 900, 380])
+        self.fit_inspector_width()
+        self.inspector.installEventFilter(self)
         self.stack.addWidget(self.designer)
 
         self._save_timer = QTimer(self)
@@ -379,6 +383,28 @@ class ReportsPage(QWidget):
         if model is None:
             self.outline.clear()
             self._clear_previews()
+
+    # ================================================================== inspector width
+    def fit_inspector_width(self) -> None:
+        """Keep the inspector column at least as wide as its content's minimum
+        (+ the vertical scroll bar) so nothing is ever clipped on the right:
+        the scroll area scrolls vertically only. Long texts inside the
+        inspector wrap or elide, so this floor is the Document grid's."""
+        sb = self.inspector_scroll.verticalScrollBar()
+        sbw = max(sb.sizeHint().width(), sb.width() if sb.isVisible() else 0)
+        need = self.inspector.minimumSizeHint().width() + sbw + 2
+        panel = self.inspector_panel
+        lo = max(340, need)
+        if panel.minimumWidth() != lo:
+            panel.setMinimumWidth(lo)
+            panel.setMaximumWidth(max(440, lo))
+
+    def eventFilter(self, obj, ev) -> bool:
+        from PySide6.QtCore import QEvent
+        if obj is getattr(self, "inspector", None) and ev.type() in (
+                QEvent.LayoutRequest, QEvent.FontChange, QEvent.StyleChange, QEvent.Show):
+            QTimer.singleShot(0, self.fit_inspector_width)
+        return super().eventFilter(obj, ev)
 
     def _install(self, model: ReportModel, select=None, animate: bool = True) -> None:
         """Adopt a (new) model: outline, inspector, preview, checks."""

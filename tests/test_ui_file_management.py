@@ -124,8 +124,15 @@ def test_checkbox_ctrl_shift_selection_and_action_bar(page, env, qtbot):
     assert imgs[2].is_checked() and imgs[2].is_selected()
     qtbot.mouseClick(imgs[2], Qt.LeftButton, Qt.ControlModifier)     # …and toggles off
     assert page.selbar.count() == 1 and not imgs[2].is_checked()
-    qtbot.mouseClick(imgs[1], Qt.LeftButton)                         # plain click: only this
-    assert [c.item["path"] for c in page.selected_cards()] == [imgs[1].item["path"]]
+    # round 3: a plain click on the body TOGGLES that tile, never clears others
+    qtbot.mouseClick(imgs[1], Qt.LeftButton)
+    assert [c.item["path"] for c in page.selected_cards()] == [imgs[0].item["path"],
+                                                                imgs[1].item["path"]]
+    qtbot.mouseClick(imgs[1], Qt.LeftButton)                         # second click: off
+    assert [c.item["path"] for c in page.selected_cards()] == [imgs[0].item["path"]]
+    imgs[1].setFocus()
+    qtbot.keyClick(imgs[1], Qt.Key_Space)                            # Space toggles too
+    assert imgs[1].is_checked() and imgs[0].is_checked()
     qtbot.mouseClick(imgs[3], Qt.LeftButton, Qt.ShiftModifier)       # Shift: range 1..3
     assert page.selbar.text() == "3 images selected"
     assert "Delete 3" in page.selbar.delete_btn.text()
