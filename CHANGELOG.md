@@ -2,6 +2,84 @@
 
 All notable changes to Grain Analyzer are documented here.
 
+## [3.1.0] — 2026-10-01
+
+A big usability update driven by lab feedback: a guided step-by-step Analyze
+page, automatic reading of the scale bar and image details, reusable
+resolution profiles, a much richer PowerPoint report, and a tutorial that
+walks you through the real controls. Everything still works fully offline.
+
+### Added
+
+- **Analyze page step-by-step sidebar.** The right-hand side now walks you
+  through Resolution profile, Set scan area, Set scale bar, Detection mode,
+  and Start analysis, with progress shown at the bottom.
+- **Scale bar read from the image.** "Find scan area & scale bar" now reads
+  the scale-bar label (for example 100 nm or 15 µm) and fills in the length
+  and unit. The reading is shown in a details strip under the image. The
+  length unit is a separate drop-down (nm, µm, mm) and the length box
+  pulses so it is easy to find.
+- **Resolution Profiles.** Save a scale and scan area once and reuse it for
+  every image taken at that setting. Profiles are chosen by hand, can be
+  imported and exported, and the profile in use is shown under the image.
+- **Image details auto-fill.** Magnification, instrument, accelerating
+  voltage and working distance are filled in on load from JEOL and Thermo
+  images (from the file's metadata or the text on the information bar).
+- **Add grain tool** on the Review page, drawn the same way as the split tool.
+- **Overlay opacity slider** in the top-right corner of the image on Analyze
+  and Review. The display mode (Original / Overlay) now stays the same when
+  you switch images, and the Review list is grouped Job > Part > Lot like
+  the Analyze list.
+- **New Lot / New Part dialog.** Add several entry boxes at once; Create
+  adds them all and stays on the page.
+- **Drag images into lots.** Drag image files from a folder onto a lot to
+  copy them into the job.
+- **Image check boxes and Analyze selected.** Tick two or more images and
+  analyze just those.
+- **Select all, Remove selected, and Undo** in the Analyzer image list.
+- **Tutorial.** The guided tour is now action-driven (it waits for you to
+  do each step), uses a bundled Tutorial sample job, and also teaches the
+  Review tools and Reports features.
+- **Animated start-up screen** showing a grain microstructure.
+- **Optional GPU support.** AI-Assisted detection now has separate (GPU) and
+  (CPU) modes, with the GPU option checked in the background. The GPU
+  components are a separate internal pack and are not part of the standard
+  installer.
+
+### Reports
+
+- **PowerPoint:** a clickable Contents page as slide 2; three all-lots
+  charts by lot (mean diameter, mean area, grain density) with a line
+  joining the lot values; a Lot Summary per part; one grain-distribution
+  slide per part (area and diameter, bars plus smooth curve); and Grain
+  Size Percentiles (D10 / D50 / D90) per part and lot.
+- **Excel:** a Lot Summary sheet with a job summary table and lot-vs-lot
+  charts, plus a note that ASTM G in subtotal and total rows is an average
+  of image values.
+- **Removed from the PowerPoint:** the Methods and Appendix slides, the
+  two-table comparison, title-slide counters, and footer text.
+
+### Changed
+
+- Loading images into the Analyzer now **adds** to the list instead of
+  replacing it, and each job keeps its own scale and scan area.
+- The Reports page matches the new deck (Excel-only tags, previews).
+- If a scale or scan area changes after analysis, results are marked as out
+  of date.
+- Spelling throughout the app is now American English.
+- Faster overlay drawing and start-up.
+- Display scaling at 150 % and 200 % fixed (no clipped panels or buttons).
+
+### Fixed
+
+- **Units and bins:** switching area between nm² and µm² no longer collapses
+  the histogram into one bin, and more bins now means narrower bins.
+- **Stability:** a hard crash during analysis is fixed, the app keeps both
+  cores available on weak CPUs, and grain editing is locked during analysis
+  (with a "Continue anyway" option). Crashes are recorded in a crash log.
+- Excel export no longer fails when sheet names would be duplicated.
+- Reports inspector no longer clips; picker tiles toggle individually.
+
 ## [3.0.0] — 2026-09-25
 
 The v3.0 release is a ground-up rebuild of the app: correct grain detection

@@ -7,6 +7,6 @@ create_nsis_script.py installer, README.md) reads from here.
 Bump this on release; update CHANGELOG.md alongside it.
 """
 
-__version__ = "3.0.0"
+__version__ = "3.1.0"
 APP_NAME = "Grain Analyzer"
 APP_PUBLISHER = "Jack Samaniego"
