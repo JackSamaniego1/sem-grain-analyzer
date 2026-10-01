@@ -271,12 +271,13 @@ def test_ux06_remove_from_analyzer_and_add_back(env, qtbot):
     st.flush()
     assert name in [e.filename for e in load_session(path).manifest.images]   # lot untouched
     assert (path / "images" / name).exists() or any(path.rglob(name))
-    rows = a.film.restore_rows()
-    from ui.pages.image_tree import ROLE_TITLE
-    assert len(rows) == 1 and "Add back 1" in list(rows.values())[0].data(0, ROLE_TITLE)
-    a.film._on_clicked(list(rows.values())[0])              # the "Add back" row
+    # round 3b: no leftover row; one header Undo button puts it back
+    assert a.film.item(uid) is None and not a.film.restore_rows()
+    undo = a.film.findChild(type(a.film.add_btn), "analyzer_undo_remove")
+    assert undo is not None and undo.isEnabled()
+    undo.click()
     assert [im.uid for im in st.images()].count(uid) == 1 and len(st.images()) == 3
-    assert not a.film.restore_rows()
+    assert not undo.isEnabled()
     # Undo of a removal brings back exactly those images
     a.remove_images([st.images()[0].uid, st.images()[2].uid])
     assert len(st.images()) == 1
@@ -561,7 +562,11 @@ def test_ux06_remove_via_real_menu_actions(env, qtbot):
     acts = {x.text(): x for x in a.film.build_menu(lot).actions()}
     next(x for t, x in acts.items() if t.startswith("Remove")).trigger()
     assert len(st.images()) == 3
-    for row in list(a.film.restore_rows().values()):         # "Add back" rows
-        a.film.build_menu(row).actions()[0].trigger()
-    qtbot.waitUntil(lambda: len(st.images()) == 6, timeout=TIMEOUT)
+    # round 3b: the emptied lot's header is gone (no greyed empty group)
+    assert len([i for i in items(a.film.tree) if i.data(0, ROLE_KIND) == "lot"]) == 1
+    a.film.restore_btn.click()                               # Undo: the lot's 3 images
+    assert len(st.images()) == 5
+    a.film.restore_btn.click()                               # Undo again: the first one
+    assert len(st.images()) == 6 and not a.film.restore_btn.isEnabled()
+    assert len([i for i in items(a.film.tree) if i.data(0, ROLE_KIND) == "lot"]) == 2
     shell.close()

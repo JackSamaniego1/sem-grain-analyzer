@@ -1112,6 +1112,7 @@ class AppState(QObject):
         self._save_timer.setInterval(700)
         self._save_timer.timeout.connect(self.save_now)
         self._records_pending = 0
+        self._removals: List[List] = []           # round 3b: undo-remove stack
         self._setup_pending: set = set()
         self._setup_parts: dict = {}               # uid -> frozenset of "scan" / "scale"
         self._setup_stats: dict = {}
@@ -1399,6 +1400,7 @@ class AppState(QObject):
         for d in bundle["images"]:
             doc.images.append(self._make_image(doc, d, rec))
         self._records_pending = 0
+        self._removals = []
         self.session = doc
         self.undo_stack.clear()
         self._dirty.clear()
@@ -1571,6 +1573,7 @@ class AppState(QObject):
         self.current_node = NodeRef("lot" if doc.is_lot else "session", doc.path)
         self._set_save_state("saved", "")
         self._records_pending = len(doc.records)
+        self._removals = []
         self.node_changed.emit(self.current_node)
         self.session_opened.emit()
         self.images_changed.emit()
@@ -1801,6 +1804,8 @@ class AppState(QObject):
         idx = doc.index_of(self.current_uid)
         doc.images = [im for im in doc.images if im.uid not in uids]
         doc.removed.extend(gone)
+        self._removals.append([im.uid for im in gone])   # round 3b: header Undo
+        del self._removals[:-20]
         if self.current_uid in uids:
             self.current_uid = (doc.images[min(max(idx, 0), len(doc.images) - 1)].uid
                                 if doc.images else None)
@@ -1808,6 +1813,25 @@ class AppState(QObject):
         self.current_image_changed.emit(self.current_uid)
         self.setup_changed.emit()
         return len(gone)
+
+    def can_undo_removal(self) -> bool:
+        doc = self.session
+        if doc is None:
+            return False
+        out = {im.uid for im in doc.removed}
+        return any(out & set(step) for step in self._removals)
+
+    def undo_last_removal(self) -> int:
+        """Round 3b: put back the most recent removal still out of the
+        analyzer (repeat for earlier ones).  Returns images restored."""
+        doc = self.session
+        while doc is not None and self._removals:
+            step = self._removals.pop()
+            out = {im.uid for im in doc.removed}
+            want = [u for u in step if u in out]
+            if want:
+                return self.restore_images(uids=want)
+        return 0
 
     def restore_images(self, record_paths=None, uids=None) -> int:
         """Put removed images back ("Add all from lot"), optionally only
@@ -1875,6 +1899,7 @@ class AppState(QObject):
         self._arr_lru.clear()
         self.overlays.clear()
         self._records_pending = 0
+        self._removals = []
         self._setup_pending = set()
         self._setup_parts = {}
         self.undo_stack.clear()

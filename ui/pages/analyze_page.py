@@ -1352,6 +1352,7 @@ class AnalyzePage(QWidget):
         self.film.add_requested.connect(self.add_images_requested)
         self.film.remove_requested.connect(self.remove_images)
         self.film.restore_requested.connect(self.restore_images)
+        self.film.undo_remove_requested.connect(self.undo_remove)        # round 3b
         self.centre_seg.current_changed.connect(self._on_centre_view)
         self.table.open_image.connect(self._open_from_table)
         self.table.report_requested.connect(self.report_requested)
@@ -1956,8 +1957,8 @@ class AnalyzePage(QWidget):
         n = self.state.remove_images(uids)
         if n:
             self._toast_action(f"Removed {n} image{'s' if n != 1 else ''} from the analyzer",
-                               f"The files stay in the {self._rec}. Use “Add back” in the image "
-                               "list to return them.", "info", "Undo",
+                               f"The files stay in the {self._rec}. Undo (next to + above the image "
+                               "list) puts them back.", "info", "Undo",
                                lambda u=uids: self.state.restore_images(uids=u))
         return n
 
@@ -1991,6 +1992,14 @@ class AnalyzePage(QWidget):
                                "— still saved in their job",
                                "Load them again from Projects (results intact), or Undo.",
                                "info", "Undo", lambda u=uids: self.state.restore_images(uids=u))
+        return n
+
+    def undo_remove(self) -> int:
+        """Round 3b: header Undo -- the most recent removal comes back."""
+        n = self.state.undo_last_removal()
+        if n:
+            self._toast("Images put back", f"{n} image{'s' if n != 1 else ''} are in the "
+                        "analyzer again.", "success")
         return n
 
     def restore_images(self, record_paths=None) -> int:

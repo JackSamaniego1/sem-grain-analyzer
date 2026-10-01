@@ -346,6 +346,7 @@ class ImageTree(ThemeAware, QWidget):
     restore_requested = Signal(object)      # list of record Paths, or None = all
     checked_changed = Signal(list)          # uids ticked now (only when checkable)
     remove_checked_requested = Signal(list)  # round 3: "Remove selected" (ticked uids)
+    undo_remove_requested = Signal()         # round 3b: header Undo (last removal)
 
     def __init__(self, state, parent: Optional[QWidget] = None,
                  checkable: bool = False, manage: bool = True) -> None:
@@ -374,17 +375,21 @@ class ImageTree(ThemeAware, QWidget):
         head.addWidget(self.title)
         head.addWidget(self.count)
         head.addStretch(1)
-        self.restore_btn = IconButton("mdi6.image-refresh-outline",
-                                      "Put every removed image back into the analyzer "
-                                      "(nothing was deleted)", size=26)
-        self.restore_btn.clicked.connect(lambda: self.restore_requested.emit(None))
-        self.restore_btn.hide()
-        head.addWidget(self.restore_btn)
+        self._tick_memory: set = set()
         self.add_btn = IconButton("add", "Add images to this lot (Ctrl+O). "
                                          "You can also drop files here.", size=26)
         self.add_btn.clicked.connect(self.add_requested)
         self.add_btn.setVisible(self._manage)
         head.addWidget(self.add_btn)
+        # Round 3b: one Undo for removals, right of the + (replaces the
+        # inline "Add back" rows); a stack in AppState, newest first.
+        self.restore_btn = IconButton("mdi6.undo-variant",
+                                      "Undo remove — put back the last removed images", size=26)
+        self.restore_btn.setObjectName("analyzer_undo_remove")
+        self.restore_btn.clicked.connect(self.undo_remove_requested)
+        self.restore_btn.setVisible(self._manage)
+        self.restore_btn.setEnabled(False)
+        head.addWidget(self.restore_btn)
         v.addLayout(head)
         # Round 3: Select all / none + Remove selected (Analyze page list only)
         tools = QHBoxLayout()
@@ -574,34 +579,9 @@ class ImageTree(ThemeAware, QWidget):
             (parent.addChild(it) if parent is not None else self.tree.addTopLevelItem(it))
             self._items[im.uid] = it
             self._fill(it, im)
-        # removed images: their group stays, with an "Add back" row
-        removed: Dict[Path, List] = {}
-        leaf: Dict[Path, QTreeWidgetItem] = {}
-        for im in (doc.removed if doc is not None and self._manage else []):
-            rec = doc.record_for(im)
-            if rec is None:
-                continue
-            parent = None
-            for kind, path, cap in self._chain(rec, cache, multi_session):
-                parent = self._group(kind, path, cap, parent)
-            gp = Path(parent.data(0, ROLE_PATH))
-            leaf[gp] = parent
-            removed.setdefault(gp, [])
-            if Path(rec.path) not in removed[gp]:
-                removed[gp].append(Path(rec.path))
-            removed[gp].append(im.uid)
-        for gp, stuff in removed.items():
-            recs = [x for x in stuff if isinstance(x, Path)]
-            n = len(stuff) - len(recs)
-            row = QTreeWidgetItem()
-            row.setData(0, ROLE_KIND, "restore")
-            row.setData(0, ROLE_PATHS, [str(p) for p in recs])
-            row.setData(0, ROLE_TITLE, f"Add back {n} removed image{'s' if n != 1 else ''}")
-            row.setToolTip(0, "Put the images you removed from the analyzer back "
-                              "(they were never deleted from the lot)")
-            row.setFlags(Qt.ItemIsEnabled)
-            leaf[gp].addChild(row)
-            self._restore_rows[gp] = row
+        # Round 3b: removed images leave NO trace in the list (no row, no empty
+        # Job / Part / Lot header -- groups exist only for present images);
+        # the header's Undo button puts the last removal back.
         self.tree.expandAll()
         for p in collapsed:
             if p in self._groups:
@@ -612,17 +592,26 @@ class ImageTree(ThemeAware, QWidget):
         n = len(images)
         self.count.setText(str(n) if n else "")
         self.hint.setVisible(not n)
-        n_removed = len(doc.removed) if doc is not None and self._manage else 0
-        self.restore_btn.setVisible(bool(n_removed))
-        if n_removed:
-            self.restore_btn.setToolTip(f"Put the {n_removed} removed image"
-                                        f"{'s' if n_removed != 1 else ''} back into the "
-                                        "analyzer (nothing was deleted)")
+        self.sync_undo()
         if self._current in self._items:
             self.set_current(self._current)
-        if self.tree._checked:            # ticks survive rebuilds; removed images drop out
-            self._set_checked({u for u in self.tree._checked if u in self._items})
+        # ticks survive rebuilds; removed images drop out but their tick is
+        # remembered so an Undo brings them back ticked as before
+        keep = {u for u in self.tree._checked if u in self._items}
+        self._tick_memory |= self.tree._checked - keep
+        back = {u for u in self._tick_memory if u in self._items}
+        self._tick_memory -= back
+        if keep | back != self.tree._checked:
+            self._set_checked(keep | back)
         self._sync_tools()
+
+    def sync_undo(self) -> None:
+        """Undo-remove button: enabled while the analyzer has a removal to undo."""
+        st = self.state
+        can = bool(self._manage and getattr(st, "can_undo_removal", lambda: False)())
+        self.restore_btn.setEnabled(can)
+        self.restore_btn.setToolTip("Undo remove — put back the last removed images" if can
+                                    else "Undo remove — nothing removed to put back")
 
     def _fill(self, it: QTreeWidgetItem, im) -> None:
         tone, text = image_status(im)
@@ -840,20 +829,12 @@ class ImageTree(ThemeAware, QWidget):
                          "Remove from analyzer",
                          lambda u=list(uids): self.remove_requested.emit(u)))
             return acts
-        path = Path(it.data(0, ROLE_PATH))
         uids = [im.uid for im in self._images_under(it)]
         word = hui.kind_label(self.state.profile, kind).lower() if kind != "session" \
             else "session"
         if uids:
             acts.append((f"Remove this {word}'s {len(uids)} images from analyzer",
                          lambda u=list(uids): self.remove_requested.emit(u)))
-        doc = self.state.session
-        recs = [Path(r.path) for r in (doc.records if doc is not None else [])
-                if Path(r.path) == path or path in Path(r.path).parents]
-        n_back = len(doc.removed_for(recs)) if doc is not None and recs else 0
-        if n_back:
-            acts.append((f"Add all {n_back} removed images back",
-                         lambda r=list(recs): self.restore_requested.emit(r)))
         return acts
 
     def build_menu(self, it: QTreeWidgetItem) -> Optional[QMenu]:
