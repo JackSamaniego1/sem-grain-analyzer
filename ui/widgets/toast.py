@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Callable, List, Optional
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QPainter, QPen
 from PySide6.QtWidgets import QGraphicsOpacityEffect, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
@@ -110,6 +110,7 @@ class ToastManager(QObject):
         self._timers = {}
         self._max = max_visible
         self._margin = margin
+        self._avoid: Optional[QRect] = None
         host.installEventFilter(self)
 
     def count(self) -> int:
@@ -174,6 +175,25 @@ class ToastManager(QObject):
         self._restack()
         self.toast_dismissed.emit(toast)
 
+    def set_avoid(self, rect: Optional[QRect]) -> None:
+        """Keep the stack off ``rect`` (host coords; e.g. the guided tour's
+        spotlight): toasts move to the bottom-left corner while the usual
+        bottom-right column would cover it.  ``None`` = usual corner."""
+        rect = QRect(rect) if rect is not None and not rect.isEmpty() else None
+        if rect == self._avoid:
+            return
+        self._avoid = rect
+        self._restack()
+
+    def corner(self) -> str:
+        """"right" (usual) or "left" (moved off the avoided rectangle)."""
+        if self._avoid is None or not self._toasts:
+            return "right"
+        hw, hh = self._host.width(), self._host.height()
+        w = max(t.width() for t in self._toasts)
+        col = QRect(hw - w - self._margin, 0, w + self._margin, hh)
+        return "left" if col.intersects(self._avoid) else "right"
+
     def clear(self) -> None:
         """Dismiss every toast."""
         for t in list(self._toasts):
@@ -182,11 +202,13 @@ class ToastManager(QObject):
     def _targets(self):
         out = {}
         hw, hh = self._host.width(), self._host.height()
+        left = self.corner() == "left"
         y = hh - self._margin + _SHADOW
         for t in reversed(self._toasts):
             h = t.sizeHint().height()
             y -= h
-            out[t] = QPoint(hw - t.width() - self._margin + _SHADOW, y)
+            x = self._margin - _SHADOW if left else hw - t.width() - self._margin + _SHADOW
+            out[t] = QPoint(x, y)
             y -= SPACE.sm - _SHADOW * 2
         return out
 

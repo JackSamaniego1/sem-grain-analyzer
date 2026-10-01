@@ -221,6 +221,9 @@ class ImageDoc:
     # "manual", "" = unknown / saved earlier) and the scale-bar line found
     # in the info bar (px) with the length the operator typed for it (µm)
     scan_source: str = ""
+    # batch 4 review: "Apply to all" with the full image reached this image
+    # before its size was known -> its full frame is filled in by scan_for()
+    scan_full_pending: bool = False
     scale_source: str = ""
     bar_px: float = 0.0
     bar_um: float = 0.0
@@ -602,6 +605,16 @@ def records_under(root: Path, paths) -> List[Path]:
         except (OSError, FileNotFoundError, ValueError):
             continue
     return out
+
+
+def _loaded_params(saved) -> dict:
+    """Detection parameters read from a manifest.  Batch 4 review: a session
+    saved before the wizard existed (parameters on disk, no ``wizard`` key)
+    had its mode chosen by the operator back then -- wizard step 3 is done."""
+    params = {k: v for k, v in (saved or {}).items() if k != "post_filters"}
+    if params and WIZARD_PARAMS_KEY not in params:
+        params[WIZARD_PARAMS_KEY] = {"mode_chosen": True}
+    return params
 
 
 def _scale_reading_summary(r) -> dict:
@@ -1359,7 +1372,7 @@ class AppState(QObject):
     def _install_session(self, path: Path, bundle: dict) -> None:
         ls = bundle["loaded"]
         m: SessionMeta = ls.manifest
-        params = {k: v for k, v in (m.detection_params or {}).items() if k != "post_filters"}
+        params = _loaded_params(m.detection_params)
         if not params:
             params = params_to_dict(self.default_params())
         scan = tuple(m.scan_rect) if m.scan_rect else None
@@ -1516,7 +1529,7 @@ class AppState(QObject):
     def _install_records(self, index: List[dict]) -> None:
         first = index[0]
         m0: SessionMeta = first["meta"]
-        params = {k: v for k, v in (m0.detection_params or {}).items() if k != "post_filters"}
+        params = _loaded_params(m0.detection_params)
         if not params:
             params = params_to_dict(self.default_params())
         scan0 = tuple(m0.scan_rect) if m0.scan_rect else None
@@ -2135,11 +2148,15 @@ class AppState(QObject):
         snap = [("session", doc.scan_rect)] + [self._scan_item(o) for o in doc.images]
         rect = tuple(int(v) for v in rect) if rect else None
         for o in doc.images:
+            o.scan_full_pending = False
             if rect is None and o.shape:
                 h, w = o.shape[:2]
                 o.scan_rect = (0, 0, int(w), int(h))
             else:
                 o.scan_rect = None
+                # full frame of an image whose size is not known yet (still
+                # loading): it counts as set once the size arrives
+                o.scan_full_pending = rect is None
             o.scan_source = "manual"
             o.profile = None
         self.set_scan_rect(rect, None)
@@ -2162,6 +2179,7 @@ class AppState(QObject):
             o = doc.image(item[0])
             if o is not None:
                 o.scan_rect, o.scan_source = item[1], item[2]
+                o.scan_full_pending = False
                 if len(item) > 3:
                     o.profile = dict(item[3]) if item[3] else None
         self._meta_dirty = True
@@ -2244,6 +2262,12 @@ class AppState(QObject):
 
     def scan_for(self, im: ImageDoc) -> Optional[tuple]:
         if im.scan_rect:
+            return im.scan_rect
+        if im.scan_full_pending and im.shape:
+            h, w = im.shape[:2]                  # "Apply to all · full image" lands now
+            im.scan_rect, im.scan_full_pending = (0, 0, int(w), int(h)), False
+            self._meta_dirty = True
+            self.schedule_save()
             return im.scan_rect
         return self.session.scan_rect if self.session else None
 
@@ -2410,6 +2434,7 @@ class AppState(QObject):
             im = self.session.image(uid)
             if im is not None:
                 im.scan_rect = rect
+                im.scan_full_pending = False
                 im.scan_source = "manual" if rect else ""
                 im.profile = None          # a scan area by hand: no profile label
                 self._meta_dirty = True
@@ -2436,10 +2461,10 @@ class AppState(QObject):
             return
         d = params_to_dict(params)
         wiz = dict(self.session.params.get(WIZARD_PARAMS_KEY) or {})
-        if mode_chosen:
-            wiz["mode_chosen"] = True
-        if wiz:
-            d[WIZARD_PARAMS_KEY] = wiz
+        # always explicit, so a reopen can tell "not chosen yet" (wizard-era
+        # save) from a pre-wizard session (no key: chosen, see _loaded_params)
+        wiz["mode_chosen"] = bool(mode_chosen or wiz.get("mode_chosen"))
+        d[WIZARD_PARAMS_KEY] = wiz
         if d != self.session.params:
             self.session.params = d
             self._meta_dirty = True

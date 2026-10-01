@@ -1,9 +1,17 @@
 """
-TourController (UI-10): drives the guided tour over the AppShell.
+TourController (UI-10, action-driven since batch 4 / D-39): drives the
+guided tour over the AppShell.
 
+* On start the Tutorial job is prepared (``data.tutorial``, off the GUI
+  thread): job "Tutorial" › part "Sample part" › lot "Lot 1" with the three
+  bundled sample images, reset when it was already set up or analysed.
+* Each step connects its ``advance_on`` hook and moves on when the user does
+  the action (AppState / page signals, never timers) -- there is no Next /
+  Back.  ``advance()`` is the one way forward; ``skip()`` and ``finish()``
+  close.  A step whose action is already done advances at once.
 * Resolves each step's target widgets by objectName, switching to the step's
   page first; hidden/missing targets fall back (``TourStep.fallbacks``) and a
-  step with nothing to show is skipped in the direction of travel.
+  step with nothing to show is skipped.
 * Follows the target while the step is open (window resize, page slide,
   scrolling, layout changes) with a light 120 ms poll.
 * "Don't show this on startup" lives in the app's local ui_state store
@@ -11,6 +19,7 @@ TourController (UI-10): drives the guided tour over the AppShell.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import List, Optional, Sequence
 
 from PySide6.QtCore import QObject, QPoint, QRect, QRectF, QTimer, Signal
@@ -25,11 +34,12 @@ FOLLOW_MS = 120
 
 
 class TourController(QObject):
-    """Start / navigate / close the tour on ``shell`` (an AppShell-like window)."""
+    """Start / advance / close the tour on ``shell`` (an AppShell-like window)."""
 
     started = Signal()
     step_changed = Signal(int)          # index into ``steps``
     finished = Signal(bool)             # True = completed, False = skipped
+    tutorial_ready = Signal(object)     # the Tutorial job's record folder
 
     def __init__(self, shell, steps: Optional[Sequence[TourStep]] = None,
                  hint: bool = False) -> None:
@@ -44,6 +54,10 @@ class TourController(QObject):
         self.index = -1
         self._token = 0
         self._shown_rect = QRectF()
+        self._off = None                    # disconnect of the open step's advance_on
+        self.tutorial_record: Optional[Path] = None
+        self.tutorial_failed = False        # bundled sample images missing
+        self._prep_gen = 0
         self._follow = QTimer(self)
         self._follow.setInterval(FOLLOW_MS)
         self._follow.timeout.connect(self._track)
@@ -82,24 +96,34 @@ class TourController(QObject):
     def current_step(self) -> Optional[TourStep]:
         return self.steps[self.index] if self.is_active() else None
 
-    def start(self, index: int = 0) -> None:
-        """Open the tour (replays even when "don't show" is set)."""
+    def start(self, index: int = 0, prepare: bool = True) -> None:
+        """Open the tour (replays even when "don't show" is set).  Starting
+        the full tour from the beginning (``prepare``) first creates or
+        resets the Tutorial job."""
         if not self.steps:
             return
         if self.overlay is None:
             self.overlay = TourOverlay(self.shell)
             ov = self.overlay
-            ov.next_requested.connect(self.next)
-            ov.back_requested.connect(self.back)
+            ov.primary_requested.connect(self._on_primary)
             ov.skip_requested.connect(self.skip)
             ov.callout.dont_show.toggled.connect(self.set_dont_show)
             ov.fade_in()
             self._follow.start()
             self.started.emit()
+        if prepare and not self.hint and index == 0:
+            self.prepare_tutorial()
+        self._unbind()
         self.index = -1
         self._go(max(0, min(index, len(self.steps) - 1)), +1)
 
-    def next(self) -> None:
+    def is_waiting_on(self, hook) -> bool:
+        """The open step is the one whose ``advance_on`` is ``hook``."""
+        s = self.current_step()
+        return s is not None and hook is not None and s.advance_on is hook
+
+    def advance(self) -> None:
+        """The open step's action happened: on to the next step."""
         if not self.is_active():
             return
         if self.index >= len(self.steps) - 1:
@@ -107,12 +131,14 @@ class TourController(QObject):
         else:
             self._go(self.index + 1, +1)
 
-    def back(self) -> None:
-        if self.is_active() and self.index > 0:
-            self._go(self.index - 1, -1)
+    def refresh(self) -> None:
+        """Re-place the spotlight and re-read the open step's texts (e.g.
+        the run step moves to the progress card while analysing)."""
+        if self.is_active() and not self.steps[self.index].centred:
+            self._present(self.index, +1, rebind=False)
 
     def skip(self) -> None:
-        """Close early; a toast offers Undo (resume where the user left)."""
+        """Close early (the Tutorial job stays); a toast offers Undo."""
         if not self.is_active():
             return
         at = self.index
@@ -121,7 +147,8 @@ class TourController(QObject):
         if toasts is not None and at < len(self.steps) - 1 and not self.hint:
             try:
                 toasts.show_toast("Tour closed", "Replay it any time from Help › Show tour.",
-                                  "info", "Undo", lambda: self.start(at), timeout_ms=6000)
+                                  "info", "Undo", lambda: self.start(at, prepare=False),
+                                  timeout_ms=6000)
             except Exception:
                 pass
 
@@ -129,11 +156,94 @@ class TourController(QObject):
         if self.is_active():
             self._close(True)
 
+    def _on_primary(self) -> None:
+        """Start tour (welcome) / Done (finish) / Got it (hint)."""
+        step = self.current_step()
+        if step is None:
+            return
+        if self.hint or step.kind == "finish" or self.index >= len(self.steps) - 1:
+            self.finish()
+        else:
+            self.advance()
+
+    # ------------------------------------------------------------------ tutorial job
+    def prepare_tutorial(self) -> None:
+        """Create or reuse the Tutorial job, resetting it when it was set up
+        or analysed before, then select it in Projects.  Off the GUI thread."""
+        st = self.shell.state
+        self._prep_gen += 1
+        gen = self._prep_gen
+        root = st.root
+        self.tutorial_record, self.tutorial_failed = None, False
+        try:
+            from data.tutorial import find_tutorial_record
+            rec = find_tutorial_record(root)
+        except Exception:
+            rec = None
+        s = st.session
+        if rec is not None and s is not None and _same(s.path, rec):
+            if self._busy():
+                self.tutorial_record = Path(rec)     # being analysed: leave it as it is
+                self.tutorial_ready.emit(self.tutorial_record)
+                return
+            st.close_session()                       # a reset needs it closed
+        try:
+            operator = st.operator() or ""
+        except Exception:
+            operator = ""
+
+        def work():
+            from data.tutorial import ensure_tutorial_job
+            return ensure_tutorial_job(root, operator=operator, reset=True)
+
+        def done(res):
+            if gen != self._prep_gen:
+                return
+            self.tutorial_record = Path(res["record"])
+            try:
+                self.shell.projects.reload()
+                self.shell.projects.select_node(self.tutorial_record)
+            except Exception:
+                pass
+            self.tutorial_ready.emit(self.tutorial_record)
+            self.refresh()
+
+        def failed(msg):
+            if gen != self._prep_gen:
+                return
+            self.tutorial_record = None
+            self.tutorial_failed = True
+            toasts = getattr(self.shell, "toasts", None)
+            if toasts is not None:
+                from core.resources import REINSTALL_MESSAGE
+                first = (msg or "").strip().splitlines()
+                text = REINSTALL_MESSAGE if "reinstall" in (msg or "").lower() or not first \
+                    else first[-1]
+                toasts.show_toast("Tutorial job not available", text, "warning")
+
+        from ui.workers import run_task
+        run_task(work, on_done=done, on_error=failed)
+
+    def _busy(self) -> bool:
+        try:
+            return not self.shell.analyze.queue.is_idle()
+        except Exception:
+            return False
+
     # ------------------------------------------------------------------ steps
     def _counted(self) -> List[int]:
         return [i for i, s in enumerate(self.steps) if not s.centred]
 
+    def _unbind(self) -> None:
+        off, self._off = self._off, None
+        if off is not None:
+            try:
+                off()
+            except Exception:
+                pass
+
     def _go(self, index: int, direction: int) -> None:
+        self._unbind()
         self._token += 1
         token = self._token
         if index < 0:
@@ -143,6 +253,11 @@ class TourController(QObject):
             return
         step = self.steps[index]
         switched = False
+        if step.page == "analyze":
+            try:                            # the wizard's steps reflect the data now
+                self.shell.analyze.sync_wizard()
+            except Exception:
+                pass
         if step.page and hasattr(self.shell, "go"):
             try:
                 before = self.shell.current_page()
@@ -159,7 +274,7 @@ class TourController(QObject):
         else:
             self._present(index, direction)
 
-    def _present(self, index: int, direction: int) -> None:
+    def _present(self, index: int, direction: int, rebind: bool = True) -> None:
         if self.overlay is None:
             return
         step = self.steps[index]
@@ -167,20 +282,22 @@ class TourController(QObject):
         if not step.centred:
             rect = self._resolve(step, scroll=True)
             if rect.isEmpty():
+                if not rebind:
+                    return
                 nxt = index + direction
                 if 0 <= nxt < len(self.steps):
                     self._go(nxt, direction)
-                elif direction < 0:
-                    self._go(index + 1, +1)
                 else:
                     self.finish()
                 return
         self.index = index
         self._shown_rect = QRectF(rect)
+        self._shown_names = step.live_targets(self.shell)
         ov = self.overlay
         target = rect.adjusted(-SPOT_PAD, -SPOT_PAD, SPOT_PAD, SPOT_PAD) \
             if not rect.isEmpty() else QRectF()
-        ov.set_spot(target)
+        ov.set_spot(target, animate=rebind)
+        self._avoid_toasts(target)
         counted = self._counted()
         first, last = index == 0, index == len(self.steps) - 1
         if self.hint:
@@ -189,7 +306,7 @@ class TourController(QObject):
             n = counted.index(index)
             step_text, dots = f"Step {n + 1} of {len(counted)}", (n, len(counted))
         elif step.kind == "welcome":
-            step_text, dots = "Guided tour · about 1 minute", (0, 0)
+            step_text, dots = "Guided tour · about 3 minutes", (0, 0)
         else:
             step_text, dots = "", (0, 0)
         cb = ov.callout.dont_show
@@ -198,24 +315,39 @@ class TourController(QObject):
         cb.blockSignals(False)
         ov.show_callout(step.text("title", self.shell), step.text("body", self.shell),
                         step_text, dots, step.centred, step.icon, first, last,
-                        show_check=(first or last) and not self.hint, target=target)
+                        show_check=step.kind == "welcome" and not self.hint, target=target,
+                        animate=rebind)
+        b = ov.callout.btn_primary
         if self.hint:
-            b = ov.callout.btn_next
             b.setText("Got it")
+            b.setToolTip("Close (Enter)")
             b.setMinimumWidth(b.sizeHint().width())
+            b.show()
             ov.callout.btn_skip.hide()
-            ov.callout.btn_back.hide()
         ov.set_pulsing(step.kind == "click")
+        if not rebind:
+            return
         ov.setFocus()
-        ov.callout.btn_next.setFocus()
+        if not b.isHidden():                # never Skip: Enter must not end the tour
+            b.setFocus()
         self.step_changed.emit(index)
+        if step.advance_on is not None:
+            try:
+                self._off = step.advance_on(self.shell, self)
+            except Exception:
+                self._off = None
+        if step.is_done(self.shell):
+            # already done (another way, or before the step opened): move on
+            token = self._token
+            QTimer.singleShot(0, lambda: token == self._token and self.current_step() is step
+                              and self.advance())
 
     def resolve(self, step: TourStep) -> QRectF:
         """Spotlight rectangle (overlay coords) for ``step`` as things stand now."""
         return self._resolve(step, scroll=False)
 
     def _resolve(self, step: TourStep, scroll: bool) -> QRectF:
-        for names in (step.targets,) + tuple(step.fallbacks):
+        for names in (step.live_targets(self.shell),) + tuple(step.fallbacks):
             r = self._union(names, scroll)
             if not r.isEmpty():
                 return r
@@ -223,7 +355,7 @@ class TourController(QObject):
 
     def _union(self, names: Sequence[str], scroll: bool) -> QRectF:
         out = QRectF()
-        for name in names:
+        for name in names or ():
             w = self.shell.findChild(QWidget, name)
             if w is None or not w.isVisible() or w.window() is not self.shell:
                 continue
@@ -252,6 +384,9 @@ class TourController(QObject):
         if step.centred:
             self.overlay.reposition_callout(QRectF())
             return
+        if step.targets_fn is not None and                 step.live_targets(self.shell) != getattr(self, "_shown_names", None):
+            self.refresh()                  # the live target changed: new spot + text
+            return
         r = self.resolve(step)
         if r == self._shown_rect:
             return
@@ -260,8 +395,23 @@ class TourController(QObject):
             else QRectF()
         self.overlay.set_spot(target, animate=False)
         self.overlay.reposition_callout(target)
+        self._avoid_toasts(target)
+
+    def _avoid_toasts(self, target: QRectF) -> None:
+        """Toasts never cover the spotlit control (they move to the other corner)."""
+        tm = getattr(self.shell, "toasts", None)
+        host = getattr(tm, "_host", None)
+        if tm is None or host is None or not hasattr(tm, "set_avoid"):
+            return
+        if target is None or target.isEmpty():
+            tm.set_avoid(None)
+            return
+        r = target.toAlignedRect()
+        tm.set_avoid(QRect(host.mapFrom(self.shell, r.topLeft()), r.size()))
 
     def _close(self, completed: bool) -> None:
+        self._unbind()
+        self._avoid_toasts(QRectF())
         self._token += 1
         self._follow.stop()
         ov, self.overlay = self.overlay, None
@@ -276,6 +426,13 @@ class TourController(QObject):
                     pass
             ov.fade_out(gone)
         self.finished.emit(completed)
+
+
+def _same(a, b) -> bool:
+    try:
+        return Path(a).resolve() == Path(b).resolve()
+    except OSError:
+        return False
 
 
 def _ensure_visible(w: QWidget) -> None:

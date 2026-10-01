@@ -1246,6 +1246,8 @@ class AnalyzePage(QWidget):
         # 3 Detection mode (tiles + "Advanced…" with parameters and filters)
         self.step_mode = StepCard(3, "Detection mode")
         self.step_mode.setObjectName("wizard_step_mode")
+        # the 4 mode tiles appear only once step 2 is done (header row until then)
+        self.step_mode.set_collapse_when_locked(True)
         self.params = ParamPanel()
         self.step_mode.add_widget(self.params)
         self.filters = FilterCard()
@@ -1821,8 +1823,13 @@ class AnalyzePage(QWidget):
             self._find_parts = frozenset(parts)
             if button is not None:
                 button.set_loading(True)
-        elif not self.state.is_setting_up():
+        elif self.state.is_setting_up():
+            what = {frozenset(("scan",)): "scan areas", frozenset(("scale",)): "scales"}.get(
+                self._find_parts, "scan areas and scales")
+            self._toast(f"Still finding {what}", "Try again in a moment.", "info")
+        else:
             self._toast("Nothing to check", f"Add images to the {self._rec} first.", "info")
+        self.sync_wizard()                      # the other find buttons wait meanwhile
         return n
 
     def _on_setup_progress(self, done: int, total: int) -> None:
@@ -2000,6 +2007,8 @@ class AnalyzePage(QWidget):
         self.btn_sel.setText(f"Analyze selected ({n})")
         # never hide the button that is driving a run; re-checked when the run ends
         self.btn_sel.setVisible(n >= 2 or self._run_btn is self.btn_sel)
+        if hasattr(self, "steps"):              # "Analyze selected" gates on the ticked
+            self.sync_wizard()
 
     def analyze_selected(self) -> None:
         """Run the ticked images through the same batch path as Analyze all."""
@@ -2049,6 +2058,8 @@ class AnalyzePage(QWidget):
         finally:
             if not started and not self.queue.is_running():
                 self._end_run_controls()       # never leave the edit lock on
+        if started:
+            self.sync_wizard()                 # steps 1-2 wait while it runs
         if not started:
             for im in images:
                 self.state.set_image_status(im.uid, "done" if im.result is not None else "pending")
@@ -2234,6 +2245,12 @@ class AnalyzePage(QWidget):
         for i, f in enumerate(flags):
             enabled.append(ok)
             ok = ok and f
+        # batch 4 review: an older / partly set-up session -- once a mode is
+        # chosen, the images that ARE ready can be analysed (per-button gate)
+        ready = [im for im in imgs if st.setup_ready(im)]
+        if have and done["mode"] and ready and not enabled[2]:
+            enabled[2] = True
+        enabled[3] = enabled[2] and done["mode"] and bool(ready)
         self.profile_step.set_state("active" if have else "locked")
         self.profile_step.set_locked_tip("Open a session with images first")
         for card, en, f in zip(self.steps, enabled, flags):
@@ -2243,20 +2260,32 @@ class AnalyzePage(QWidget):
         for c, on in zip(self.connectors, lit):
             c.set_lit(on)
         busy_setup = st.is_setting_up()
+        # one auto-find at a time: the other find buttons wait (and say why)
+        what = {frozenset(("scan",)): "scan areas", frozenset(("scale",)): "scales"}.get(
+            self._find_parts, "scan areas and scales")
+        running = self.queue.is_running()
+        for card, b, tip in self._find_buttons():
+            wait = (busy_setup and b is not self._find_btn) or running
+            b.setEnabled(not wait)
+            card.set_tooltip_for(b, "Wait for the analysis to finish (or Cancel)" if running
+                                 else f"Still finding {what} — try again in a moment"
+                                 if wait else tip)
+        for b in (self.btn_scan_edit, self.btn_scale_edit):
+            b.setEnabled(not running)           # no setup edits under a running analysis
         # step 1
         k_scan = sum(1 for im in imgs if st.scan_for(im) is not None)
         k_scale = sum(1 for im in imgs if st.px_for(im) > 0)
         if not busy_setup or self._find_parts != frozenset(("scan",)):
             self.step_scan.set_status(self._count_text(k_scan, n, "set") if have else "")
         self.btn_scan_all.set_variant("secondary" if done["scan"] else "primary")
-        self.btn_scan_edit.setVisible(done["scan"] or "scan" in self._tried)
+        self.btn_scan_edit.setVisible(enabled[0])        # review: whenever unlocked
         # step 2
         if enabled[1] and (not busy_setup or self._find_parts != frozenset(("scale",))):
             self.step_scale.set_status(self._count_text(k_scale, n, "with a scale"))
         elif not enabled[1]:
             self.step_scale.set_status("")
         self.btn_scale_all.set_variant("secondary" if done["scale"] else "primary")
-        self.btn_scale_edit.setVisible(done["scale"] or "scale" in self._tried)
+        self.btn_scale_edit.setVisible(enabled[1])
         # step 3
         title = dict((k, t) for k, t, _i, _d in MODES).get(self.params.mode(), "")
         if self.params.mode() == AI_MODE:
@@ -2270,16 +2299,64 @@ class AnalyzePage(QWidget):
                                      + (f" · {k_res} analysed" if k_res else ""))
         else:
             self.step_run.set_status("")
-        if self._run_btn is None:                   # idle: the gate decides
-            on = enabled[3] and not st.is_loading()
-            for b in (self.btn_all, self.btn_cur, self.btn_sel):
-                b.setEnabled(on)
+        if self._run_btn is None:                   # idle: gated per target
+            self._gate_run_buttons(enabled[3] and not st.is_loading(), imgs, ready)
         # scroll the step that now needs the operator into view (not on open)
         nxt = next((c for c, en, f in zip(self.steps, enabled, flags) if en and not f), None)
         if nxt is not self._focus_step:
             if self._focus_step is not None and nxt is not None and self.isVisible():
                 self.scroll_to(nxt)
             self._focus_step = nxt
+
+    def _find_buttons(self):
+        """(step card, find button, its normal tooltip) of wizard steps 1-2."""
+        if not hasattr(self, "_find_tips"):          # the normal tips, before any wait text
+            self._find_tips = {id(b): c._tips[id(b)][1] for c, b in (
+                (self.step_scan, self.btn_scan_all), (self.step_scan, self.btn_scan_cur),
+                (self.step_scale, self.btn_scale_all), (self.step_scale, self.btn_scale_cur))}
+        return [(self.step_scan, self.btn_scan_all, self._find_tips[id(self.btn_scan_all)]),
+                (self.step_scan, self.btn_scan_cur, self._find_tips[id(self.btn_scan_cur)]),
+                (self.step_scale, self.btn_scale_all, self._find_tips[id(self.btn_scale_all)]),
+                (self.step_scale, self.btn_scale_cur, self._find_tips[id(self.btn_scale_cur)])]
+
+    RUN_TIPS = {"all": "Analyse every image in the analyzer (F5)",
+                "current": "Re-analyse only the selected image (Ctrl+F5)",
+                "selected": "Analyze only the images ticked in the image list"}
+
+    def _gate_run_buttons(self, unlocked: bool, imgs, ready) -> None:
+        """Batch 4 review: each run button is gated on its own images --
+        Analyze all: every image set up; Analyze current: the shown image;
+        Analyze selected: every ticked image.  A disabled button says what
+        is missing."""
+        st = self.state
+        ready_ids = {im.uid for im in ready}
+
+        def missing(im) -> str:
+            issues = [x for x in st.setup_issues(im) if x in ("scan", "scale")]
+            return " and ".join({"scan": "a scan area", "scale": "a scale"}[x] for x in issues)
+
+        n_all = len(imgs)
+        k_not = sum(1 for im in imgs if im.uid not in ready_ids)
+        on_all = unlocked and n_all > 0 and k_not == 0
+        tip_all = self.RUN_TIPS["all"] if on_all or not unlocked else (
+            f"{k_not} of {n_all} image{'s' if n_all != 1 else ''} still need a scan area or "
+            "scale (steps 1 and 2)")
+        cur = st.current_image()
+        on_cur = unlocked and cur is not None and cur.uid in ready_ids
+        tip_cur = self.RUN_TIPS["current"] if on_cur or not unlocked else (
+            f"This image still needs {missing(cur)} (steps 1 and 2)" if cur is not None
+            and missing(cur) else "This image cannot be analysed yet")
+        ticked = set(self.film.checked_uids())
+        sel = [im for im in imgs if im.uid in ticked]
+        k_sel = sum(1 for im in sel if im.uid not in ready_ids)
+        on_sel = unlocked and bool(sel) and k_sel == 0
+        tip_sel = self.RUN_TIPS["selected"] if on_sel or not unlocked else (
+            f"{k_sel} of the {len(sel)} ticked images still need a scan area or scale"
+            if sel else "Tick images in the image list first")
+        for b, on, tip in ((self.btn_all, on_all, tip_all), (self.btn_cur, on_cur, tip_cur),
+                           (self.btn_sel, on_sel, tip_sel)):
+            b.setEnabled(on)
+            self.step_run.set_tooltip_for(b, tip)
 
     @staticmethod
     def _count_text(k: int, n: int, what: str) -> str:

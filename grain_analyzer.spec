@@ -32,6 +32,11 @@ sam_model = [('models/sam_vit_b_01ec64.pth', 'models')] \
 license_datas = [(p, '.') for p in ('LICENSE.txt', 'THIRD_PARTY_LICENSES.txt')
                   if os.path.isfile(p)]
 
+# Batch 4 (D-39): the guided tour's 3 synthetic sample images
+# (tools/make_tutorial_images.py); located via core.resources at run time.
+tutorial_datas = [('assets/tutorial', 'assets/tutorial')] \
+    if os.path.isdir('assets/tutorial') else []
+
 a = Analysis(
     ['main.py'],
     pathex=['.'],
@@ -50,6 +55,7 @@ a = Analysis(
         *torch_datas,
         *sam_model,
         *license_datas,
+        *tutorial_datas,
     ],
     hiddenimports=[
         'skimage.filters._gaussian','skimage.filters.rank',

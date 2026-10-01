@@ -187,6 +187,15 @@ class StepCard(ThemeAware, QFrame):
     def is_optional(self) -> bool:
         return getattr(self, "_optional", False)
 
+    def set_collapse_when_locked(self, on: bool) -> None:
+        """Locked: show only the header row (the body is hidden, not just
+        greyed) -- for steps whose body is large, e.g. the mode tiles."""
+        self._collapse = bool(on)
+        self._apply_state(animate=False)
+
+    def collapses_when_locked(self) -> bool:
+        return getattr(self, "_collapse", False)
+
     def state(self) -> str:
         return self._state
 
@@ -221,6 +230,7 @@ class StepCard(ThemeAware, QFrame):
     def _apply_state(self, animate: bool) -> None:
         locked = self._state == "locked"
         self.body.setEnabled(not locked)
+        self.body.setVisible(not (locked and self.collapses_when_locked()))
         self.title.setEnabled(not locked)
         self.status.setEnabled(not locked)
         self.check.setVisible(self._state == "done")

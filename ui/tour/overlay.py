@@ -3,6 +3,12 @@ Tour overlay (UI-10): dimmed scrim with an animated spotlight cut-out, a glow
 ring (+ pulse on "click here" steps) and a callout card that places itself
 next to the target without covering it.
 
+Batch 4 (D-39): the tour is action-driven -- there are no Next / Back
+buttons.  The callout offers "Skip tour" on every step and one primary
+button only on the centred cards ("Start tour" on the welcome, "Done" on
+the finish; "Got it" for one-off hints).  The scrim is masked out over the
+spotlight, so the highlighted control receives the user's clicks.
+
 Painted with QPainterPath; motion via the widget-library helpers, so the
 global reduced-motion setting makes every transition instant.
 """
@@ -65,7 +71,7 @@ class _Dots(QWidget):
 
 
 class TourCallout(ThemeAware, QWidget):
-    """Elevated card with title, text, progress and Back / Next / Skip."""
+    """Elevated card with title, text, progress, Skip and (centred cards) Start / Done."""
 
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
@@ -109,14 +115,13 @@ class TourCallout(ThemeAware, QWidget):
         self.btn_skip.setToolTip("Close the tour (Esc)")
         row.addWidget(self.btn_skip)
         row.addStretch(1)
-        self.btn_back = AnimatedButton("Back", "chevron_left", "secondary", "sm")
-        self.btn_back.setToolTip("Previous step (Left arrow)")
-        self.btn_next = AnimatedButton("Next", None, "primary", "sm")
-        self.btn_next.setToolTip("Next step (Right arrow or Enter)")
-        row.addWidget(self.btn_back)
-        row.addWidget(self.btn_next)
+        # welcome "Start tour" / finish "Done" / hint "Got it" only: action
+        # steps advance when the user does what the step shows
+        self.btn_primary = AnimatedButton("Start tour", None, "primary", "sm")
+        self.btn_primary.setToolTip("Enter")
+        row.addWidget(self.btn_primary)
         v.addLayout(row)
-        for b in (self.btn_skip, self.btn_back, self.btn_next):
+        for b in (self.btn_skip, self.btn_primary):
             b.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self._connect_theme()
 
@@ -138,10 +143,11 @@ class TourCallout(ThemeAware, QWidget):
         self.body.setAlignment(Qt.AlignHCenter if centred else Qt.AlignLeft)
         self.step_lbl.setAlignment(Qt.AlignHCenter if centred else Qt.AlignLeft)
         self.dont_show.setVisible(show_check)
-        self.btn_back.setVisible(not first)
         self.btn_skip.setVisible(not last)
-        self.btn_next.setText("Start tour" if first else ("Finish" if last else "Next"))
-        for b in (self.btn_skip, self.btn_back, self.btn_next):
+        self.btn_primary.setVisible(centred)
+        self.btn_primary.setText("Start tour" if first else "Done")
+        self.btn_primary.setToolTip("Start the tour (Enter)" if first else "Close the tour (Enter)")
+        for b in (self.btn_skip, self.btn_primary):
             b.setMinimumWidth(b.sizeHint().width())
         m = EDGE + (SPACE.xxl if centred else SPACE.xl)
         self.layout().setContentsMargins(m, EDGE + (SPACE.xxl if centred else SPACE.lg + 2),
@@ -231,8 +237,7 @@ class TourCallout(ThemeAware, QWidget):
 class TourOverlay(ThemeAware, QWidget):
     """Full-window scrim with a spotlight hole; hosts the callout."""
 
-    next_requested = Signal()
-    back_requested = Signal()
+    primary_requested = Signal()        # Start tour / Done / Got it
     skip_requested = Signal()
 
     def __init__(self, host: QWidget) -> None:
@@ -249,8 +254,7 @@ class TourOverlay(ThemeAware, QWidget):
         self.setFocusPolicy(Qt.StrongFocus)
         self.setAttribute(Qt.WA_NoSystemBackground)
         self.callout = TourCallout(self)
-        self.callout.btn_next.clicked.connect(self.next_requested)
-        self.callout.btn_back.clicked.connect(self.back_requested)
+        self.callout.btn_primary.clicked.connect(self.primary_requested)
         self.callout.btn_skip.clicked.connect(self.skip_requested)
         self._pulse_anim = QVariantAnimation(self)
         self._pulse_anim.setStartValue(0.0)
@@ -459,18 +463,13 @@ class TourOverlay(ThemeAware, QWidget):
         k = e.key()
         if k == Qt.Key_Escape:
             self.skip_requested.emit()
-        elif k in (Qt.Key_Right, Qt.Key_PageDown):
-            self.next_requested.emit()
-        elif k in (Qt.Key_Left, Qt.Key_PageUp):
-            if self.callout.btn_back.isVisible():
-                self.back_requested.emit()
         elif k in (Qt.Key_Return, Qt.Key_Enter):
             from PySide6.QtWidgets import QApplication
             fw = QApplication.focusWidget()
             if isinstance(fw, QAbstractButton) and self.callout.isAncestorOf(fw):
                 fw.click()
-            else:
-                self.next_requested.emit()
+            elif self.callout.btn_primary.isVisible():
+                self.primary_requested.emit()
         else:
             super().keyPressEvent(e)
 

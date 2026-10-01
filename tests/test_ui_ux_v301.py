@@ -150,7 +150,7 @@ def test_ux02_gate_blocks_until_scan_and_scale_confirmed(env, qtbot):
     qtbot.waitUntil(lambda: hint.is_active(), timeout=5000)
     ov = hint.overlay
     assert ov.callout.body.text() == GATE_TEXT
-    assert ov.callout.btn_next.text() == "Got it" and not ov.callout.dont_show.isVisible()
+    assert ov.callout.btn_primary.text() == "Got it" and not ov.callout.dont_show.isVisible()
     # the spotlight is on the "Scan area & scale" tile, like a tour step
     r = hint.resolve(hint.steps[0])
     tile = a.setup_tile

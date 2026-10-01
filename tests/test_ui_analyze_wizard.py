@@ -3,7 +3,7 @@
 Resolution profile (optional) -> 1 Set scan area -> 2 Set scale bar ->
 3 Detection mode -> 4 Start analysis -> Progress.  A step is active only
 when the step before it is done (derived from the session's data); later
-steps are greyed with "Finish step N first"; Edit… appears once a step is
+steps are greyed with "Finish step N first"; Edit… appears once a step is unlocked;
 done; the tile under the image is a read-only details strip.
 """
 from __future__ import annotations
@@ -111,18 +111,22 @@ def test_removed_widgets_and_old_names_are_gone(env, qtbot):
 
 
 # ---------------------------------------------------------------- gating
-def test_steps_are_tiered_and_edit_appears_only_when_done(env, qtbot):
+def test_steps_are_tiered_and_edit_appears_when_unlocked(env, qtbot):
     shell = _open(qtbot, _session(env))
     a, st = shell.analyze, shell.state
     a.sync_wizard()
     assert _states(a) == ["active", "locked", "locked", "locked"]
     assert a.btn_scan_all.isEnabled() and a.btn_scan_cur.isEnabled()
-    assert a.btn_scan_edit.isHidden() and a.btn_scale_edit.isHidden()
+    # review item 4: Edit… is offered as soon as its step is unlocked
+    assert not a.btn_scan_edit.isHidden() and a.btn_scale_edit.isHidden()
     for b in (a.btn_scale_all, a.btn_scale_cur):
         assert not b.isEnabled() and b.toolTip() == "Finish step 1 first"
     for b in (a.btn_all, a.btn_cur):
         assert not b.isEnabled() and b.toolTip() == "Finish step 3 first"
     assert all(not m.isEnabled() for m in a.params.mode_cards.values())
+    # locked step 3 shows only its header row: the mode tiles are hidden
+    assert a.step_mode.body.isHidden() and not a.step_mode.title.isHidden()
+    assert all(not m.isVisible() for m in a.params.mode_cards.values())
     # 1 -> done: Edit… shows, step 2 lights
     _step1(shell, qtbot)
     assert all(st.scan_for(im) is not None for im in st.images())
@@ -131,14 +135,18 @@ def test_steps_are_tiered_and_edit_appears_only_when_done(env, qtbot):
     assert not a.step_scan.check.isHidden()
     assert not a.btn_scan_edit.isHidden() and a.btn_scan_edit.isEnabled()
     assert a.btn_scale_all.isEnabled() and a.btn_scale_all.toolTip() != "Finish step 1 first"
-    assert a.btn_scale_edit.isHidden()
+    assert not a.btn_scale_edit.isHidden()
     assert a.connectors[1].is_lit() and not a.connectors[2].is_lit()
+    assert a.step_mode.body.isHidden()                         # step 3 still locked
     # 2 -> done (derived from the data: every image has a scale)
     st.set_calibration(2.0)
     a.sync_wizard()
     assert _states(a) == ["done", "done", "active", "locked"]
     assert not a.btn_scale_edit.isHidden()
     assert not a.btn_all.isEnabled()
+    # step 3 reachable: the tiles appear
+    assert not a.step_mode.body.isHidden()
+    assert all(m.isVisible() for m in a.params.mode_cards.values())
     # 3 -> choosing a mode marks it done and lights step 4
     a.params.mode_cards["boundary"].clicked.emit()
     a.sync_wizard()
@@ -157,6 +165,7 @@ def test_steps_are_tiered_and_edit_appears_only_when_done(env, qtbot):
     a.sync_wizard()
     assert _states(a)[0] == "active" and _states(a)[1:] == ["locked"] * 3
     assert not a.btn_all.isEnabled()
+    assert a.step_mode.body.isHidden()                         # tiles hidden again
     shell.close()
 
 
@@ -295,4 +304,207 @@ def test_headless_1366x768_nothing_clipped(env, qtbot, tmp_path):
             if w.sizeHint().width() > w.width() + 1:
                 bad.append(("label", w.text(), w.sizeHint().width(), w.width()))
     assert not bad, bad
+    shell.close()
+
+
+# ---------------------------------------------------------------- code-review fixes
+def _ready_all(shell, qtbot, mode="threshold"):
+    a, st = shell.analyze, shell.state
+    for im in st.images():
+        st.set_scan_rect((0, 0, 400, 300), im.uid)
+    st.set_calibration_all(2.0)
+    a.params.set_mode(mode, emit=True)
+    a.sync_wizard()
+
+
+def test_run_buttons_gate_per_target(env, qtbot):
+    """Review 1: one image without a scale -- Analyze current on a ready
+    image works, Analyze all does not; each disabled button says why."""
+    shell = _open(qtbot, _session(env, sizes=((480, 360),) * 3))
+    a, st = shell.analyze, shell.state
+    _ready_all(shell, qtbot)
+    imgs = st.images()
+    bad = imgs[1]
+    st.session.px_per_um = 0.0
+    for im in (imgs[0], imgs[2]):
+        st.set_calibration(2.0, im.uid)
+    bad.px_override = 0.0
+    assert not st.setup_ready(bad) and st.setup_ready(imgs[0])
+    st.set_current_image(imgs[0].uid)
+    a.sync_wizard()
+    assert a.step_run.state() != "locked"          # mode chosen + images ready
+    assert a.btn_cur.isEnabled() and not a.btn_all.isEnabled()
+    assert "1 of 3 images still need" in a.btn_all.toolTip()
+    # switching to the image without a scale: only Analyze current changes
+    states = _states(a)
+    st.set_current_image(bad.uid)
+    a.sync_wizard()
+    assert _states(a) == states                     # switching keeps the step states
+    assert not a.btn_cur.isEnabled() and "needs a scale" in a.btn_cur.toolTip()
+    # Analyze selected: every ticked image must be ready
+    a.film.set_checked([imgs[0].uid, imgs[2].uid])
+    a.sync_wizard()
+    assert not a.btn_sel.isHidden() and a.btn_sel.isEnabled()
+    a.film.set_checked([imgs[0].uid, bad.uid])
+    a.sync_wizard()
+    assert not a.btn_sel.isEnabled() and "1 of the 2 ticked" in a.btn_sel.toolTip()
+    st.set_current_image(imgs[0].uid)
+    a.sync_wizard()
+    with qtbot.waitSignal(a.queue.queue_finished, timeout=TIMEOUT):
+        a.btn_cur.click()
+    assert imgs[0].result is not None and bad.result is None
+    shell.close()
+
+
+def test_other_find_buttons_wait_while_auto_find_runs(env, qtbot):
+    """Review 2: no misleading "Nothing to check" while a find is running."""
+    shell = _open(qtbot, _session(env))
+    a, st = shell.analyze, shell.state
+    for im in st.images():
+        im.scan_rect, im.scan_source = (0, 0, 480, 360), "auto"
+    a.sync_wizard()
+    assert a.btn_scale_all.isEnabled()
+    titles = []
+    orig = shell.toasts.show_toast
+    shell.toasts.show_toast = lambda title, *r, **k: (titles.append(title), orig(title, *r, **k))[1]
+    a.toasts = shell.toasts
+    a.btn_scan_all.click()                          # step 1 again, every image
+    assert st.is_setting_up()
+    assert not a.btn_scale_all.isEnabled() and not a.btn_scan_cur.isEnabled()
+    assert "Still finding" in a.btn_scale_all.toolTip()
+    assert a.find_scales() == 0
+    assert "Nothing to check" not in titles and any("Still finding" in t for t in titles)
+    qtbot.waitUntil(lambda: not st.is_setting_up(), timeout=TIMEOUT)
+    a.sync_wizard()
+    assert a.btn_scale_all.isEnabled() and "Still finding" not in a.btn_scale_all.toolTip()
+    shell.close()
+
+
+def test_full_image_for_all_counts_when_size_arrives_later(env, qtbot):
+    """Review 3: "Apply to all" with the full image on an image whose size
+    is not known yet still completes step 1."""
+    shell = _open(qtbot, _session(env))
+    a, st = shell.analyze, shell.state
+    late = st.images()[1]
+    shape = late.shape
+    late.shape = None                               # still loading its size
+    st.set_scan_rect_all(None)
+    assert late.scan_rect is None and late.scan_full_pending
+    late.shape = shape                              # the size arrives
+    assert st.scan_for(late) == (0, 0, shape[1], shape[0])
+    assert a.step_done()["scan"]
+    # a later per-image area replaces the pending full frame
+    st.set_scan_rect((1, 2, 30, 40), late.uid)
+    assert not late.scan_full_pending and st.scan_for(late) == (1, 2, 30, 40)
+    shell.close()
+
+
+def test_old_session_without_wizard_flag_has_mode_chosen(env, qtbot):
+    """Review 5: params saved before the wizard existed = mode chosen; a
+    wizard-era save says so explicitly."""
+    import json
+    rec = _session(env)
+    m = json.loads((rec / "manifest.json").read_text(encoding="utf-8"))
+    m["detection_params"] = {"detection_mode": "boundary", "blur": 1.0}
+    (rec / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
+    shell = _open(qtbot, rec)
+    a, st = shell.analyze, shell.state
+    assert st.mode_chosen() and a.step_done()["mode"]
+    assert a.params.mode() == "boundary"
+    shell.close()
+    # a wizard-era session saved before any choice stays "not chosen"
+    m["detection_params"] = {"detection_mode": "boundary", "wizard": {"mode_chosen": False}}
+    (rec / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
+    shell = _open(qtbot, rec)
+    assert not shell.state.mode_chosen()
+    shell.state.set_params(shell.analyze.params.get_params())      # e.g. the GPU check
+    assert shell.state.session.params["wizard"] == {"mode_chosen": False}
+    shell.close()
+
+
+def test_shell_edit_dialogs_apply_to_current_or_all(env, qtbot, monkeypatch):
+    """Review 6: Ctrl+R / Ctrl+K "Apply to current" writes only the shown
+    image; "Apply to all" writes every image."""
+    from ui.calibration_dialog import CalibrationDialog
+    from ui.scan_area_dialog import ScanAreaDialog
+    shell = _open(qtbot, _session(env, sizes=((480, 360),) * 3))
+    st = shell.state
+    cur = st.current_image()
+    others = [im for im in st.images() if im is not cur]
+    plan = {}
+
+    def scan_exec(self):
+        self.apply_scope = plan["scope"]
+        self.scan_area_set.emit(*plan["rect"])
+        return 1
+
+    def cal_exec(self):
+        self.apply_scope = plan["scope"]
+        self.calibration_set.emit(plan["px"])
+        return 1
+    monkeypatch.setattr(ScanAreaDialog, "exec", scan_exec)
+    monkeypatch.setattr(CalibrationDialog, "exec", cal_exec)
+    plan.update(scope="image", rect=(10, 20, 100, 80))
+    shell.open_scan_area()
+    qtbot.waitUntil(lambda: st.scan_for(cur) == (10, 20, 100, 80), timeout=TIMEOUT)
+    assert all(st.scan_for(im) is None for im in others)
+    plan.update(scope="all", rect=(5, 6, 200, 150))
+    shell.open_scan_area()
+    qtbot.waitUntil(lambda: all(st.scan_for(im) == (5, 6, 200, 150) for im in st.images()),
+                    timeout=TIMEOUT)
+    plan.update(scope="image", px=3.5)
+    shell.open_calibration()
+    qtbot.waitUntil(lambda: st.px_for(cur) == pytest.approx(3.5), timeout=TIMEOUT)
+    assert all(st.px_for(im) <= 0 for im in others)
+    plan.update(scope="all", px=4.25)
+    shell.open_calibration()
+    qtbot.waitUntil(lambda: all(st.px_for(im) == pytest.approx(4.25) for im in st.images()),
+                    timeout=TIMEOUT)
+    shell.close()
+
+
+def test_wizard_buttons_blocked_while_a_run_is_in_progress(env, qtbot):
+    shell = _open(qtbot, _session(env))
+    a = shell.analyze
+    _ready_all(shell, qtbot)
+    assert a.btn_all.isEnabled()
+    with qtbot.waitSignal(a.queue.queue_finished, timeout=TIMEOUT):
+        a.btn_all.click()
+        assert a.queue.is_running()
+        for b in (a.btn_scan_all, a.btn_scan_cur, a.btn_scale_all, a.btn_scale_cur,
+                  a.btn_scan_edit, a.btn_scale_edit, a.btn_cur):
+            assert not b.isEnabled(), b.objectName()
+        assert "Wait for the analysis" in a.btn_scale_all.toolTip()
+        assert not a.btn_cancel.isHidden()
+    a.sync_wizard()
+    for b in (a.btn_scan_all, a.btn_scale_all, a.btn_scan_edit, a.btn_all, a.btn_cur):
+        assert b.isEnabled(), b.objectName()
+    shell.close()
+
+
+def test_empty_session_locks_every_step(env, qtbot):
+    from pathlib import Path
+    from data.catalog import Catalog
+    from data.session_io import save_session
+    from data.workspace import Workspace
+    ws = Workspace(env)
+    pp = ws.create_project("P")
+    sp = ws.create_sample(pp, "S")
+    lp = ws.create_lot(pp, sp, "L")
+    rec = Path(save_session(lp, {}, [], label="Empty", catalog=Catalog(env)).path)
+    from ui.app_shell import AppShell
+    from ui.app_state import AppState
+    shell = AppShell(AppState(), probe_device=False)
+    qtbot.addWidget(shell)
+    shell.show()
+    shell.open_session(rec, prefer="analyze")
+    qtbot.waitUntil(lambda: shell.state.session is not None, timeout=15000)
+    a = shell.analyze
+    a.sync_wizard()
+    assert _states(a) == ["locked"] * 4 and a.profile_step.is_locked()
+    assert a.step_mode.body.isHidden()
+    for b in (a.btn_all, a.btn_cur, a.btn_sel):
+        assert not b.isEnabled()
+    assert a.btn_scan_edit.isHidden() and a.btn_scale_edit.isHidden()
+    assert not any(c.is_lit() for c in a.connectors)
     shell.close()
