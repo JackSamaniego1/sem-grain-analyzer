@@ -119,7 +119,12 @@ def test_all_lots_charts_one_bar_per_lot_with_units(deck):
         assert len(vals) == 9 and all(v is not None and v > 0 for v in vals)
         if key == "mean_diameter":
             assert vals == pytest.approx([round(l[key], 12) for l in lots], rel=1e-6)
-        assert not c.has_legend
+        assert not c.has_legend                       # no legend: the line is not a legend entry
+        assert len(c.plots) == 2                      # bars + connecting line
+        bars, line = c.plots[0].series[0], c.plots[1].series[0]
+        assert list(line.values) == pytest.approx(list(bars.values), abs=1e-3)
+        xml = c._chartSpace.xml
+        assert '<c:smooth val="0"/>' in xml and '<c:symbol val="circle"/>' in xml   # straight, no fitting
 
 
 def test_all_lots_charts_continue_without_counter_and_skip_when_disabled(tmp_path):

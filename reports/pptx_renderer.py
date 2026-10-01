@@ -47,7 +47,7 @@ from reports.charts import (
 from reports.model import ReportModel, ImageSummary, Section, pooled_grain_percentiles
 from reports.excel_renderer import _resized_png, _row_size_stats
 from reports.lot_summary import (
-    lot_summary_data, footnotes_for, table_headers, id_cells, NUMERIC_KEYS, part_lot_charts, density_display,
+    lot_summary_data, footnotes_for, table_headers, id_cells, NUMERIC_KEYS, part_lot_charts, density_display, _lot_line,
 )
 
 try:
@@ -916,7 +916,8 @@ def _filtered_values(model: ReportModel, imgs: List[ImageSummary], all_images: L
 
 
 def _convert_series_to_lines(chart, first_index: int, color_hexes: List[str],
-                             width_pt: float = 2.25, legend: bool = True) -> None:
+                             width_pt: float = 2.25, legend: bool = True,
+                             straight_markers: bool = False) -> None:
     """Move every bar series from ``first_index`` on into ONE smoothed
     ``<c:lineChart>`` sharing the bar chart's axes (combo chart). Their
     legend entries are deleted so only the bars (one per lot) are listed."""
@@ -937,12 +938,18 @@ def _convert_series_to_lines(chart, first_index: int, color_hexes: List[str],
         sp_pr = parse_xml('<c:spPr %s><a:ln w="%d" cap="rnd"><a:solidFill><a:srgbClr val="%s"/></a:solidFill>'
                           '<a:round/></a:ln></c:spPr>' % (nsdecls("c", "a"), int(width_pt * 12700),
                                                           col.lstrip("#")))
-        marker = parse_xml('<c:marker %s><c:symbol val="none"/></c:marker>' % nsdecls("c"))
+        if straight_markers:   # Excel look: circle markers size 5, same color
+            marker = parse_xml('<c:marker %s><c:symbol val="circle"/><c:size val="5"/><c:spPr><a:solidFill>'
+                               '<a:srgbClr val="%s"/></a:solidFill><a:ln><a:solidFill><a:srgbClr val="%s"/>'
+                               '</a:solidFill></a:ln></c:spPr></c:marker>'
+                               % (nsdecls("c", "a"), col.lstrip("#"), col.lstrip("#")))
+        else:
+            marker = parse_xml('<c:marker %s><c:symbol val="none"/></c:marker>' % nsdecls("c"))
         cat_el = ser.find("c:cat", ns)
         at = list(ser).index(cat_el)
         ser.insert(at, marker)
         ser.insert(at, sp_pr)
-        ser.append(parse_xml('<c:smooth %s val="1"/>' % nsdecls("c")))
+        ser.append(parse_xml('<c:smooth %s val="%d"/>' % (nsdecls("c"), 0 if straight_markers else 1)))
         line_chart.append(ser)
     for v in ax_ids:
         line_chart.append(parse_xml('<c:axId %s val="%s"/>' % (nsdecls("c"), v)))
@@ -1197,7 +1204,8 @@ def _tilt_category_labels(chart, degrees: int = -45) -> None:
 
 
 def _draw_lot_metric_chart(slide, x_in: float, y_in: float, cx_in: float, cy_in: float,
-                           ch: Dict[str, Any], lo: int, hi: int, series: Dict[str, str]):
+                           ch: Dict[str, Any], lo: int, hi: int, series: Dict[str, str],
+                           excel_line: bool = False):
     """One native combo chart for lots ``lo:hi`` of chart spec ``ch``."""
     cats = ch["categories"][lo:hi]
     cd = CategoryChartData()
@@ -1222,8 +1230,8 @@ def _draw_lot_metric_chart(slide, x_in: float, y_in: float, cx_in: float, cy_in:
     chart.has_title = True
     chart.chart_title.text_frame.text = ch["title"]
     chart.chart_title.text_frame.paragraphs[0].runs[0].font.size = Pt(13)
-    chart.has_legend = has_trend
-    if has_trend:
+    chart.has_legend = has_trend and not excel_line   # all-lots slides: no legend at all
+    if chart.has_legend:
         chart.legend.position = XL_LEGEND_POSITION.BOTTOM
         chart.legend.include_in_layout = False
     cat_axis, val_axis = chart.category_axis, chart.value_axis
@@ -1240,7 +1248,8 @@ def _draw_lot_metric_chart(slide, x_in: float, y_in: float, cx_in: float, cy_in:
     bar.format.fill.solid()
     bar.format.fill.fore_color.rgb = _hexrgb(series[_LS_BAR_KEY.get(ch["id"], "diameter_bar")])
     if has_trend:
-        _convert_series_to_lines(chart, 1, [series["normal_fit"].lstrip("#")], legend=False)
+        _convert_series_to_lines(chart, 1, [series["normal_fit"].lstrip("#")], legend=False,
+                                 straight_markers=excel_line)
     if len(cats) > ROTATE_LABELS_OVER:
         _tilt_category_labels(chart)
     return chart
@@ -1292,7 +1301,7 @@ def _all_lots_chart_specs(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     Summary charts (two-level Part / Lot categories when several parts);
     Excel has no density chart, so that one uses ``density_display``."""
     by_id = {c["id"]: c for c in data["charts"]}
-    out = [dict(by_id[k], trend=None) for k in ("mean_diameter", "mean_area") if k in by_id]
+    out = [dict(by_id[k]) for k in ("mean_diameter", "mean_area") if k in by_id]
     base = out[0] if out else None
     dens, unit, fmt = density_display([s["grain_density"] for s in data["lots"]],
                                       data["units"]["calibrated"])
@@ -1301,7 +1310,7 @@ def _all_lots_chart_specs(data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "y_title": f"Grain Density ({unit})", "num_format": fmt,
                 "categories": base["categories"] if base else
                 [{"part": s["part"], "lot": s["lot"], "label": s["lot"]} for s in data["lots"]],
-                "values": dens, "trend": None,
+                "values": dens, "trend": _lot_line(dens),
                 "multi_level": data["multi_part"]})
     return out
 
@@ -1327,7 +1336,7 @@ def _all_lots_chart_slides(new_slide, model: ReportModel, images: List[ImageSumm
         for lo, hi in _even_spans(len(ch["categories"]), MAX_LOTS_ALL_LOTS_CHART):
             slide = new_slide("lot_charts_all", "Lot summary, all lots")
             _slide_heading(slide, ALL_LOTS_HEADINGS[ch["id"]], navy)
-            _draw_lot_metric_chart(slide, CONTENT_LEFT_IN, top, CONTENT_WIDTH_IN, h, ch, lo, hi, series)
+            _draw_lot_metric_chart(slide, CONTENT_LEFT_IN, top, CONTENT_WIDTH_IN, h, ch, lo, hi, series, excel_line=True)
 
 
 def _lot_chart_slides(new_slide, model: ReportModel, images: List[ImageSummary],
