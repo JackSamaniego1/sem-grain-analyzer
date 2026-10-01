@@ -29,9 +29,9 @@ import pytest
 from reports.model import ReportModel, ReportImageInput, Section
 from reports.pptx_renderer import (
     render_pptx, SLIDE_H, MAX_SUMMARY_ROWS, MAX_DATA_ROWS, MAX_PARTS_COMBINED,
-    MARGIN_IN, FOOTER_MAX_CHARS, _part_summary_rows, _chunk, _plan_image_table_slides,
-    _max_chars_for_width, _DATA_IMAGE_COL_IN, _footer_text, _percentile_rows,
-    _lot_distribution_slide_plan, lot_summary_slide_count,
+    MARGIN_IN, _part_summary_rows, _chunk, _plan_image_table_slides,
+    _max_chars_for_width, _DATA_IMAGE_COL_IN, _percentile_rows,
+    _part_distribution_slide_plan, lot_summary_slide_count, lot_chart_slide_count,
 )
 from reports.charts import PALETTES, series_for
 
@@ -81,8 +81,11 @@ def _overview_slide_count(model, images):
         n = len(_chunk(rows, MAX_SUMMARY_ROWS)) + 1
     n += len(_chunk(_percentile_rows(model, images)[0], MAX_DATA_ROWS))
     n += len(_plan_image_table_slides(model, images))
-    # UPDATE 4 item 17: per-lot distribution slides + lot-to-lot comparison
-    n += len(_lot_distribution_slide_plan(model, images, series_for(model.theme, model.custom_palette)))
+    # Batch 4D: one lot-chart slide per part (right after the summary) and one
+    # distribution slide per part (clustered bars, one color per lot).
+    if model.is_enabled("lot_summary", default=False):
+        n += lot_chart_slide_count(model, images)
+    n += len(_part_distribution_slide_plan(model, images, series_for(model.theme, model.custom_palette)))
     return n
 
 
@@ -94,9 +97,7 @@ def _expected_slide_count(model, images, want_charts=True, want_methods=True):
     if sec is not None and sec.enabled and images:
         n += lot_summary_slide_count(model, images)   # UPDATE 4 item 15
     n += len(images)  # one image (original + overlay) slide each
-    n += (1 if want_methods else 0)
-    n += 1  # appendix
-    return n
+    return n  # no methods / appendix slides any more
 
 
 def _build_mixed_model(tmp_path):
@@ -354,8 +355,9 @@ def test_part_summary_paginates_when_too_many_parts(tmp_path):
         table = table_shape.table
         total_rows += len(table.rows) - 1
     assert total_rows == n
-    assert _heading(summary_slides[0]) == "Grain Size Summary (cont'd 1/2)"
-    assert _heading(summary_slides[1]) == "Grain Size Summary (cont'd 2/2)"
+    # continuation slides repeat the plain title -- no "(i/N)" counters
+    assert _heading(summary_slides[0]) == "Grain Size Summary"
+    assert _heading(summary_slides[1]) == "Grain Size Summary"
 
     charts_slides = [s for s in prs.slides if _heading(s) == "Grain Size Summary — Charts"]
     assert len(charts_slides) == 1
@@ -398,8 +400,9 @@ def test_summary_slide_combines_table_and_charts_when_few_parts(tmp_path):
         assert len(list(c.plots[0].categories)) == 3
         assert c.category_axis.axis_title.text_frame.text == "Part Number"
         assert c.value_axis.axis_title.text_frame.text  # non-empty
-    # no leftover separate chart slides 3/4 for the small-part-count case
-    assert not any(sh.has_chart for sh in prs.slides[3].shapes)
+    # no leftover separate summary-chart slide: the next slide is the first
+    # per-part lot-chart slide
+    assert _heading(prs.slides[3]).startswith("Lot Summary")
 
 
 def test_summary_chart_uses_hierarchy_part_label(tmp_path):
@@ -436,16 +439,14 @@ def test_more_than_six_parts_splits_table_and_charts_across_slides_2_and_3(tmp_p
 # ---------------------------------------------------------------------------
 
 def test_data_table_slides_grouped_by_part_with_continuation_numbering(tmp_path):
-    """Coordinator layout review: the FIRST slide of a part that continues
-    is also labelled "(continued 1/2)" (not just the later ones)."""
+    """Continuation data-table slides repeat the plain part title (no
+    "(continued i/N)" counters)."""
     model = _build_parts_model(tmp_path, n_parts=1, n_lots=1, n_images=20, h=64, w=64, n_grains=10)
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    data_slides = [s for s in prs.slides if _heading(s).startswith("P1")]
+    data_slides = [s for s in prs.slides if _heading(s) == "P1"]
     assert len(data_slides) == 2  # ceil(20 / 14)
-    assert _heading(data_slides[0]) == "P1 (continued 1/2)"
-    assert _heading(data_slides[1]) == "P1 (continued 2/2)"
     total_rows = 0
     for s in data_slides:
         table = next(sh for sh in s.shapes if sh.has_table).table
@@ -678,44 +679,26 @@ def test_summary_table_area_column_shows_squared_unit(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Coordinator layout review: the footer must always be a single line under a
-# length cap (long/many part/lot names used to wrap and get clipped).
+# Footer: ONLY the page number, bottom-right (batch 4D).
 # ---------------------------------------------------------------------------
 
-def _footer_main_textbox(slide, slide_h_in: float):
-    cands = [sh for sh in slide.shapes if sh.has_text_frame and sh.text_frame.text.strip()
+def _footer_texts(slide, slide_h_in: float):
+    return [sh.text_frame.text for sh in slide.shapes if sh.has_text_frame and sh.text_frame.text.strip()
             and abs(Emu(sh.top).inches - (slide_h_in - 0.32)) < 0.05]
-    return min(cands, key=lambda sh: Emu(sh.left).inches)
 
 
-def test_footer_collapses_to_counts_when_names_dont_fit(tmp_path):
+def test_footer_has_only_the_page_number_bottom_right(tmp_path):
     model = _build_parts_model(tmp_path, n_parts=3, n_lots=3, n_images=2)
-    # a single-valued level (Job #) stays named; the multi-valued part/lot
-    # levels (3 parts, 9 distinctly-named lots) are what overflow the cap.
     model.hierarchy.insert(0, {"key": "project", "label": "Job #", "value": "24-117"})
-    page_num = 3  # slide index 2 (summary): cover, contents, summary
-    footer = _footer_text(model, page_num)
-    assert "\n" not in footer
-    assert len(footer) <= FOOTER_MAX_CHARS + 20   # + " · page N" suffix
-    assert "3 parts" in footer and "9 lots" in footer
-    assert "Job # 24-117" in footer
-
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
     slide_h_in = Emu(prs.slide_height).inches
-    box = _footer_main_textbox(prs.slides[2], slide_h_in)
-    assert box.text_frame.text == footer
-    assert not box.text_frame.word_wrap
-
-
-def test_footer_keeps_named_values_when_short(tmp_path):
-    model = _build_hierarchy_model_local(tmp_path, n=1)
-    footer = _footer_text(model, 1)
-    assert "Job # 24-117" in footer
-    assert "Part Number 7718-A" in footer
-    assert "Lot L-44A" in footer
-    assert len(footer) <= FOOTER_MAX_CHARS + 20
+    for n, slide in enumerate(prs.slides, start=1):
+        assert _footer_texts(slide, slide_h_in) == [str(n)]
+        box = next(sh for sh in slide.shapes if sh.has_text_frame and sh.text_frame.text == str(n)
+                   and abs(Emu(sh.top).inches - (slide_h_in - 0.32)) < 0.05)
+        assert Emu(box.left).inches > Emu(prs.slide_width).inches / 2
 
 
 # ---------------------------------------------------------------------------
@@ -891,19 +874,14 @@ def test_overlay_opacity_default_keeps_overlay_colouring(tmp_path):
     assert not np.array_equal(arr, orig_arr)
 
 
-def test_methods_and_appendix_slides_present(tmp_path):
+def test_no_methods_or_appendix_slides(tmp_path):
     model = _build_model(tmp_path, n=1)
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    all_text = []
-    for slide in prs.slides:
-        for shape in slide.shapes:
-            if shape.has_text_frame:
-                all_text.append(shape.text_frame.text)
-    joined = "\n".join(all_text)
-    assert "Methods" in joined
-    assert "Excel" in joined  # appendix note
+    titles = [_heading(s) for s in prs.slides]
+    assert not any("Methods" in t or "Appendix" in t for t in titles)
+    assert not any("Parameters" in t for t in titles)
 
 
 def test_disabling_combined_distribution_removes_those_slides(tmp_path):
@@ -947,18 +925,18 @@ def _add_custom_text(model, order, title, body):
 # ---------------------------------------------------------------------------
 
 def test_reordering_top_level_sections_reorders_slides(tmp_path):
-    """Move Methods before the distribution slides purely via ``Section.order``."""
+    """Move a custom text slide before the distribution slides purely via
+    ``Section.order``; the last slide is the last image (no appendix)."""
     model = _build_model(tmp_path, n=1)
-    model.get_section("parameters").order = 1.5   # between overview(1) and charts(2)
+    _add_custom_text(model, 1.5, "Early Notes", "hello")   # between overview(1) and charts(2)
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
     titles = [_heading(s) for s in prs.slides]
-    methods_idx = next(i for i, t in enumerate(titles) if "Methods" in t)
+    notes_idx = titles.index("Early Notes")
     area_idx = next(i for i, t in enumerate(titles) if "Area Distribution" in t)
-    assert methods_idx < area_idx
-    # Appendix (raw data) is still strictly last.
-    assert "Appendix" in titles[-1]
+    assert notes_idx < area_idx
+    assert "Appendix" not in titles[-1]
 
 
 def test_renamed_custom_text_title_used_as_slide_heading(tmp_path):
@@ -1093,16 +1071,13 @@ def test_title_slide_shows_hierarchy_lines(tmp_path):
     assert "Lot: L-44A" in text
 
 
-def test_footer_shows_hierarchy_and_page_number(tmp_path):
+def test_footer_does_not_repeat_hierarchy_values(tmp_path):
     model = _build_hierarchy_model_local(tmp_path, n=1)
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
-    text = _all_text(prs.slides[0])
-    assert "Job # 24-117" in text
-    assert "Part Number 7718-A" in text
-    assert "Lot L-44A" in text
-    assert "page 1" in text
+    slide_h_in = Emu(prs.slide_height).inches
+    assert _footer_texts(prs.slides[0], slide_h_in) == ["1"]
 
 
 def test_image_slide_title_uses_display_name(tmp_path):
@@ -1116,7 +1091,7 @@ def test_image_slide_title_uses_display_name(tmp_path):
     assert "src_0" not in text
 
 
-def test_legacy_model_without_hierarchy_keeps_old_footer_and_title(tmp_path):
+def test_legacy_model_without_hierarchy_keeps_title(tmp_path):
     model = _build_model(tmp_path, n=1)
     out = str(tmp_path / "deck.pptx")
     render_pptx(model, out)
@@ -1124,7 +1099,6 @@ def test_legacy_model_without_hierarchy_keeps_old_footer_and_title(tmp_path):
     text = _all_text(prs.slides[0])
     assert "Sample/Lot:" in text
     assert model.title in text
-    assert "page 1" not in text  # legacy footer has no "page n" phrase
 
 
 def test_sample_output_written_to_scratch():
@@ -1210,83 +1184,3 @@ def test_distribution_chart_normal_fit_is_a_line_not_bars(tmp_path):
     assert os.path.exists(out)
 
 
-# ---------------------------------------------------------------------------
-# FIX-12: the Methods text box used to overflow straight through the footer
-# bar (a single fixed-height text box that never shrinks/paginates on its
-# own).
-# ---------------------------------------------------------------------------
-
-def test_methods_slide_paginates_when_params_dont_fit(tmp_path):
-    model = _build_model(tmp_path, n=1)
-    model.metadata["detection_params"] = {f"param_{i}": f"value_{i}" for i in range(40)}
-    out = str(tmp_path / "deck.pptx")
-    render_pptx(model, out)
-    prs = Presentation(out)
-    methods_slides = [s for s in prs.slides if _all_text(s).startswith("Methods")]
-    assert len(methods_slides) > 1
-    assert "(cont'd)" in _all_text(methods_slides[1])
-
-    all_lines = []
-    for s in methods_slides:
-        body_box = next(sh for sh in s.shapes if sh.has_text_frame
-                         and not sh.text_frame.text.startswith("Methods")
-                         and len(sh.text_frame.text) > 20)
-        bottom_in = Emu(body_box.top).inches + Emu(body_box.height).inches
-        assert bottom_in < FOOTER_TOP_IN  # FIX-12: never runs into the footer
-        all_lines.extend(body_box.text_frame.text.split("\n"))
-    assert any(l.startswith("param_0:") for l in all_lines)
-    assert any(l.startswith("param_39:") for l in all_lines)
-
-
-def test_methods_slide_short_params_still_single_slide(tmp_path):
-    """Regression guard: FIX-12 pagination must not split the common case."""
-    model = _build_model(tmp_path, n=1)
-    out = str(tmp_path / "deck.pptx")
-    render_pptx(model, out)
-    prs = Presentation(out)
-    methods_slides = [s for s in prs.slides if _all_text(s).startswith("Methods")]
-    assert len(methods_slides) == 1
-
-
-# ---------------------------------------------------------------------------
-# FIX-07 (PPTX half): ReportModel.calibration rendered in the Methods
-# slide(s), mirroring the Excel Methods sheet (commit 790afdb).
-# ---------------------------------------------------------------------------
-
-def test_methods_slide_includes_calibration_block_matching_excel(tmp_path):
-    model = _build_model(tmp_path, n=1)
-    model.calibration = {
-        "source": "scale_bar", "px_per_um": 8.0, "check": "manual", "status": "pass",
-        "reason": "", "warnings": ["Sample count below target (n=3 of 5)"],
-        "text": "Verified 2026-09-24: 8.00 px/um (0.3% RA, target 10%)",
-    }
-    out = str(tmp_path / "deck.pptx")
-    render_pptx(model, out)
-    prs = Presentation(out)
-    joined = "\n".join(_all_text(s) for s in prs.slides)
-    assert "Scale Verification: Verified 2026-09-24: 8.00 px/um (0.3% RA, target 10%)" in joined
-    assert "Verification Source: scale_bar" in joined
-    assert "Verification Warnings: Sample count below target (n=3 of 5)" in joined
-
-
-def test_no_calibration_means_no_scale_verification_line(tmp_path):
-    model = _build_model(tmp_path, n=1)
-    assert model.calibration is None
-    out = str(tmp_path / "deck.pptx")
-    render_pptx(model, out)
-    prs = Presentation(out)
-    joined = "\n".join(_all_text(s) for s in prs.slides)
-    assert "Scale Verification" not in joined
-
-
-def test_calibration_round_trips_through_report_json_into_pptx(tmp_path):
-    """FIX-07: ``ReportModel.calibration`` survives a to_json/from_json
-    round-trip (the ``report.json`` re-edit path) and still renders."""
-    model = _build_model(tmp_path, n=1)
-    model.calibration = {"source": "scale_bar", "text": "Verified: 8.00 px/um"}
-    reloaded = ReportModel.from_json(model.to_json())
-    out = str(tmp_path / "deck.pptx")
-    render_pptx(reloaded, out)
-    prs = Presentation(out)
-    joined = "\n".join(_all_text(s) for s in prs.slides)
-    assert "Scale Verification: Verified: 8.00 px/um" in joined

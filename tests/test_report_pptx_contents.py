@@ -36,6 +36,7 @@ def _model(parts=2, lots=4, per=2, n_text=0, contents=True):
                 k += 1
     secs = [Section(id="cover", type="cover", title="Cover", order=0),
             Section(id="ov", type="overview_table", title="Overview", order=1),
+            Section(id="ls", type="lot_summary", title="Lot Summary", order=500),
             Section(id="params", type="parameters", title="Methods", order=500)]
     for t in range(n_text):
         secs.append(Section(id=f"t{t}", type="custom_text", title=f"Note {t + 1}", order=2 + t,
@@ -98,11 +99,14 @@ def test_every_link_targets_the_printed_page_and_matching_slide(tmp_path):
     by_label = {label: (a, b, t) for a, b, label, t in entries}
     assert _head(prs.slides[by_label["Grain size summary"][2]]) == "Grain Size Summary"
     assert _head(prs.slides[by_label["Cover"][2]]) == "Deck"
-    assert _head(prs.slides[by_label["Appendix"][2]]) == "Appendix"
-    assert _head(prs.slides[by_label["Grain distributions by lot"][2]]).startswith("Grain Distributions")
-    assert _head(prs.slides[by_label["Lot-to-lot distribution comparison"][2]]).startswith(
-        "Lot-to-Lot Distribution Comparison")
-    assert _head(prs.slides[by_label["Methods & parameters"][2]]).startswith("Methods")
+    assert _head(prs.slides[by_label["Lot summary by part"][2]]).startswith("Lot Summary")
+    assert _head(prs.slides[by_label["Grain distributions by part"][2]]).startswith("Grain Distributions")
+    # removed sections never show up in the contents
+    for gone in ("Appendix", "Methods & parameters", "Lot comparison by part",
+                 "Lot-to-lot distribution comparison"):
+        assert gone not in by_label
+    # lot-chart slides come right after the summary
+    assert by_label["Lot summary by part"][0] == by_label["Grain size summary"][1] + 1
 
 
 def test_similar_slides_collapse_to_ranges_pointing_at_first_slide(tmp_path):
@@ -111,8 +115,10 @@ def test_similar_slides_collapse_to_ranges_pointing_at_first_slide(tmp_path):
     a, b, t = by_label["Image results"]
     assert b - a + 1 == 16 and t == a - 1
     assert _head(prs.slides[t]).startswith("Image")
-    a, b, t = by_label["Grain distributions by lot"]
-    assert b - a + 1 == 8
+    a, b, t = by_label["Grain distributions by part"]
+    assert b - a + 1 == 2                                # one slide per part
+    a, b, t = by_label["Lot summary by part"]
+    assert b - a + 1 == 2 and _head(prs.slides[t]).startswith("Lot Summary")
     a, b, t = by_label["Image data tables"]
     assert b >= a and _head(prs.slides[t]).startswith("P1")
     # one line per run: the label appears exactly once
@@ -124,7 +130,7 @@ def test_long_deck_paginates_contents_and_numbers_stay_right(tmp_path):
     n_text = MAX_DATA_ROWS + 2                         # forces > 14 runs
     prs = _render(tmp_path, _model(parts=1, lots=2, per=1, n_text=n_text))
     heads = [_head(s) for s in prs.slides]
-    assert heads[1] == "Contents (1/2)" and heads[2] == "Contents (2/2)"
+    assert heads[1] == "Contents" and heads[2] == "Contents"
     assert heads[3] == "Grain Size Summary"            # everything shifted by two
     entries = _entries(prs)
     assert len(entries) > MAX_DATA_ROWS

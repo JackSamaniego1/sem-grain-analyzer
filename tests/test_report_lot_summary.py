@@ -262,19 +262,21 @@ def test_pptx_lot_summary_table_and_charts_present(tmp_path):
     assert tbl.cell(9, 0).text == "JOB TOTAL"
     assert "Mean Diameter (µm)" in tbl.cell(0, 4).text
     charts_slides = _slides(prs, LOT_CHART_TITLE)
-    assert len(charts_slides) == 3            # 5 charts, 2 per slide
-    charts = [sh.chart for s in charts_slides for sh in s.shapes if sh.has_chart]
-    assert len(charts) == 5
-    titles = [c.chart_title.text_frame.text for c in charts]
-    assert titles[0] == "Mean Grain Diameter by Lot"
-    for c in charts:
-        cs = c._chartSpace
-        assert cs.findall(".//c:barChart/c:ser", NS) and cs.findall(".//c:lineChart/c:ser", NS)
-        assert c.category_axis.axis_title.text_frame.text.startswith("Part Number / Lot")
-        assert cs.find(".//c:multiLvlStrRef", NS) is not None
-    assert charts[0].value_axis.axis_title.text_frame.text == "Mean Equivalent Diameter (µm)"
-    assert charts[2].value_axis.axis_title.text_frame.text == "Mean Grain Area (µm²)"
-    assert charts[3].value_axis.axis_title.text_frame.text == "Number of Grains"
+    assert [_head(s) for s in charts_slides] == ["Lot Summary — P1", "Lot Summary — P2"]
+    for s in charts_slides:                    # one slide per part, ONE BAR PER LOT
+        charts = [sh.chart for sh in s.shapes if sh.has_chart]
+        assert len(charts) == 4               # ASTM G, mean diameter, mean area, grain density
+        titles = [c.chart_title.text_frame.text for c in charts]
+        assert titles == ["ASTM Grain Size Number by Lot", "Mean Grain Diameter by Lot",
+                          "Mean Grain Area by Lot", "Grain Density by Lot"]
+        for c in charts:
+            assert [str(x) for x in c.plots[0].categories] == ["L1", "L2", "L3"]
+            assert c.category_axis.axis_title.text_frame.text == "Lot"
+            assert not c._chartSpace.findall(".//c:lineChart", NS)
+        assert charts[1].value_axis.axis_title.text_frame.text == "Mean Equivalent Diameter (µm)"
+        assert charts[2].value_axis.axis_title.text_frame.text == "Mean Grain Area (µm²)"
+        assert charts[3].value_axis.axis_title.text_frame.text.startswith("Grain Density (grains/")
+        assert "Number of Grains" not in [c.value_axis.axis_title.text_frame.text for c in charts]
 
 
 def test_astm_average_footnote_in_data_and_pptx(tmp_path):
@@ -292,23 +294,25 @@ def test_astm_average_footnote_in_data_and_pptx(tmp_path):
 def test_pptx_single_lot_no_trend(tmp_path):
     prs = _pptx(tmp_path, _model(_lots(1)))
     charts = [sh.chart for s in _slides(prs, LOT_CHART_TITLE) for sh in s.shapes if sh.has_chart]
-    assert len(charts) == 5
+    assert len(charts) == 4
     assert all(not c._chartSpace.findall(".//c:lineChart", NS) for c in charts)
     assert all(not c.has_legend for c in charts)
 
 
-def test_pptx_two_lots_have_trend_and_legend(tmp_path):
+def test_pptx_two_lots_one_bar_per_lot_no_legend(tmp_path):
     prs = _pptx(tmp_path, _model(_lots(2)))
-    charts = [sh.chart for s in _slides(prs, LOT_CHART_TITLE) for sh in s.shapes if sh.has_chart]
-    assert all(len(c._chartSpace.findall(".//c:lineChart/c:ser", NS)) == 1 for c in charts)
-    assert all(c.has_legend for c in charts)
+    slides = _slides(prs, LOT_CHART_TITLE)
+    assert len(slides) == 1
+    charts = [sh.chart for sh in slides[0].shapes if sh.has_chart]
+    assert all(len(list(c.plots[0].categories)) == 2 for c in charts)
+    assert all(not c.has_legend for c in charts)
 
 
 def test_pptx_table_paginates_at_14_rows_with_total_last(tmp_path):
     prs = _pptx(tmp_path, _model(_lots(20)))
     tables = _slides(prs, LOT_SUMMARY_TITLE)
     assert len(tables) == 2                     # 20 lots + JOB TOTAL = 21 rows -> 14 + 7
-    assert "continued 1/2" in _head(tables[0]) and "continued 2/2" in _head(tables[1])
+    assert _head(tables[0]) == _head(tables[1]) == LOT_SUMMARY_TITLE     # no "(i/N)" counters
     t1 = next(sh.table for sh in tables[0].shapes if sh.has_table)
     t2 = next(sh.table for sh in tables[1].shapes if sh.has_table)
     assert len(t1.rows) - 1 == MAX_DATA_ROWS
@@ -319,13 +323,12 @@ def test_pptx_many_lots_tilt_labels_and_paginate_charts(tmp_path):
     n = MAX_LOTS_PER_CHART + 6
     prs = _pptx(tmp_path, _model(_lots(n)))
     slides = _slides(prs, LOT_CHART_TITLE)
-    assert len(slides) == 6                     # 2 pages of lots x 3 slides
+    assert len(slides) == 2                     # minimum split of one part's 18 lots (9 + 9)
     charts = [sh.chart for sh in slides[0].shapes if sh.has_chart]
     body = charts[0]._chartSpace.find(".//c:catAx/c:txPr/{*}bodyPr", NS)
     assert body is not None and body.get("rot") == "-2700000"
-    cats = charts[0].plots[0].categories
-    assert len(cats) == MAX_LOTS_PER_CHART
-    assert "(1/6)" in _head(slides[0])
+    assert len(charts[0].plots[0].categories) == 9
+    assert _head(slides[0]) == _head(slides[1]) == "Lot Summary — P1"   # plain repeated title
 
 
 def test_pptx_zero_grain_lot_and_missing_calibration(tmp_path):
@@ -336,7 +339,7 @@ def test_pptx_zero_grain_lot_and_missing_calibration(tmp_path):
     assert "(px)" in tbl.cell(0, 4).text
     assert tbl.cell(2, 3).text == "0" and tbl.cell(2, 4).text == "–"
     charts = [sh.chart for s in _slides(prs, LOT_CHART_TITLE) for sh in s.shapes if sh.has_chart]
-    assert charts[0].value_axis.axis_title.text_frame.text == "Mean Equivalent Diameter (px)"
+    assert charts[1].value_axis.axis_title.text_frame.text == "Mean Equivalent Diameter (px)"
 
 
 def test_pptx_long_lot_names_truncated_in_table_with_notes(tmp_path):
@@ -372,9 +375,9 @@ def test_pptx_contents_page_lists_lot_summary_with_correct_pages(tmp_path):
                                      ids.index(sh.click_action.target_slide.slide_id))
     a, b, tgt = found["Job summary by part and lot"]
     assert _head(slides[a - 1]).startswith(LOT_SUMMARY_TITLE) and tgt == a - 1 and a == b
-    a, b, tgt = found["Lot-vs-lot summary charts"]
-    assert _head(slides[a - 1]).startswith(LOT_CHART_TITLE)
-    assert _head(slides[b - 1]).startswith(LOT_CHART_TITLE) and b - a == 2
+    a, b, tgt = found["Lot summary by part"]
+    assert _head(slides[a - 1]).startswith(LOT_CHART_TITLE) and tgt == a - 1
+    assert _head(slides[b - 1]).startswith(LOT_CHART_TITLE) and b - a == 1   # one slide per part
     # footers carry the final page numbers
     last = [sh.text_frame.text for sh in slides[a - 1].shapes if sh.has_text_frame][-1]
     assert int(last) == a

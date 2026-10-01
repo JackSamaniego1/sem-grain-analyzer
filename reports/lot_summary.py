@@ -83,6 +83,108 @@ def _pool(imgs: List[ImageSummary], calibrated: bool, am: float, dm: float):
     return np.asarray(diams, dtype=float), np.asarray(areas, dtype=float)
 
 
+# ---------------------------------------------------------------------------
+# Grain density = grains per scan (analyzed) area. Qt-free, unit-tested.
+# ---------------------------------------------------------------------------
+
+def image_scan_area(img: ImageSummary, calibrated: bool) -> Optional[float]:
+    """Scan (analyzed) area of one image: um^2 when ``calibrated`` else px^2.
+
+    Prefers the stored ``valid_area_px`` (the detector's valid-region size --
+    the whole frame when no scan rectangle was set), then ``valid_area_um2``,
+    then (older saved reports) derives it from grain coverage: the summed
+    grain area divided by the coverage fraction, which the analyzer itself
+    computes against the scan area. ``None`` when it cannot be determined.
+    """
+    ppu = float(img.px_per_um or 0.0)
+    px = float(getattr(img, "valid_area_px", 0.0) or 0.0)
+    if calibrated:
+        if px > 0 and ppu > 0:
+            return px / ppu ** 2
+        if img.valid_area_um2 and img.valid_area_um2 > 0:
+            return float(img.valid_area_um2)
+        ak = "area_um2"
+    else:
+        if px > 0:
+            return px
+        ak = "area_px"
+    cov = float(img.grain_coverage_pct or 0.0)
+    total = 0.0
+    for g in img.grains:
+        a = g.get(ak)
+        if a is not None and np.isfinite(float(a)):
+            total += float(a)
+    if cov > 0 and total > 0:
+        return total / (cov / 100.0)
+    return None
+
+
+def grain_density(imgs: List[ImageSummary], calibrated: bool) -> Optional[float]:
+    """Total grains / total scan area over ``imgs`` (grains per um^2 when
+    calibrated, else per px^2). Images whose scan area is unknown are left
+    out of BOTH sums; ``None`` when no image has a usable scan area."""
+    n_total, area_total = 0, 0.0
+    for img in imgs:
+        area = image_scan_area(img, calibrated)
+        if area is None or area <= 0:
+            continue
+        n_total += len(img.grains) if img.grains else int(img.grain_count or 0)
+        area_total += area
+    if area_total <= 0:
+        return None
+    return n_total / area_total
+
+
+def density_display(values: List[Optional[float]], calibrated: bool
+                    ) -> Tuple[List[Optional[float]], str, str]:
+    """Scale base-unit densities (per um^2 / per px^2) to a readable unit.
+
+    Returns ``(scaled values, unit text, number format)``. Calibrated:
+    grains/um^2 when the largest value is >= 0.01, else grains/mm^2.
+    Uncalibrated: grains per megapixel (grains/Mpx), labelled as such.
+    """
+    present = [v for v in values if v is not None]
+    if calibrated and present and max(present) >= 0.01:
+        mult, unit = 1.0, "grains/µm²"
+    elif calibrated:
+        mult, unit = 1e6, "grains/mm²"
+    else:
+        mult, unit = 1e6, "grains/Mpx, uncalibrated"
+    scaled = [None if v is None else v * mult for v in values]
+    top = max((abs(v) for v in scaled if v is not None), default=0.0)
+    fmt = "0.000" if top < 1 else ("0.00" if top < 100 else "#,##0")
+    return scaled, unit, fmt
+
+
+def part_lot_charts(data: Dict[str, Any], part: str) -> List[Dict[str, Any]]:
+    """Chart specs (same shape as ``lot_summary_data()["charts"]``) with ONE
+    category per lot of ``part``: ASTM G (when any lot has one), mean
+    diameter, mean area and grain density. No trend line."""
+    lots = [s for s in data["lots"] if s["part"] == part]
+    cats = [{"part": s["part"], "lot": s["lot"], "label": _short(s["lot"])} for s in lots]
+    du, au = data["units"]["length"], data["units"]["area"]
+    lot_label = data["lot_label"]
+    out: List[Dict[str, Any]] = []
+
+    def add(cid, title, y_title, values, fmt):
+        out.append({"id": cid, "title": title, "x_title": lot_label, "y_title": y_title,
+                    "num_format": fmt, "categories": cats, "values": values,
+                    "trend": None, "multi_level": False})
+
+    g = [s["astm_g"] for s in lots]
+    if any(v is not None for v in g):
+        add("astm_g", "ASTM Grain Size Number by Lot", "ASTM G Number", g, "0.0")
+    d = [s["mean_diameter"] for s in lots]
+    add("mean_diameter", "Mean Grain Diameter by Lot", f"Mean Equivalent Diameter ({du})", d,
+        _num_format(d, "size"))
+    a = [s["mean_area"] for s in lots]
+    add("mean_area", "Mean Grain Area by Lot", f"Mean Grain Area ({au})", a, _num_format(a, "size"))
+    dens, unit, fmt = density_display([s["grain_density"] for s in lots],
+                                      data["units"]["calibrated"])
+    add("grain_density", "Grain Density by Lot", f"Grain Density ({unit})", dens, fmt)
+    return out
+
+
 def _stats(part: str, lot: str, imgs: List[ImageSummary], calibrated: bool, am: float,
            dm: float, n_lots: int = 1, label: Optional[str] = None) -> Dict[str, Any]:
     diams, areas = _pool(imgs, calibrated, am, dm)
@@ -93,6 +195,7 @@ def _stats(part: str, lot: str, imgs: List[ImageSummary], calibrated: bool, am: 
         "n_grains": int(len(diams)),
         "mean_diameter": None, "median_diameter": None, "d10": None, "d90": None,
         "mean_area": None, "astm_g": float(np.mean(gs)) if gs else None,
+        "grain_density": grain_density(imgs, calibrated),
     }
     if len(diams):
         p10, p50, p90 = np.percentile(diams, [10, 50, 90])

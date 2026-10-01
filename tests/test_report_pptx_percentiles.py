@@ -11,7 +11,7 @@ if ROOT not in sys.path:
 
 from reports.model import ReportModel, ImageSummary, Section, pooled_grain_percentiles
 from reports.pptx_renderer import (
-    render_pptx, PERCENTILE_TITLE, PERCENTILE_DEFINITION, MAX_DATA_ROWS,
+    render_pptx, PERCENTILE_TITLE, MAX_DATA_ROWS,
 )
 
 HIER = [{"key": "sample", "label": "Part Number", "value": ""},
@@ -28,7 +28,8 @@ def _img(iid, part, lot, diams_um, ppu=8.0, order=0):
 
 def _model(images, units="um"):
     secs = [Section(id="cover", type="cover", title="Cover", order=0),
-            Section(id="ov", type="overview_table", title="Overview", order=1)]
+            Section(id="ov", type="overview_table", title="Overview", order=1),
+            Section(id="ls", type="lot_summary", title="Lot Summary", order=500)]
     return ReportModel(title="T", sections=secs, images=images, hierarchy=HIER, units=units)
 
 
@@ -81,15 +82,16 @@ def test_percentiles_pooled_match_numpy(tmp_path):
     assert abs(avg - p[1]) > 0.01
 
 
-def test_one_row_per_part_and_lot_and_definition(tmp_path):
+def test_one_row_per_part_and_lot_and_no_definition(tmp_path):
     out = str(tmp_path / "d.pptx")
     render_pptx(_model(_synthetic(3, 3)), out)
     prs, slides = _pct_slides(out)
     assert len(slides) == 1
     rows = _rows(_table(slides[0]))
     assert [(r[0], r[1]) for r in rows] == [(f"P{p}", f"L{l}") for p in range(3) for l in range(3)]
-    assert PERCENTILE_DEFINITION in _text(slides[0])
-    assert "D10: 10 % of grains are smaller than this size." in PERCENTILE_DEFINITION
+    # the explanatory D10 / D50 / D90 text was removed (batch 4D)
+    assert "smaller than this size" not in _text(slides[0])
+    assert "the median" not in _text(slides[0])
 
 
 def test_placed_after_summary_before_data_tables(tmp_path):
@@ -98,7 +100,8 @@ def test_placed_after_summary_before_data_tables(tmp_path):
     prs = Presentation(out)
     heads = [_text(s).split("\n")[0] for s in prs.slides]
     i = heads.index(PERCENTILE_TITLE)
-    assert heads[i - 1].startswith("Grain Size Summary")
+    assert heads[i - 1].startswith("Lot Summary")      # lot charts sit right after the summary
+    assert heads[i - 3].startswith("Grain Size Summary")
     assert heads[i + 1] == "P0"
 
 
@@ -108,8 +111,8 @@ def test_pagination_repeats_header_and_continued_title(tmp_path):
     render_pptx(_model(imgs), out)
     _, slides = _pct_slides(out)
     assert len(slides) == 2
-    assert _text(slides[0]).startswith(f"{PERCENTILE_TITLE} (continued 1/2)")
-    assert _text(slides[1]).startswith(f"{PERCENTILE_TITLE} (continued 2/2)")
+    assert _text(slides[0]).split("\n")[0] == PERCENTILE_TITLE
+    assert _text(slides[1]).split("\n")[0] == PERCENTILE_TITLE
     t0, t1 = _table(slides[0]), _table(slides[1])
     assert len(t0.rows) - 1 == MAX_DATA_ROWS and len(t1.rows) - 1 == 1
     assert [t0.cell(0, c).text for c in range(7)] == [t1.cell(0, c).text for c in range(7)]
@@ -169,7 +172,7 @@ def test_pagination_boundaries(tmp_path):
         _, slides = _pct_slides(out)
         assert [len(_table(s).rows) - 1 for s in slides] == expected
         if len(expected) > 1:
-            assert _text(slides[-1]).startswith(f"{PERCENTILE_TITLE} (continued {len(expected)}/{len(expected)})")
+            assert _text(slides[-1]).split("\n")[0] == PERCENTILE_TITLE
 
 
 def test_same_lot_name_under_two_parts_separate_pools(tmp_path):
@@ -228,14 +231,11 @@ def test_small_values_never_print_as_zero(tmp_path):
     assert all(float(x) > 0 for x in row[3:])
 
 
-def test_layout_definition_wraps_and_table_clears_footer(tmp_path):
+def test_layout_table_clears_footer(tmp_path):
     from pptx.util import Emu
     out = str(tmp_path / "d.pptx")
     render_pptx(_lots_model(MAX_DATA_ROWS), out)
     prs, slides = _pct_slides(out)
     s = slides[0]
-    box = next(sh for sh in s.shapes if sh.has_text_frame and PERCENTILE_DEFINITION in sh.text_frame.text)
     tbl = next(sh for sh in s.shapes if sh.has_table)
-    assert box.text_frame.word_wrap
-    assert Emu(box.top + box.height).inches <= Emu(tbl.top).inches
     assert Emu(tbl.top + tbl.height).inches <= prs.slide_height.inches - 0.32

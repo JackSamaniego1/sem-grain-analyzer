@@ -213,14 +213,12 @@ def _slide_titles(prs):
     return out
 
 
-def test_pptx_one_lot_comparison_slide_per_part_right_after_exec_summary(tmp_path):
-    """D-30 / REP-DESIGN-01: the old single-slide "Executive Summary" is now
-    a part-summary table + 3 bar charts + per-image data tables (all still
-    at ``Section(type="overview_table").order`` == 1, i.e. right after the
-    cover) -- ``lot_comparison`` (``order`` == 2) still lands directly after
-    that whole group and before the combined-distribution charts
-    (``order`` == 3), just no longer at a fixed slide index."""
+def test_pptx_has_no_lot_comparison_slides_but_keeps_the_section(tmp_path):
+    """Batch 4D: the two-table lot comparison slides are gone from the deck
+    (the data is in the percentile slides); the section stays in the model
+    (and the Excel workbook) and loading/exporting it must not fail."""
     model = _model(tmp_path, _two_part_groups(tmp_path), baseline={"7718-A": "L-1"})
+    assert model.get_section("lot_comparison") is not None
     out = str(tmp_path / "multi.pptx")
     render_pptx(model, out)
     prs = Presentation(out)
@@ -228,29 +226,15 @@ def test_pptx_one_lot_comparison_slide_per_part_right_after_exec_summary(tmp_pat
     assert titles[0] == model.title
     assert titles[1] == "Contents"
     assert titles[2] == "Grain Size Summary"
-    lc_indices = [i for i, t in enumerate(titles) if t.startswith("Lot Comparison")]
-    assert len(lc_indices) == 2
-    assert "7718-A" in titles[lc_indices[0]]
-    assert "7718-B" in titles[lc_indices[1]]
-    assert lc_indices[1] == lc_indices[0] + 1  # contiguous, no other slide in between
-    dist_idx = next(i for i, t in enumerate(titles) if t.startswith("Combined") and "Distribution" in t)
-    assert lc_indices[-1] < dist_idx
-
-
-def test_pptx_baseline_part_gets_equivalence_table_other_gets_matrix(tmp_path):
-    model = _model(tmp_path, _two_part_groups(tmp_path), baseline={"7718-A": "L-1"})
-    out = str(tmp_path / "multi.pptx")
-    render_pptx(model, out)
-    prs = Presentation(out)
-    titles = _slide_titles(prs)
-    lc_indices = [i for i, t in enumerate(titles) if t.startswith("Lot Comparison")]
-    slide_a, slide_b = list(prs.slides)[lc_indices[0]], list(prs.slides)[lc_indices[1]]
-    text_a = " ".join(sh.text_frame.text for sh in slide_a.shapes if sh.has_text_frame)
-    text_b = " ".join(sh.text_frame.text for sh in slide_b.shapes if sh.has_text_frame)
-    assert "Equivalence vs baseline" in text_a
-    assert "ΔG matrix" in text_b
-    assert sum(1 for sh in slide_a.shapes if sh.has_table) == 2
-    assert sum(1 for sh in slide_b.shapes if sh.has_table) == 2
+    assert not any(t.startswith("Lot Comparison") for t in titles)
+    assert not any("Equivalence" in sh.text_frame.text or "G matrix" in sh.text_frame.text
+                   for sl in prs.slides for sh in sl.shapes if sh.has_text_frame)
+    assert not any(sh.has_table and len(sh.table.columns) == 4 and sh.table.cell(0, 1).text == "ΔG"
+                   for sl in prs.slides for sh in sl.shapes)
+    # reloaded from JSON (a saved report still carrying the section) exports fine
+    out2 = str(tmp_path / "again.pptx")
+    render_pptx(type(model).from_json(model.to_json()), out2)
+    assert len(Presentation(out2).slides) == len(prs.slides)
 
 
 def test_pptx_single_group_renders_without_crashing(tmp_path):
@@ -260,8 +244,8 @@ def test_pptx_single_group_renders_without_crashing(tmp_path):
     render_pptx(model, out)
     prs = Presentation(out)
     titles = _slide_titles(prs)
-    assert any("Lot Comparison" in t for t in titles)
-    assert "Appendix" in titles[-1]
+    assert not any("Lot Comparison" in t for t in titles)
+    assert not any("Appendix" in t for t in titles)
 
 
 def test_disabling_lot_comparison_section_removes_its_slides_and_sheet(tmp_path):

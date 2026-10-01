@@ -46,7 +46,9 @@ from reports.charts import (
 )
 from reports.model import ReportModel, ImageSummary, Section, pooled_grain_percentiles
 from reports.excel_renderer import _resized_png, _row_size_stats
-from reports.lot_summary import lot_summary_data, footnotes_for, table_headers, id_cells, NUMERIC_KEYS
+from reports.lot_summary import (
+    lot_summary_data, footnotes_for, table_headers, id_cells, NUMERIC_KEYS, part_lot_charts,
+)
 
 try:
     from version import __version__ as APP_VERSION
@@ -109,11 +111,6 @@ CONTENT_WIDTH_IN = CONTENT_RIGHT_IN - CONTENT_LEFT_IN
 IMAGE_CELL_TEXT_MARGIN_IN = 0.2   # cell left+right internal padding allowance
 IMAGE_CHAR_WIDTH_FACTOR = 0.5     # average glyph width vs font pt, regular weight
 
-# Coordinator review: a footer that lists every distinct part/lot name used
-# to wrap to 2 lines and get clipped by the footer bar -- cap the "named"
-# form's length and fall back to counts ("3 parts · 9 lots") beyond it.
-FOOTER_MAX_CHARS = 80
-
 
 def _hexrgb(h: str) -> RGBColor:
     h = h.lstrip("#")
@@ -130,9 +127,8 @@ def _blank_layout(prs: Presentation):
 def _build_plan(model: ReportModel, images: List[ImageSummary]) -> List[Tuple[str, Optional[Section]]]:
     """Slide order following ``Section.order`` (the designer's outline).
 
-    ``raw_data`` (→ the appendix slide) is excluded here and always added
-    last by ``render_pptx`` — the same "raw data at the end" rule the Excel
-    renderer enforces. Per-image slides are one ``("images", None)`` entry
+    ``raw_data`` (the old appendix slide) is skipped: the PowerPoint has no
+    appendix any more (raw data lives in the Excel workbook). Per-image slides are one ``("images", None)`` entry
     at the position of the first ``image`` section; ``ImageSummary.order``
     governs the order within that block.
     """
@@ -160,12 +156,13 @@ def _build_plan(model: ReportModel, images: List[ImageSummary]) -> List[Tuple[st
         elif s.type == "lot_summary":
             if s.enabled and images and lot_summary_data(model, images)["has_lots"]:
                 plan.append(("lot_summary", s))
-        elif s.type == "lot_comparison":
-            if s.enabled and s.payload.get("parts"):
-                plan.append(("lot_comparison", s))
-        elif s.type == "parameters":
-            if s.enabled:
-                plan.append(("methods", s))
+        elif s.type in ("lot_comparison", "parameters"):
+            # Dropped from the PowerPoint (lab manager feedback): the lot
+            # comparison tables duplicate the percentile slides and the
+            # methods/parameters live in the Excel workbook. Saved reports
+            # that still carry these sections load and export fine -- the
+            # renderer simply skips them.
+            continue
         elif s.type == "custom_text":
             if s.enabled:
                 plan.append(("custom_text", s))
@@ -184,7 +181,6 @@ def render_pptx(model: ReportModel, output_path: str, template_path: Optional[st
     layout = _blank_layout(prs)
 
     images = model.ordered_images(included_only=True)
-    want_raw = model.is_enabled("raw_data", default=True)
     plan = _build_plan(model, images)
 
     palette = resolve_palette(model.theme, model.custom_palette)
@@ -226,30 +222,29 @@ def render_pptx(model: ReportModel, output_path: str, template_path: Optional[st
                     if len(rows) <= MAX_PARTS_COMBINED:
                         _summary_and_charts_slide(new_slide('summary', 'Grain size summary'), rows, au, du, part_label, navy, series)
                     else:
-                        summary_pages = _chunk(rows, MAX_SUMMARY_ROWS)
-                        for i, chunk in enumerate(summary_pages):
-                            suffix = ("" if len(summary_pages) <= 1
-                                     else f" (cont'd {i + 1}/{len(summary_pages)})")
-                            _part_summary_slide(new_slide('summary', 'Grain size summary'), chunk, au, du, navy, heading_suffix=suffix)
+                        for chunk in _chunk(rows, MAX_SUMMARY_ROWS):
+                            _part_summary_slide(new_slide('summary', 'Grain size summary'), chunk, au, du, navy)
                         _charts_only_slide(new_slide('summary', 'Grain size summary'), rows, au, du, part_label, navy, series)
 
-                    # Slide ordering: cover -> summary (+charts) -> percentiles
-                    # -> per-image data tables. Insert new slides here.
+                    # Slide ordering: cover -> contents -> summary (+charts)
+                    # -> per-part lot charts -> percentiles -> per-image data
+                    # tables -> one distribution slide per part. Insert new
+                    # slides here.
+                    if model.is_enabled("lot_summary", default=False):
+                        _lot_chart_slides(new_slide, model, images, series, navy)
+
                     prows, pau, pdu = _percentile_rows(model, images)
                     ppages = _chunk(prows, MAX_DATA_ROWS)
-                    for i, chunk in enumerate(ppages, start=1):
-                        _percentile_slide(new_slide('percentiles', 'Grain size percentiles (D10 / D50 / D90)'), chunk, pau, pdu, navy, idx=i, total=len(ppages))
+                    for chunk in ppages:
+                        _percentile_slide(new_slide('percentiles', 'Grain size percentiles (D10 / D50 / D90)'), chunk, pau, pdu, navy)
 
                     for part, idx, total, page_rows in _plan_image_table_slides(model, images):
                         _image_data_table_slide(new_slide('data_tables', 'Image data tables'), model, part, idx, total, page_rows, navy)
 
-                    # UPDATE 4 item 17: per-lot area + size distribution slides,
-                    # then the lot-to-lot comparison (after the data tables,
-                    # before the per-image slides).
-                    for draw, is_cmp in _lot_distribution_slide_plan(model, images, series):
-                        draw(new_slide('lot_cmp' if is_cmp else 'lot_dist',
-                                       'Lot-to-lot distribution comparison' if is_cmp
-                                       else 'Grain distributions by lot'), navy)
+                    # One distribution slide per part (clustered bars, one
+                    # color per lot), right after the data tables.
+                    for draw in _part_distribution_slide_plan(model, images, series):
+                        draw(new_slide('lot_dist', 'Grain distributions by part'), navy)
             elif kind == "charts":
                 opts = resolve_chart_options(model.chart_options)
                 if opts["area"]["enabled"]:
@@ -260,24 +255,11 @@ def render_pptx(model: ReportModel, output_path: str, template_path: Optional[st
                                         navy=navy)
             elif kind == "lot_summary":
                 _lot_summary_slides(new_slide, model, images, series, navy)
-            elif kind == "lot_comparison":
-                for part in sec.payload.get("parts") or []:
-                    _lot_comparison_slide(new_slide('lot_comparison', 'Lot comparison by part'), part, navy)
             elif kind == "images":
                 for img in images:
                     _image_slide(new_slide('images', 'Image results'), model, img, tmpdir, navy)
-            elif kind == "methods":
-                # FIX-12: paginate across continuation slides once the
-                # methods text would otherwise run past the footer.
-                pages = _paginate_methods_lines(_methods_lines(model))
-                for i, chunk in enumerate(pages):
-                    _methods_slide(new_slide('methods', 'Methods & parameters'), model, navy, lines=chunk,
-                                    heading_suffix="" if i == 0 else " (cont'd)")
             elif kind == "custom_text":
                 _text_slide(new_slide('text:' + str(sec.id), sec.title or 'Notes'), model, sec, navy)
-
-        if want_raw:
-            _appendix_slide(new_slide('appendix', 'Appendix'), model, navy)
 
 
         # UPDATE 4 item 19: contents page(s) right after the cover (slide 2).
@@ -351,9 +333,8 @@ def _fill_contents(slides: List[Any], runs: List[Dict[str, Any]], seq: List[Any]
     def final_page(i: int) -> int:
         return i + 1 + (n_contents if i >= at else 0)
 
-    for n, (slide, chunk) in enumerate(zip(slides, _chunk(runs, MAX_DATA_ROWS) or [[]]), start=1):
-        suffix = "" if n_contents <= 1 else f" ({n}/{n_contents})"
-        _slide_heading(slide, "Contents" + suffix, navy)
+    for slide, chunk in zip(slides, _chunk(runs, MAX_DATA_ROWS) or [[]]):
+        _slide_heading(slide, "Contents", navy)
         for r, run in enumerate(chunk):
             top = Inches(1.15 + r * CONTENTS_ROW_IN)
             if r % 2 == 0:
@@ -406,64 +387,9 @@ def _fill_rect(slide, left, top, width, height, color):
     return shape
 
 
-def _distinct_level_values(model: ReportModel, key: str) -> List[str]:
-    seen: List[str] = []
-    for img in model.images:
-        v = img.level_value(key, "")
-        if v and v not in seen:
-            seen.append(v)
-    return seen
-
-
-_LEVEL_PLURAL_WORD = {"project": "jobs", "sample": "parts", "part": "parts", "lot": "lots"}
-
-
-def _level_plural_word(h: Dict[str, str]) -> str:
-    word = _LEVEL_PLURAL_WORD.get(h.get("key", ""))
-    if word:
-        return word
-    label = (h.get("label") or h.get("key") or "item").strip().lower()
-    return label if label.endswith("s") else label + "s"
-
-
-def _footer_text(model: ReportModel, page_num: int) -> str:
-    """'<Job #> 24-117 · <Part Number> 7718-A · <Lot> L-44A · page n' when a
-    hierarchy is set and the names are short enough to fit one line;
-    otherwise (coordinator layout-review fix -- a report spanning many
-    parts/lots used to list every distinct name and wrap to 2 lines,
-    clipped by the footer bar) each multi-value level collapses to a count,
-    e.g. 'Job # 24-117 · 3 parts · 9 lots · page n', so the footer always
-    stays a single line under ``FOOTER_MAX_CHARS``. Legacy no-hierarchy
-    models keep the '<title> ... page' footer."""
-    if not model.hierarchy:
-        return model.title or "Grain Analysis Report"
-
-    named_bits = [
-        f"{h.get('label', '')} {h.get('value') or ', '.join(_distinct_level_values(model, h.get('key', '')))}".strip()
-        for h in model.hierarchy
-    ]
-    named_line = " · ".join(b for b in named_bits if b)
-    if len(named_line) <= FOOTER_MAX_CHARS:
-        return f"{named_line} · page {page_num}" if named_line else f"page {page_num}"
-
-    counted_bits = []
-    for h in model.hierarchy:
-        label = h.get("label", "")
-        if h.get("value"):
-            counted_bits.append(f"{label} {h['value']}".strip())
-        else:
-            counted_bits.append(f"{len(_distinct_level_values(model, h.get('key', '')))} {_level_plural_word(h)}")
-    line = " · ".join(b for b in counted_bits if b)
-    return f"{line} · page {page_num}" if line else f"page {page_num}"
-
-
 def _add_footer(slide, model: ReportModel, page_num: int, navy: RGBColor = NAVY) -> None:
+    """Footer bar with ONLY the page number (bottom-right)."""
     _fill_rect(slide, 0, SLIDE_H - Inches(0.32), SLIDE_W, Inches(0.32), navy)
-    # Coordinator layout-review fix: word_wrap=False so the footer can never
-    # wrap to a second line and get clipped by the footer bar's fixed
-    # height -- ``_footer_text`` already keeps it short enough to fit.
-    _textbox(slide, Inches(0.3), SLIDE_H - Inches(0.32), Inches(10.5), Inches(0.32),
-              _footer_text(model, page_num), size=10, color=WHITE, align=PP_ALIGN.LEFT, wrap=False)
     _textbox(slide, SLIDE_W - Inches(1.3), SLIDE_H - Inches(0.32), Inches(1.0), Inches(0.32),
               str(page_num), size=10, color=WHITE, align=PP_ALIGN.RIGHT)
 
@@ -865,14 +791,14 @@ def _fill_summary_table(table, rows: List[Dict[str, Any]], au: str, du: str, nav
         _style_data_row(table, r, text_col_count=1, size=body_size)
 
 
-def _part_summary_slide(slide, rows: List[Dict[str, Any]], au: str, du: str, navy: RGBColor = NAVY,
-                         heading_suffix: str = "") -> None:
+def _part_summary_slide(slide, rows: List[Dict[str, Any]], au: str, du: str,
+                         navy: RGBColor = NAVY) -> None:
     """Standalone part-summary table (only used beyond ``MAX_PARTS_COMBINED``
     parts, where the table alone -- paginated as needed -- fills slide 2 and
     the 3 bar charts move to their own slide right after). One row per
     part, averaged across its lots -- no Grains column, no KPI tiles, no
     "higher = finer" hint, no red rows."""
-    _slide_heading(slide, "Grain Size Summary" + heading_suffix, navy)
+    _slide_heading(slide, "Grain Size Summary", navy)
     n_rows = len(rows) + 1
     table_shape = slide.shapes.add_table(n_rows, len(_SUMMARY_HEADERS), Inches(CONTENT_LEFT_IN),
                                           Inches(1.15), Inches(CONTENT_WIDTH_IN),
@@ -884,11 +810,9 @@ def _part_summary_slide(slide, rows: List[Dict[str, Any]], au: str, du: str, nav
 
 
 PERCENTILE_TITLE = "Grain Size Percentiles (D10 / D50 / D90)"
-PERCENTILE_DEFINITION = ("D10: 10 % of grains are smaller than this size. "
-                         "D50: half are smaller (the median). D90: 90 % are smaller.")
 _PCT_COL_WIDTHS_IN = [2.4, 2.2, 1.2, 1.6, 1.9, 1.5, 1.533]
 _NO_VALUE = "–"
-PCT_TABLE_TOP_IN = 1.5  # 1.5 + 15 rows * 0.37 = 7.05 in < footer bar top 7.18 in
+PCT_TABLE_TOP_IN = 1.1  # 1.1 + 15 rows * 0.37 = 6.65 in < footer bar top 7.18 in
 
 
 def _percentile_rows(model: ReportModel, images: List[ImageSummary]
@@ -919,11 +843,8 @@ def _fmt_pct(v: Optional[float]) -> str:
 
 
 def _percentile_slide(slide, rows: List[Dict[str, Any]], au: str, du: str,
-                      navy: RGBColor = NAVY, idx: int = 1, total: int = 1) -> None:
-    title = PERCENTILE_TITLE if total <= 1 else f"{PERCENTILE_TITLE} (continued {idx}/{total})"
-    _slide_heading(slide, title, navy)
-    _textbox(slide, Inches(CONTENT_LEFT_IN), Inches(0.95), Inches(CONTENT_WIDTH_IN), Inches(0.5),
-             PERCENTILE_DEFINITION, size=12, color=GREY)  # word-wrapped; room for 2 lines
+                      navy: RGBColor = NAVY) -> None:
+    _slide_heading(slide, PERCENTILE_TITLE, navy)
     headers = ["Part", "Lot", "Grains", f"D10 ({du})", f"D50 (median) ({du})",
                f"D90 ({du})", f"Median Area ({au})"]
     n_rows = len(rows) + 1
@@ -946,8 +867,8 @@ def _percentile_slide(slide, rows: List[Dict[str, Any]], au: str, du: str,
 
 # ---------------------------------------------------------------------------
 # Per-lot distribution slides + lot-to-lot comparison (UPDATE 4 item 17).
-# Native combo charts: histogram bars (shared ``charts.build_bins`` edges, the
-# item-16 equal-width binner) + a smoothed-density trendline drawn as a line.
+# Native clustered column charts: histogram bars (shared ``charts.build_bins``
+# edges, the item-16 equal-width binner), one series per lot.
 # ---------------------------------------------------------------------------
 
 MIN_GRAINS_FOR_DISTRIBUTION = 2     # build_bins needs >= 2 values
@@ -993,30 +914,6 @@ def _filtered_values(model: ReportModel, imgs: List[ImageSummary], all_images: L
     return filter_range(vals, lo, hi), unit
 
 
-def _trend_counts(values: List[float], edges: List[float]) -> List[float]:
-    """Smooth trendline: Gaussian KDE of ``values`` evaluated at the bin
-    midpoints, scaled so it sums to the number of grains (the same total as
-    the bars, i.e. expected grains per bin). Falls back to a Gaussian-smoothed
-    histogram when the KDE is undefined (e.g. all values identical)."""
-    v = np.asarray(values, dtype=float)
-    e = np.asarray(edges, dtype=float)
-    mids = (e[:-1] + e[1:]) / 2.0
-    dens = None
-    try:
-        from scipy.stats import gaussian_kde
-        if len(v) >= 2 and np.ptp(v) > 0:
-            dens = gaussian_kde(v)(mids)
-    except Exception:
-        dens = None
-    if dens is None or not np.all(np.isfinite(dens)) or dens.sum() <= 0:
-        from scipy.ndimage import gaussian_filter1d
-        counts, _ = np.histogram(v, bins=e)
-        dens = gaussian_filter1d(counts.astype(float), sigma=1.0, mode="constant")
-    if dens.sum() <= 0:
-        return [0.0] * len(mids)
-    return (dens / dens.sum() * len(v)).tolist()
-
-
 def _convert_series_to_lines(chart, first_index: int, color_hexes: List[str],
                              width_pt: float = 2.25, legend: bool = True) -> None:
     """Move every bar series from ``first_index`` on into ONE smoothed
@@ -1058,11 +955,6 @@ def _convert_series_to_lines(chart, first_index: int, color_hexes: List[str],
                 anchor.addnext(entry)
             else:
                 legend_el.insert(0, entry)
-
-
-def _darken(hex_color: str, f: float = 0.6) -> str:
-    h = hex_color.lstrip("#")
-    return "".join(f"{int(int(h[i:i + 2], 16) * f):02X}" for i in (0, 2, 4))
 
 
 def _lot_colors(series: Dict[str, str], n: int) -> List[str]:
@@ -1107,7 +999,8 @@ def _draw_hist_trend_chart(slide, x_in, y_in, cx_in, cy_in, title: str, x_title:
         ser = plot.series[i]
         ser.format.fill.solid()
         ser.format.fill.fore_color.rgb = _hexrgb(col)
-    _convert_series_to_lines(chart, len(bars), line_colors, legend=legend)
+    if trends:
+        _convert_series_to_lines(chart, len(bars), line_colors, legend=legend)
     return chart
 
 
@@ -1115,31 +1008,9 @@ def _short(text: str, n: int = 60) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
-def _lot_label(part: str, lot: str) -> str:
-    return f"{part} / Lot {lot}"
-
-
-def _lot_slide(slide, model, images, part: str, lot: str, imgs: List[ImageSummary],
-               series: Dict[str, str], kinds: List[str], navy: RGBColor) -> None:
-    _slide_heading(slide, _short(f"Grain Distributions — {_lot_label(part, lot)}"), navy)
-    gap = 0.2
-    cw = (CONTENT_WIDTH_IN - gap) / 2
-    top, height = 1.1, SLIDE_H.inches - 0.6 - 1.1
-    for k, kind in enumerate(kinds):
-        x = CONTENT_LEFT_IN + k * (cw + gap)
-        vals, unit = _filtered_values(model, imgs, images, kind)
-        labels, counts, edges = build_bins(vals, model.bins.get(kind, 0))
-        if len(vals) < MIN_GRAINS_FOR_DISTRIBUTION or not labels:
-            _textbox(slide, Inches(x), Inches(top + 0.3), Inches(cw), Inches(1.0),
-                     f"{_KIND_LABEL[kind]}: {NOT_ENOUGH_GRAINS_NOTE}", size=14, color=GREY)
-            continue
-        bar_col = series["area_bar" if kind == "area" else "diameter_bar"]
-        _draw_hist_trend_chart(
-            slide, x, top, cw, height,
-            f"{_KIND_LABEL[kind]} Distribution — {_lot_label(part, lot)} (n={len(vals)})",
-            f"{_KIND_AXIS[kind]} ({unit})", "Number of Grains", labels,
-            [("Count", counts)], [_trend_counts(vals, edges)],
-            [bar_col], [series["normal_fit"]], legend=False)
+def _lot_name(model: ReportModel, lot: str) -> str:
+    lvl = _hier_level(model, ("lot",))
+    return f"{(lvl.get('label') if lvl else None) or 'Lot'} {lot}"
 
 
 MAX_OMITTED_NAMES = 3
@@ -1149,81 +1020,95 @@ def _omitted_note(omitted: List[str]) -> str:
     """One-line footnote: first few lot names, then "+N more" (never wraps)."""
     names = [_short(n, 28) for n in omitted[:MAX_OMITTED_NAMES]]
     more = len(omitted) - len(names)
-    return ("Not shown (not enough grains): " + ", ".join(names)
+    return ("Not shown (no grains): " + ", ".join(names)
             + (f" +{more} more" if more > 0 else ""))
 
 
-def _comparison_slide(slide, chunk, units, edges_by_kind, labels_by_kind, colors, page: int,
-                      pages: int, omitted: List[str], kinds: List[str], navy: RGBColor) -> None:
-    suffix = "" if pages <= 1 else f" ({page}/{pages})"
-    _slide_heading(slide, f"Lot-to-Lot Distribution Comparison{suffix}", navy)
+def _even_spans(n: int, per: int) -> List[Tuple[int, int]]:
+    """Split ``n`` items into the MINIMUM number of spans of at most ``per``
+    items, as evenly as possible (e.g. 7 lots / 6 -> 4 + 3, not 6 + 1)."""
+    if n <= 0:
+        return [(0, 0)]
+    k = -(-n // per)
+    size = -(-n // k)
+    return [(a, min(a + size, n)) for a in range(0, n, size)]
+
+
+def _part_distribution_slide(slide, part: str, chunk: List[Dict[str, Any]], units: Dict[str, str],
+                             edges_by_kind, labels_by_kind, colors: List[str],
+                             omitted: List[str], kinds: List[str], navy: RGBColor) -> None:
+    """One part's distribution slide: for each kind (area / diameter) ONE
+    native clustered column chart -- number of grains per shared, equal-width
+    bin, one series (color) per lot, legend = the color key. Trendlines are
+    deliberately omitted: with several lots per chart they overlap the bars
+    and stop being readable."""
+    _slide_heading(slide, _short(f"Grain Distributions — {part}"), navy)
     gap = 0.2
     cw = (CONTENT_WIDTH_IN - gap) / 2
     top = 1.1
     height = 5.4 if omitted else SLIDE_H.inches - 0.6 - 1.1
     for k, kind in enumerate(kinds):
         x = CONTENT_LEFT_IN + k * (cw + gap)
+        if kind not in edges_by_kind:
+            _textbox(slide, Inches(x), Inches(top + 0.3), Inches(cw), Inches(1.0),
+                     f"{_KIND_LABEL[kind]}: {NOT_ENOUGH_GRAINS_NOTE}", size=14, color=GREY)
+            continue
         edges = edges_by_kind[kind]
-        bars, trends, bcols, lcols = [], [], [], []
+        bars = []
         for lot in chunk:
-            vals = lot["values"][kind]
-            counts, _ = np.histogram(np.asarray(vals, dtype=float), bins=np.asarray(edges))
-            n = len(vals)
-            bars.append((lot["label"], [round(float(c) / n * 100.0, 2) for c in counts]))
-            trends.append([t / n * 100.0 for t in _trend_counts(vals, edges)])
-            bcols.append(colors[lot["index"]])
-            lcols.append(_darken(colors[lot["index"]]))
+            counts, _ = np.histogram(np.asarray(lot["values"][kind], dtype=float),
+                                     bins=np.asarray(edges))
+            bars.append((lot["label"], [int(c) for c in counts]))
         _draw_hist_trend_chart(slide, x, top, cw, height,
-                               f"{_KIND_LABEL[kind]} Distribution — All Lots",
-                               f"{_KIND_AXIS[kind]} ({units[kind]})", "Share of Grains (%)",
-                               labels_by_kind[kind], bars, trends, bcols, lcols, legend=True)
+                               f"{_KIND_LABEL[kind]} Distribution by Lot",
+                               f"{_KIND_AXIS[kind]} ({units[kind]})", "Number of Grains",
+                               labels_by_kind[kind], bars, [],
+                               [colors[lot["index"]] for lot in chunk], [], legend=True)
     if omitted:
         _textbox(slide, Inches(CONTENT_LEFT_IN), Inches(6.55), Inches(CONTENT_WIDTH_IN), Inches(0.5),
                  _omitted_note(omitted), size=11, color=GREY)
 
 
-def _lot_distribution_slide_plan(model: ReportModel, images: List[ImageSummary],
-                                 series: Dict[str, str]):
-    """``(draw(slide, navy), is_comparison)`` pairs: one slide per lot (area + size charts),
-    then the lot-to-lot comparison slide(s). Empty when both distributions are
-    disabled in the report's chart options."""
+def _part_distribution_slide_plan(model: ReportModel, images: List[ImageSummary],
+                                  series: Dict[str, str]):
+    """``[draw(slide, navy), ...]`` -- ONE slide per part (area + diameter
+    charts, a clustered bar per lot, one color per lot). The bins are shared
+    by every lot of the part (pooled-value edges from ``charts.build_bins``),
+    also across continuation slides. A part with more than
+    ``MAX_LOTS_PER_COMPARISON`` lots is split into the minimum number of
+    slides. Empty when both distributions are disabled in the chart options."""
     opts = resolve_chart_options(model.chart_options)
     kinds = [k for k in ("area", "diameter") if opts[k]["enabled"]]
     if not kinds:
         return []
-    groups = _lot_groups(model, images)
     plan = []
-    for part, lot, imgs in groups:
-        plan.append((lambda slide, navy, p=part, l=lot, i=imgs:
-                     _lot_slide(slide, model, images, p, l, i, series, kinds, navy), False))
-
-    multi_part = len({g[0] for g in groups}) > 1
-    lots, omitted, units = [], [], {}
-    for part, lot, imgs in groups:
-        label = _lot_label(part, lot) if multi_part else f"Lot {lot}"
-        vals = {}
+    for part, lots in _group_by_part(model, images).items():
+        entries: List[Dict[str, Any]] = []
+        omitted: List[str] = []
+        units: Dict[str, str] = {}
+        for lot, imgs in lots.items():
+            vals = {}
+            for kind in kinds:
+                vals[kind], units[kind] = _filtered_values(model, imgs, images, kind)
+            label = _lot_name(model, lot)
+            if all(len(v) >= 1 for v in vals.values()):
+                entries.append({"label": label, "values": vals, "index": len(entries)})
+            else:
+                omitted.append(label)
+        edges_by_kind, labels_by_kind = {}, {}
         for kind in kinds:
-            vals[kind], units[kind] = _filtered_values(model, imgs, images, kind)
-        if all(len(v) >= MIN_GRAINS_FOR_DISTRIBUTION for v in vals.values()):
-            lots.append({"label": label, "values": vals, "index": len(lots)})
-        else:
-            omitted.append(label)
-    # Comparison slide(s) are skipped when fewer than 2 lots are plottable.
-    if len(groups) < 2 or len(lots) < 2:
-        return plan
-    # ONE set of edges per chart, from the pooled values of all lots via the
-    # shared binner, so every lot (and every continuation slide) bins alike.
-    edges_by_kind, labels_by_kind = {}, {}
-    for kind in kinds:
-        pooled = [v for lot in lots for v in lot["values"][kind]]
-        labels, _, edges = build_bins(pooled, model.bins.get(kind, 0))
-        edges_by_kind[kind], labels_by_kind[kind] = edges, labels
-    colors = _lot_colors(series, len(lots))
-    chunks = _chunk(lots, MAX_LOTS_PER_COMPARISON)
-    for i, chunk in enumerate(chunks, start=1):
-        plan.append((lambda slide, navy, c=chunk, i=i: _comparison_slide(
-            slide, c, units, edges_by_kind, labels_by_kind, colors, i, len(chunks),
-            omitted, kinds, navy), True))
+            pooled = [v for e in entries for v in e["values"][kind]]
+            if len(pooled) < MIN_GRAINS_FOR_DISTRIBUTION:
+                continue
+            labels, _, edges = build_bins(pooled, model.bins.get(kind, 0))
+            if labels:
+                edges_by_kind[kind], labels_by_kind[kind] = edges, labels
+        colors = _lot_colors(series, len(entries))
+        for lo, hi in _even_spans(len(entries), MAX_LOTS_PER_COMPARISON):
+            # bind per-part values now (the loop variables are rebound per part)
+            plan.append(lambda slide, navy, p=part, c=entries[lo:hi], u=units, e=edges_by_kind,
+                        lb=labels_by_kind, col=colors, om=omitted: _part_distribution_slide(
+                            slide, p, c, u, e, lb, col, om, kinds, navy))
     return plan
 
 
@@ -1236,13 +1121,14 @@ def _lot_distribution_slide_plan(model: ReportModel, images: List[ImageSummary],
 # ---------------------------------------------------------------------------
 
 LOT_SUMMARY_TITLE = "Job Summary by Part and Lot"
-LOT_CHART_TITLE = "Lot-vs-Lot Summary Charts"
-MAX_LOTS_PER_CHART = 24          # more lots -> the charts continue on further slides
+LOT_CHART_TITLE = "Lot Summary"   # heading prefix: "Lot Summary — <part>"
+MAX_LOTS_PER_CHART = 12          # more lots of one part -> the charts continue on further slides
 ROTATE_LABELS_OVER = 6           # lots per chart above which category labels tilt
 _LS_COL_WIDTHS_IN = [1.6, 1.5, 0.8, 0.9, 1.35, 1.6, 1.0, 1.0, 1.35, 1.233]
 _LS_TABLE_TOP_IN = 1.1
 _LS_HEADER_ROW_IN = 0.55
-_LS_BAR_KEY = {"n_grains": "count_bar", "mean_area": "area_bar"}
+_LS_BAR_KEY = {"n_grains": "count_bar", "mean_area": "area_bar", "astm_g": "count_bar",
+               "grain_density": "accent2"}
 
 
 def _fmt_ls(key: str, v: Optional[float]) -> str:
@@ -1257,8 +1143,7 @@ def _fmt_ls(key: str, v: Optional[float]) -> str:
 
 def _lot_summary_table_slide(slide, rows: List[Dict[str, Any]], data: Dict[str, Any],
                              navy: RGBColor, idx: int, total: int) -> None:
-    title = LOT_SUMMARY_TITLE if total <= 1 else f"{LOT_SUMMARY_TITLE} (continued {idx}/{total})"
-    _slide_heading(slide, title, navy)
+    _slide_heading(slide, LOT_SUMMARY_TITLE, navy)
     headers = table_headers(data)
     n_rows = len(rows) + 1
     shape = slide.shapes.add_table(n_rows, len(headers), Inches(CONTENT_LEFT_IN), Inches(_LS_TABLE_TOP_IN),
@@ -1361,38 +1246,64 @@ def _draw_lot_metric_chart(slide, x_in: float, y_in: float, cx_in: float, cy_in:
 
 
 def lot_summary_slide_count(model: ReportModel, images: List[ImageSummary]) -> int:
-    """Slides the ``lot_summary`` section adds (0 when it has no lot values)."""
+    """Slides the ``lot_summary`` section adds at its outline position: the
+    job-summary table pages (0 when it has no lot values). The lot charts
+    live right after Grain Size Summary -- see ``lot_chart_slide_count``."""
     data = lot_summary_data(model, images)
     if not data["has_lots"]:
         return 0
-    spans = max(1, -(-len(data["lots"]) // MAX_LOTS_PER_CHART))
-    return len(_chunk(data["rows"], MAX_DATA_ROWS)) + spans * ((len(data["charts"]) + 1) // 2)
+    return len(_chunk(data["rows"], MAX_DATA_ROWS))
+
+
+def lot_chart_slide_count(model: ReportModel, images: List[ImageSummary]) -> int:
+    """Per-part lot-chart slides (0 when no image carries a lot)."""
+    data = lot_summary_data(model, images)
+    if not data["has_lots"]:
+        return 0
+    return sum(len(_even_spans(sum(1 for s in data["lots"] if s["part"] == p["part"]),
+                               MAX_LOTS_PER_CHART))
+               for p in data["parts"])
 
 
 def _lot_summary_slides(new_slide, model: ReportModel, images: List[ImageSummary],
                         series: Dict[str, str], navy: RGBColor) -> None:
+    """The ``lot_summary`` section: the job summary table only (the charts
+    moved to ``_lot_chart_slides``, right after Grain Size Summary)."""
     data = lot_summary_data(model, images)
     pages = _chunk(data["rows"], MAX_DATA_ROWS)
     for i, chunk in enumerate(pages, start=1):
         _lot_summary_table_slide(new_slide("lot_summary_table", "Job summary by part and lot"),
                                  chunk, data, navy, i, len(pages))
-    n = len(data["lots"])
-    spans = [(a, min(a + MAX_LOTS_PER_CHART, n)) for a in range(0, n, MAX_LOTS_PER_CHART)] or [(0, 0)]
-    charts = data["charts"]
+
+
+def _lot_chart_slides(new_slide, model: ReportModel, images: List[ImageSummary],
+                      series: Dict[str, str], navy: RGBColor) -> None:
+    """One slide PER PART right after Grain Size Summary: the same metrics
+    (ASTM G, mean diameter, mean area) plus grain density, but with ONE BAR
+    PER LOT of that part. Parts with more than ``MAX_LOTS_PER_CHART`` lots
+    continue on further slides (same plain title)."""
+    data = lot_summary_data(model, images)
+    if not data["has_lots"]:
+        return
     gap = 0.2
-    top, height = 1.1, SLIDE_H.inches - 0.6 - 1.1
-    slide_no, total = 0, len(spans) * ((len(charts) + 1) // 2)
-    for lo, hi in spans:
-        for k in range(0, len(charts), 2):
-            pair = charts[k:k + 2]
-            slide_no += 1
-            suffix = "" if total <= 1 else f" ({slide_no}/{total})"
-            slide = new_slide("lot_summary_charts", "Lot-vs-lot summary charts")
-            _slide_heading(slide, LOT_CHART_TITLE + suffix, navy)
-            cw = CONTENT_WIDTH_IN if len(pair) == 1 else (CONTENT_WIDTH_IN - gap) / 2
-            for j, ch in enumerate(pair):
-                _draw_lot_metric_chart(slide, CONTENT_LEFT_IN + j * (cw + gap), top, cw, height,
-                                       ch, lo, hi, series)
+    for pst in data["parts"]:
+        charts = part_lot_charts(data, pst["part"])
+        n = len(charts[0]["categories"])
+        for lo, hi in _even_spans(n, MAX_LOTS_PER_CHART):
+            slide = new_slide("lot_charts", "Lot summary by part")
+            _slide_heading(slide, _short(f"Lot Summary — {pst['part']}"), navy)
+            if len(charts) == 4:
+                cw = (CONTENT_WIDTH_IN - gap) / 2
+                top = 1.05
+                ch_h = ((SLIDE_H.inches - MARGIN_IN) - top - gap) / 2
+                for k, ch in enumerate(charts):
+                    _draw_lot_metric_chart(slide, CONTENT_LEFT_IN + (k % 2) * (cw + gap),
+                                           top + (k // 2) * (ch_h + gap), cw, ch_h, ch, lo, hi, series)
+            else:
+                cw, xs = _three_chart_geometry()
+                for x, ch in zip(xs, charts):
+                    _draw_lot_metric_chart(slide, x, 1.15, cw, min(5.6, SLIDE_H.inches - MARGIN_IN - 1.15),
+                                           ch, lo, hi, series)
 
 
 def _three_chart_geometry() -> Tuple[float, List[float]]:
@@ -1541,8 +1452,7 @@ def _image_data_table_slide(slide, model: ReportModel, part: str, idx: int, tota
     # continues onto another slide carries the "(continued i/N)" suffix
     # (not just the later ones), so it is never ambiguous which slide the
     # reader is on.
-    heading = part if total <= 1 else f"{part} (continued {idx}/{total})"
-    _slide_heading(slide, heading, navy)
+    _slide_heading(slide, part, navy)
     n_rows = len(rows) + 1
     table_shape = slide.shapes.add_table(n_rows, len(DATA_TABLE_HEADERS), Inches(CONTENT_LEFT_IN),
                                           Inches(1.05), Inches(CONTENT_WIDTH_IN),
@@ -1704,158 +1614,6 @@ def _image_slide(slide, model: ReportModel, img: ImageSummary, tmpdir: str, navy
     cap = (img.caption + ("\n" + img.notes if img.notes else "")).strip()
     if cap:
         _textbox(slide, Inches(0.5), top + Inches(1.05), Inches(11.7), Inches(0.8), cap, size=12, color=GREY)
-
-
-def _methods_lines(model: ReportModel) -> List[str]:
-    params = model.metadata.get("detection_params") or {}
-    lines: List[str] = []
-    if model.hierarchy:
-        lines += [f"{h.get('label', '')}: {model.hierarchy_value(h)}" for h in model.hierarchy]
-    lines.append(f"Detection mode: {model.metadata.get('detection_mode', '—')}")
-    for k, v in params.items():
-        lines.append(f"{k}: {v}")
-    lines.append(f"Calibrated: {'Yes' if any(i.has_calibration for i in model.images) else 'No'}")
-    # FIX-07: mirror the Excel Methods sheet's INN-29 scale-verification
-    # block (``ReportModel.calibration``) -- entirely optional, skipped
-    # when no check was recorded so a report with the feature unused is
-    # unchanged. Placed right after "Calibrated" like the Excel renderer.
-    cal = model.calibration
-    if cal and cal.get("text"):
-        lines.append(f"Scale Verification: {cal.get('text')}")
-        if cal.get("source"):
-            lines.append(f"Verification Source: {cal.get('source')}")
-        if cal.get("warnings"):
-            lines.append("Verification Warnings: " + "; ".join(str(w) for w in cal.get("warnings")))
-    lines.append(f"Instrument: {model.metadata.get('instrument', '—')}")
-    lines.append(f"Software: Grain Analyzer v{APP_VERSION}")
-    lines.append(f"Generated by: {model.operator or 'unknown operator'} / {model.organization or '—'} on {model.date}")
-    if model.verdict and model.verdict.get("overall") not in (None, "no_spec"):
-        spec_bits = " ".join(x for x in (model.verdict.get("spec_name"), model.verdict.get("spec_revision")) if x)
-        lines.append(f"Specification: {spec_bits or '—'} ({model.verdict.get('decision_rule', '—')} acceptance)")
-        if model.verdict.get("statement"):
-            lines.append(str(model.verdict["statement"]))
-    return lines
-
-
-def _paginate_methods_lines(lines: List[str]) -> List[List[str]]:
-    """FIX-12: split ``lines`` across as many Methods slides as needed so
-    the text box never overflows past the footer -- a long
-    ``detection_params`` dict or spec statement used to overflow a single
-    fixed-height text box straight through the footer bar (python-pptx
-    text boxes never grow/shrink to fit their text on save)."""
-    avail_in = METHODS_SAFE_BOTTOM_IN - METHODS_BOX_TOP_IN
-    line_h_in = METHODS_FONT_PT * 1.3 / 72.0
-    max_lines = max(1, int(avail_in / line_h_in))
-    pages: List[List[str]] = []
-    page: List[str] = []
-    used = 0
-    for line in lines:
-        n = max(1, _wrap_line_count(line, METHODS_BOX_W_IN, METHODS_FONT_PT))
-        if page and used + n > max_lines:
-            pages.append(page)
-            page = []
-            used = 0
-        page.append(line)
-        used += n
-    pages.append(page)
-    return pages
-
-
-def _methods_slide(slide, model: ReportModel, navy: RGBColor = NAVY, *,
-                    lines: Optional[List[str]] = None, heading_suffix: str = "") -> None:
-    _slide_heading(slide, "Methods & Parameters" + heading_suffix, navy)
-    if lines is None:
-        lines = _methods_lines(model)
-    _textbox(slide, Inches(0.8), Inches(METHODS_BOX_TOP_IN), Inches(METHODS_BOX_W_IN),
-              Inches(METHODS_SAFE_BOTTOM_IN - METHODS_BOX_TOP_IN), "\n".join(lines), size=METHODS_FONT_PT)
-
-
-def _lot_comparison_slide(slide, part: Dict[str, Any], navy: RGBColor = NAVY) -> None:
-    """UX-13: one slide per part -- a per-lot G summary table, plus either
-    the equivalence-vs-baseline table (when that part has a baseline lot)
-    or the ΔG matrix (when it does not but has >= 2 lots). ``part`` is one
-    entry of ``reports.multi_lot.build_multi_lot_report_model``'s
-    ``Section(type="lot_comparison").payload["parts"]``."""
-    title = f"Lot Comparison — {part.get('part', '')}"
-    if part.get("job"):
-        title += f" (Job {part['job']})"
-    _slide_heading(slide, title, navy)
-    cmp_ = part["comparison"]
-    summaries = cmp_["summaries"]
-
-    headers = ["Lot", "Fields (n)", "Mean G", "95 % CI (±)", "Std Dev G"]
-    rows = len(summaries) + 1
-    table_shape = slide.shapes.add_table(rows, len(headers), Inches(0.6), Inches(1.15),
-                                         Inches(6.2), Inches(0.4) * rows)
-    table = table_shape.table
-    for c, h in enumerate(headers):
-        cell = table.cell(0, c)
-        cell.text = h
-        _style_header_cell(cell, navy)
-    for r, s in enumerate(summaries, start=1):
-        ci = (s["mean"] - s["ci_low"]) if s.get("mean") is not None and s.get("ci_low") is not None \
-            else None
-        vals = [s["label"], str(s["n"]),
-                f"{s['mean']:.2f}" if s.get("mean") is not None else "—",
-                f"{ci:.2f}" if ci is not None else "—",
-                f"{s['sd']:.2f}" if s.get("sd") is not None else "—"]
-        for c, v in enumerate(vals):
-            cell = table.cell(r, c)
-            cell.text = v
-            _style_body_cell(cell)
-
-    baseline, equiv = part.get("baseline"), cmp_.get("equivalence") or {}
-    right_x = Inches(7.1)
-    if baseline and equiv:
-        _textbox(slide, right_x, Inches(1.15), Inches(5.6), Inches(0.35),
-                 f"Equivalence vs baseline ({baseline})", size=14, bold=True)
-        headers2 = ["Lot", "ΔG", "90 % CI", "Verdict"]
-        rows2 = len(equiv) + 1
-        t2 = slide.shapes.add_table(rows2, len(headers2), right_x, Inches(1.55), Inches(5.6),
-                                    Inches(0.4) * rows2).table
-        for c, h in enumerate(headers2):
-            cell = t2.cell(0, c)
-            cell.text = h
-            _style_header_cell(cell, navy)
-        for r, (lot, eq) in enumerate(equiv.items(), start=1):
-            ci_txt = (f"[{eq['ci_low']:.2f}, {eq['ci_high']:.2f}]"
-                     if eq.get("ci_low") is not None and eq.get("ci_high") is not None else "—")
-            vals = [lot, f"{eq['dG']:.2f}" if eq.get("dG") is not None else "—", ci_txt,
-                    str(eq.get("verdict", "—"))]
-            for c, v in enumerate(vals):
-                cell = t2.cell(r, c)
-                cell.text = v
-                _style_body_cell(cell)
-    elif len(summaries) >= 2:
-        _textbox(slide, right_x, Inches(1.15), Inches(5.6), Inches(0.35),
-                 "ΔG matrix (row → column; + = column finer)", size=14, bold=True)
-        labels = [s["label"] for s in summaries]
-        matrix = cmp_["matrix"]
-        n = len(labels)
-        t3 = slide.shapes.add_table(n + 1, n + 1, right_x, Inches(1.55), Inches(5.6),
-                                    Inches(0.4) * (n + 1)).table
-        t3.cell(0, 0).text = ""
-        for j, lb in enumerate(labels, start=1):
-            cell = t3.cell(0, j)
-            cell.text = lb
-            _style_header_cell(cell, navy)
-        for i, lb in enumerate(labels, start=1):
-            cell = t3.cell(i, 0)
-            cell.text = lb
-            _style_header_cell(cell, navy)
-            for j in range(n):
-                v = matrix[i - 1][j]["dG"]
-                cell = t3.cell(i, j + 1)
-                cell.text = f"{v:+.2f}" if v is not None else "—"
-                _style_body_cell(cell)
-
-
-def _appendix_slide(slide, model: ReportModel, navy: RGBColor = NAVY) -> None:
-    _slide_heading(slide, "Appendix", navy)
-    _textbox(slide, Inches(0.8), Inches(1.5), Inches(11.5), Inches(2.0),
-              "Full per-grain raw measurement data for every image is provided in the "
-              "companion Excel workbook (sheets named \"Raw - <image>\"), not duplicated here.",
-              size=16)
 
 
 def _text_slide(slide, model: ReportModel, sec: Section, navy: RGBColor = NAVY) -> None:

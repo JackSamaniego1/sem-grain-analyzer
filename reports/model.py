@@ -137,6 +137,9 @@ class ImageSummary:
     mean_aspect_ratio: float = 0.0
     grain_coverage_pct: float = 0.0
     valid_area_um2: float = 0.0
+    # Scan (analyzed) area in pixels -- the denominator for grain density
+    # (0 = unknown, e.g. reports saved before this field existed).
+    valid_area_px: float = 0.0
     invalid_area_pct: float = 0.0
     astm_g: Optional[float] = None
 
@@ -440,6 +443,7 @@ class ReportModel:
                 mean_aspect_ratio=float(getattr(res, "mean_aspect_ratio", 0.0)),
                 grain_coverage_pct=float(getattr(res, "grain_coverage_pct", 0.0)),
                 valid_area_um2=float(getattr(res, "valid_area_um2", 0.0)),
+                valid_area_px=float(getattr(res, "valid_area_px", 0.0) or 0.0),
                 invalid_area_pct=float(getattr(res, "invalid_area_pct", 0.0)),
                 astm_g=astm_g,
                 grains=[_grain_row(g) for g in (res.grains or [])],

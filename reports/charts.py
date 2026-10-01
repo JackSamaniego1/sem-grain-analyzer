@@ -188,11 +188,11 @@ def derive_custom_palette(colors: Sequence[str], name: str = "Custom") -> Dict[s
     ``area_bar``/``diameter_bar``/``normal_fit`` play.
     """
     if len(colors) < 3:
-        raise ValueError(f"derive_custom_palette needs 3 colours, got {len(colors)}.")
+        raise ValueError(f"derive_custom_palette needs 3 colors, got {len(colors)}.")
     c1, c2, c3 = (normalize_hex(c) for c in colors[:3])
     bad = [orig for orig, norm in zip(colors[:3], (c1, c2, c3)) if norm is None]
     if bad:
-        raise ValueError(f"Not a #RRGGBB hex colour: {bad!r}")
+        raise ValueError(f"Not a #RRGGBB hex color: {bad!r}")
     accent = shade(c1, 0.55)
     return {"name": name or "Custom", "header": c1, "accent": accent, "accent2": c2,
             "area_bar": c1, "diameter_bar": c2, "normal_fit": c3, "count_bar": accent}
