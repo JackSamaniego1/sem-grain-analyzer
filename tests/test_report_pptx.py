@@ -31,7 +31,7 @@ from reports.pptx_renderer import (
     render_pptx, SLIDE_H, MAX_SUMMARY_ROWS, MAX_DATA_ROWS, MAX_PARTS_COMBINED,
     MARGIN_IN, _part_summary_rows, _chunk, _plan_image_table_slides,
     _max_chars_for_width, _DATA_IMAGE_COL_IN, _percentile_rows,
-    _part_distribution_slide_plan, lot_summary_slide_count, lot_chart_slide_count,
+    _part_distribution_slide_plan, lot_summary_slide_count, lot_chart_slide_count, all_lots_chart_slide_count,
 )
 from reports.charts import PALETTES, series_for
 
@@ -84,7 +84,7 @@ def _overview_slide_count(model, images):
     # Batch 4D: one lot-chart slide per part (right after the summary) and one
     # distribution slide per part (clustered bars, one color per lot).
     if model.is_enabled("lot_summary", default=False):
-        n += lot_chart_slide_count(model, images)
+        n += lot_chart_slide_count(model, images) + all_lots_chart_slide_count(model, images)
     n += len(_part_distribution_slide_plan(model, images, series_for(model.theme, model.custom_palette)))
     return n
 
@@ -402,7 +402,8 @@ def test_summary_slide_combines_table_and_charts_when_few_parts(tmp_path):
         assert c.value_axis.axis_title.text_frame.text  # non-empty
     # no leftover separate summary-chart slide: the next slide is the first
     # per-part lot-chart slide
-    assert _heading(prs.slides[3]).startswith("Lot Summary")
+    assert _heading(prs.slides[3]) == "Mean Grain Diameter by Lot"
+    assert _heading(prs.slides[6]).startswith("Lot Summary")
 
 
 def test_summary_chart_uses_hierarchy_part_label(tmp_path):

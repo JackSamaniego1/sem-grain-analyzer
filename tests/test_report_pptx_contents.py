@@ -106,7 +106,9 @@ def test_every_link_targets_the_printed_page_and_matching_slide(tmp_path):
                  "Lot-to-lot distribution comparison"):
         assert gone not in by_label
     # lot-chart slides come right after the summary
-    assert by_label["Lot summary by part"][0] == by_label["Grain size summary"][1] + 1
+    assert _head(prs.slides[by_label["Lot summary, all lots"][2]]) == "Mean Grain Diameter by Lot"
+    assert by_label["Lot summary, all lots"][0] == by_label["Grain size summary"][1] + 1
+    assert by_label["Lot summary by part"][0] == by_label["Lot summary, all lots"][1] + 1
 
 
 def test_similar_slides_collapse_to_ranges_pointing_at_first_slide(tmp_path):

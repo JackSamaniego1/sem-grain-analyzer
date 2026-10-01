@@ -47,7 +47,7 @@ from reports.charts import (
 from reports.model import ReportModel, ImageSummary, Section, pooled_grain_percentiles
 from reports.excel_renderer import _resized_png, _row_size_stats
 from reports.lot_summary import (
-    lot_summary_data, footnotes_for, table_headers, id_cells, NUMERIC_KEYS, part_lot_charts,
+    lot_summary_data, footnotes_for, table_headers, id_cells, NUMERIC_KEYS, part_lot_charts, density_display,
 )
 
 try:
@@ -231,6 +231,7 @@ def render_pptx(model: ReportModel, output_path: str, template_path: Optional[st
                     # tables -> one distribution slide per part. Insert new
                     # slides here.
                     if model.is_enabled("lot_summary", default=False):
+                        _all_lots_chart_slides(new_slide, model, images, series, navy)
                         _lot_chart_slides(new_slide, model, images, series, navy)
 
                     prows, pau, pdu = _percentile_rows(model, images)
@@ -1274,6 +1275,59 @@ def _lot_summary_slides(new_slide, model: ReportModel, images: List[ImageSummary
     for i, chunk in enumerate(pages, start=1):
         _lot_summary_table_slide(new_slide("lot_summary_table", "Job summary by part and lot"),
                                  chunk, data, navy, i, len(pages))
+
+
+MAX_LOTS_ALL_LOTS_CHART = 20     # bars per all-lots slide; more lots continue on the next slide
+ALL_LOTS_TITLES = {"mean_diameter": "Mean Grain Diameter by Lot",
+                   "mean_area": "Mean Grain Area by Lot",
+                   "grain_density": "Grain Density by Lot"}
+ALL_LOTS_HEADINGS = {"mean_diameter": "Mean Grain Diameter by Lot",
+                     "mean_area": "Mean Grain Area by Lot",
+                     "grain_density": "Mean Grain Density by Lot"}
+
+
+def _all_lots_chart_specs(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Chart specs (mean diameter, mean area, grain density), ONE bar per lot
+    of the whole job. Diameter/area come from the same specs as the Excel Lot
+    Summary charts (two-level Part / Lot categories when several parts);
+    Excel has no density chart, so that one uses ``density_display``."""
+    by_id = {c["id"]: c for c in data["charts"]}
+    out = [dict(by_id[k], trend=None) for k in ("mean_diameter", "mean_area") if k in by_id]
+    base = out[0] if out else None
+    dens, unit, fmt = density_display([s["grain_density"] for s in data["lots"]],
+                                      data["units"]["calibrated"])
+    out.append({"id": "grain_density", "title": "Grain Density by Lot",
+                "x_title": base["x_title"] if base else data["lot_label"],
+                "y_title": f"Grain Density ({unit})", "num_format": fmt,
+                "categories": base["categories"] if base else
+                [{"part": s["part"], "lot": s["lot"], "label": s["lot"]} for s in data["lots"]],
+                "values": dens, "trend": None,
+                "multi_level": data["multi_part"]})
+    return out
+
+
+def all_lots_chart_slide_count(model: ReportModel, images: List[ImageSummary]) -> int:
+    data = lot_summary_data(model, images)
+    if not data["has_lots"]:
+        return 0
+    return len(_all_lots_chart_specs(data)) * len(_even_spans(len(data["lots"]), MAX_LOTS_ALL_LOTS_CHART))
+
+
+def _all_lots_chart_slides(new_slide, model: ReportModel, images: List[ImageSummary],
+                           series: Dict[str, str], navy: RGBColor) -> None:
+    """Right after Grain Size Summary: one full-slide bar chart per metric with
+    one bar for every lot of every part (continues on a further slide with
+    the same title past ``MAX_LOTS_ALL_LOTS_CHART`` lots)."""
+    data = lot_summary_data(model, images)
+    if not data["has_lots"]:
+        return
+    top = 1.05
+    h = SLIDE_H.inches - MARGIN_IN - top
+    for ch in _all_lots_chart_specs(data):
+        for lo, hi in _even_spans(len(ch["categories"]), MAX_LOTS_ALL_LOTS_CHART):
+            slide = new_slide("lot_charts_all", "Lot summary, all lots")
+            _slide_heading(slide, ALL_LOTS_HEADINGS[ch["id"]], navy)
+            _draw_lot_metric_chart(slide, CONTENT_LEFT_IN, top, CONTENT_WIDTH_IN, h, ch, lo, hi, series)
 
 
 def _lot_chart_slides(new_slide, model: ReportModel, images: List[ImageSummary],

@@ -211,11 +211,11 @@ def _grid(parts, lots, per=30):
 
 
 def test_hardcoded_slide_counts(tmp_path):
-    # cover + contents + summary + lot charts (1 per part) + percentiles + data tables
+    # cover + contents + summary + 3 all-lots charts + lot charts (1 per part) + percentiles + data tables
     # (1 per part) + distributions (1 per part) + job summary table (1) + 1 image slide per image
-    assert len(_render(tmp_path, _model(_grid(2, 3))).slides) == 1 + 1 + 1 + 2 + 1 + 2 + 2 + 1 + 6
-    assert len(_render(tmp_path, _model(_grid(2, 4))).slides) == 1 + 1 + 1 + 2 + 1 + 2 + 2 + 1 + 8
-    assert len(_render(tmp_path, _model(_grid(1, 8))).slides) == 1 + 1 + 1 + 1 + 1 + 1 + 2 + 1 + 8
+    assert len(_render(tmp_path, _model(_grid(2, 3))).slides) == 1 + 1 + 1 + 3 + 2 + 1 + 2 + 2 + 1 + 6
+    assert len(_render(tmp_path, _model(_grid(2, 4))).slides) == 1 + 1 + 1 + 3 + 2 + 1 + 2 + 2 + 1 + 8
+    assert len(_render(tmp_path, _model(_grid(1, 8))).slides) == 1 + 1 + 1 + 3 + 1 + 1 + 1 + 2 + 1 + 8
 
 
 def test_omitted_note_is_capped_to_one_line(tmp_path):

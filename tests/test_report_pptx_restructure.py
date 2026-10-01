@@ -79,7 +79,9 @@ def deck(tmp_path_factory):
 def test_lot_chart_slides_immediately_follow_grain_size_summary(deck):
     heads = [_head(s) for s in deck.slides]
     i = heads.index("Grain Size Summary")
-    assert heads[i + 1:i + 4] == ["Lot Summary — P1", "Lot Summary — P2", "Lot Summary — P3"]
+    assert heads[i + 1:i + 7] == ["Mean Grain Diameter by Lot", "Mean Grain Area by Lot",
+                                  "Mean Grain Density by Lot",
+                                  "Lot Summary — P1", "Lot Summary — P2", "Lot Summary — P3"]
     assert heads[0] == "Deck" and heads[1] == "Contents"
     assert not any(h.startswith("Lot-vs-Lot") for h in heads)      # no duplicate lot-chart slides
 
@@ -94,6 +96,43 @@ def test_lot_chart_slide_has_one_bar_per_lot_and_density_chart(deck):
     assert dens.chart_title.text_frame.text == "Grain Density by Lot"
     assert dens.value_axis.axis_title.text_frame.text.startswith("Grain Density (grains/")
     assert not any(c.value_axis.axis_title.text_frame.text == "Number of Grains" for c in charts)
+
+
+def test_all_lots_charts_one_bar_per_lot_with_units(deck):
+    data = lot_summary_data(_deck())
+    lots = data["lots"]
+    expect = {"Mean Grain Diameter by Lot": ("Mean Equivalent Diameter (µm)", "mean_diameter"),
+              "Mean Grain Area by Lot": ("Mean Grain Area (µm²)", "mean_area"),
+              "Mean Grain Density by Lot": ("Grain Density (grains/", "grain_density")}
+    for head, (ytitle, key) in expect.items():
+        s = next(s for s in deck.slides if _head(s) == head)
+        charts = [sh.chart for sh in s.shapes if sh.has_chart]
+        assert len(charts) == 1
+        c = charts[0]
+        assert c.value_axis.axis_title.text_frame.text.startswith(ytitle)
+        assert c.category_axis.axis_title.text_frame.text
+        cats = c.plots[0].categories
+        assert cats.depth == 2
+        assert [str(x) for x in cats.flattened_labels] == [(l["part"], l["lot"]) for l in lots] or \
+            [x[-1] for x in cats.flattened_labels] == [l["lot"] for l in lots]
+        vals = list(c.plots[0].series[0].values)
+        assert len(vals) == 9 and all(v is not None and v > 0 for v in vals)
+        if key == "mean_diameter":
+            assert vals == pytest.approx([round(l[key], 12) for l in lots], rel=1e-6)
+        assert not c.has_legend
+
+
+def test_all_lots_charts_continue_without_counter_and_skip_when_disabled(tmp_path):
+    imgs = [_img(f"a{k}", "P1", f"L{k}", n=5, order=k) for k in range(25)]
+    out = str(tmp_path / "d.pptx")
+    render_pptx(_model(imgs), out)
+    heads = [_head(s) for s in Presentation(out).slides]
+    assert heads.count("Mean Grain Diameter by Lot") == 2
+    assert heads.count("Mean Grain Density by Lot") == 2
+    m = _model(imgs)
+    m.get_section("lot_summary").enabled = False
+    render_pptx(m, out)
+    assert "Mean Grain Area by Lot" not in [_head(s) for s in Presentation(out).slides]
 
 
 def test_one_distribution_slide_per_part_with_series_per_lot_and_legend(deck):
@@ -155,11 +194,13 @@ def test_contents_lists_new_structure_with_working_links(deck):
                 m = re.match(r"^Pages? (\d+)(?:–(\d+))?\s+·\s+(.+)$", sh.text_frame.text)
                 rows[m.group(3)] = (int(m.group(1)), int(m.group(2) or m.group(1)),
                                     ids.index(sh.click_action.target_slide.slide_id))
+    assert rows["Lot summary, all lots"][0] == rows["Grain size summary"][1] + 1
+    assert rows["Lot summary, all lots"][1] == rows["Lot summary, all lots"][0] + 2
+    assert rows["Lot summary by part"][0] == rows["Lot summary, all lots"][1] + 1
     assert "Lot summary by part" in rows and "Grain distributions by part" in rows
     assert not any(k in rows for k in ("Appendix", "Methods & parameters", "Lot comparison by part"))
     for a, b, tgt in rows.values():
         assert tgt == a - 1 and 1 <= a <= b <= len(ids)
-    assert rows["Lot summary by part"][0] == rows["Grain size summary"][1] + 1
 
 
 # ---------------------------------------------------------------------------

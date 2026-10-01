@@ -101,7 +101,7 @@ def test_placed_after_summary_before_data_tables(tmp_path):
     heads = [_text(s).split("\n")[0] for s in prs.slides]
     i = heads.index(PERCENTILE_TITLE)
     assert heads[i - 1].startswith("Lot Summary")      # lot charts sit right after the summary
-    assert heads[i - 3].startswith("Grain Size Summary")
+    assert heads[i - 6].startswith("Grain Size Summary")
     assert heads[i + 1] == "P0"
 
 
