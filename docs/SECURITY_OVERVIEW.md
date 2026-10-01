@@ -1,6 +1,6 @@
 # Grain Analyzer — Security & Data-Handling Overview
 
-**Version covered:** 3.0.0 (Windows) · **Source:** https://github.com/JackSamaniego1/sem-grain-analyzer
+**Version covered:** 3.1.0 (Windows) · **Source:** https://github.com/JackSamaniego1/sem-grain-analyzer
 
 Grain Analyzer is a standalone desktop program that measures grain size in SEM images. It runs fully offline: it doesn't use the network, has no server side and no user accounts, and doesn't send data anywhere. This document explains how that is enforced and how to check it.
 
@@ -44,7 +44,7 @@ This backs up Layer 1: the operating system blocks traffic even from native (C/C
 - Documents open only through Windows' local file associations: Excel opens `.xlsx`, and Explorer shows a folder.
 
 ### Automated verification
-`tests/test_offline.py` is part of the test suite (839 tests in total, all passing for 3.0.0). It checks the following:
+`tests/test_offline.py` is part of the test suite (1,446 tests in total, all passing for 3.1.0). It checks the following:
 - The app's own source code contains no networking code.
 - Connecting to remote hosts over TCP, UDP or DNS lookup is blocked. Loopback still works.
 - The installer script contains the firewall block rules.
@@ -74,6 +74,7 @@ All data stays on the local disk, in plain, open file formats:
 - **UI:** PySide6 / Qt (LGPL v3).
 - **Image analysis:** OpenCV, scikit-image, SciPy, NumPy (BSD/Apache).
 - **AI model:** PyTorch and Meta's Segment Anything (SAM), both Apache 2.0.
+- **Scale-bar text reading:** RapidOCR with ONNX Runtime (Apache 2.0 / MIT). The text-recognition model files are bundled in the installer and run locally.
 - **Reports:** xlsxwriter and python-pptx (BSD/MIT).
 
 All of these are permissive open-source licences with no fees and no licence server. The full list with licence texts ships in `THIRD_PARTY_LICENSES.txt`.
@@ -84,7 +85,7 @@ All of these are permissive open-source licences with no fees and no licence ser
 
 ## 5. Installation and build provenance
 
-- **How the installer is built:** GitHub Actions compiles the public source code at the tagged release (`v3.0.0`) and attaches `GrainAnalyzer_Setup.exe` to the GitHub Release. The build uses PyInstaller for the program and NSIS for the installer.
+- **How the installer is built:** GitHub Actions compiles the public source code at the tagged release (`v3.1.0`) and attaches `GrainAnalyzer_Setup.exe` to the GitHub Release. The build uses PyInstaller for the program and NSIS for the installer.
 - **Installer scope:**
   - Installs to `C:\Program Files\GrainAnalyzer`.
   - Creates Start-menu and desktop shortcuts.
@@ -92,7 +93,7 @@ All of these are permissive open-source licences with no fees and no licence ser
   - Adds the two firewall rules.
   - Nothing else: no drivers, no services, no browser extensions, no startup items.
 - **Admin rights** are requested only because it installs to Program Files and adds the firewall rules. The app itself runs as a normal user.
-- **Air-gapped install:** the installer is fully self-contained (~670 MB). You can copy it to the target PC on removable media, and the PC never needs internet access.
+- **Air-gapped install:** the installer is fully self-contained (~680 MB). You can copy it to the target PC on removable media, and the PC never needs internet access.
 
 ### Known limitations
 - **The installer is not code-signed.** Windows SmartScreen shows "Windows protected your PC", so the user has to choose **More info › Run anyway**. To check that the file came from the official release, compare its SHA-256 hash with the file on the GitHub Release page:
