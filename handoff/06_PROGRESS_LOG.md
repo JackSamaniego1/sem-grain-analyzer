@@ -349,3 +349,13 @@
 - **v3.1.0 tag pushed to origin**: Annotated tag at e3a40fa. GitHub Actions "Build & Release" workflow triggered automatically; Windows build expected to succeed, macOS to fail (Windows-only release).
 - **Security documentation refreshed (813e4b4)**: docs/SECURITY_OVERVIEW.md updated for v3.1.0 (1446 tests, OCR/RapidOCR component listed, installer size ~680 MB). Pushed to origin with v3-dev.
 - **Next actions**: (1) Verify Release asset list — must have ONLY GrainAnalyzer_Setup.exe, remove GPU pack if present (D-48 internal-only); (2) Ask user before deleting ~11 GB staging folder; (3) Real high-DPI test 150/200% + NVIDIA licence review still open; (4) Merging v3-dev to main deferred — awaiting user decision.
+
+## 2026-10-01 (GitHub Actions build succeeded; v3.1.0 Release published)
+- **GitHub Actions Build & Release workflow completed successfully** (verified 2026-10-01 via public GitHub API): Both jobs passed (build-windows AND build-macos). Expected: Windows OK, macOS to fail. Actual: **both succeeded unexpectedly**. macOS .dmg built (765 MB) even though it was never tested on a real Mac.
+- **v3.1.0 Release published** (non-draft): https://github.com/JackSamaniego1/sem-grain-analyzer/releases/tag/v3.1.0. Assets: GrainAnalyzer_Setup.exe (674 MB, Windows-only, CPU-only torch with fallback), GrainAnalyzer.dmg (765 MB, untested). No GPU pack (D-48 respected). Installer fully offline, no network egress, no update checks.
+- **Open question for user**: Keep untested .dmg on release, or remove for Windows-only distribution (like v3.0.0)? Release already published; easy to remove asset if user prefers.
+- **Next actions**:
+  1. User decides on .dmg (keep or remove from published Release).
+  2. Ask user before deleting ~11 GB C:\ga_gpu_stage (trial pack; rebuild required per D-47 before on-device testing).
+  3. User decides: merge v3-dev→main (86 commits ahead; v3.0.0 was at 13cba7e); recommended after GPU testing + high-DPI 150/200% + NVIDIA legal review.
+  4. Pending: Real high-DPI test at 150/200% on actual hardware (offscreen-verified so far; wizard step display, image canvas, table wrapping need live PC). NVIDIA CUDA/cuDNN redistribution licence review before any GPU pack publication.

@@ -1,8 +1,8 @@
 # SESSION STATE - read this first when resuming
 
-**Last updated:** 2026-10-01 (v3.1.0 release tagged & pushed; GitHub Actions build queued; docs refreshed)  
-**Branch:** `v3-dev` | **Last commit:** `813e4b4` (security overview v3.1.0) | **Phase:** v3.1.0 pushed to origin; build IN PROGRESS; Release asset verification pending
-**Resume with:** read this file only. All code committed. Full suite 1446 passed, 1 skipped. v3.1.0 tag at e3a40fa. Next: (1) verify GitHub Release has ONLY GrainAnalyzer_Setup.exe (no GPU pack); (2) ask user before deleting ~11 GB GPU staging; (3) high-DPI test + NVIDIA review still open.
+**Last updated:** 2026-10-01 (v3.1.0 published; GitHub Actions build succeeded; Release has Setup.exe + untested .dmg)  
+**Branch:** `v3-dev` | **Last commit:** `48546e3` (handoff: v3.1.0 release pushed; GitHub Actions build queued) | **Phase:** v3.1.0 released to GitHub; Windows installer ready; macOS .dmg untested (decision pending)
+**Resume with:** read this file only. All code committed. Full suite 1446 passed, 1 skipped. v3.1.0 tag at e3a40fa pushed + built. Next: (1) user decides: keep untested .dmg on release or remove for Windows-only; (2) ask user before deleting ~11 GB GPU staging; (3) decide merge v3-dev→main; (4) high-DPI 150/200% real test + NVIDIA licence review.
 
 ## v3.1.0 Release PUBLISHED
 
@@ -10,7 +10,9 @@
 
 **Installer built & verified**: GrainAnalyzer_Setup.exe 676 MB at repo root, bundle verified (tutorial PNGs, SAM checkpoint, RapidOCR models, fonts, licences). Pre-bump build live-tested by user ("looks good"). Packaged exe boot-checked.
 
-**GitHub Actions status**: Build & Release workflow queued (tag v3.1.0 pushed). Windows build expected to succeed; macOS expected to fail (Windows-only release like v3.0.0). Awaiting: asset list verification (must have ONLY GrainAnalyzer_Setup.exe, no GPU pack per D-48).
+**GitHub Actions build succeeded** (2026-10-01, verified via public API): Both jobs passed (build-windows AND build-macos). Windows build confirmed OK. macOS .dmg built unexpectedly (macOS job was expected to fail but succeeded).
+
+**Release v3.1.0 published** (https://github.com/JackSamaniego1/sem-grain-analyzer/releases/tag/v3.1.0): Not a draft. Assets: **GrainAnalyzer_Setup.exe 674 MB** and **GrainAnalyzer.dmg 765 MB**. No GPU pack attached (D-48 respected). The .dmg has never been installed or tested on a Mac — open question: keep as untested asset or remove for Windows-only release?
 
 **Work since last handoff (commits 1ac2f96 → 813e4b4)**:
 - Quick UI fixes: Reports inspector no longer clips (long export file names elide); Projects picker tiles toggle individually; Analyzer load ADDS instead of replacing (per-job scale/scan area, no borrowing); Select all / Remove selected in list; removed images vanish with Undo button.
@@ -34,9 +36,9 @@
 
 ## NEXT 3 ACTIONS
 
-1. **Verify GitHub Release assets** (build may already be done or in progress): Check https://github.com/JackSamaniego1/sem-grain-analyzer/releases/tag/v3.1.0 — must have ONLY GrainAnalyzer_Setup.exe attached. If GPU pack appears, delete it from the release (D-48: internal only).
-2. **Confirm user has tested GrainAnalyzer_Setup.exe on a clean/work PC** (smoke-test splash, wizard, Reports, tutorial). Installers on lab PC working offline only; no network egress.
-3. **Clean-up decision on ~11 GB C:\ga_gpu_stage**: Ask user before deleting the staging folder (holds only copy of trial GPU pack; pack must be rebuilt from final source before on-device use per D-47). NVIDIA licence review still pending before any GPU pack publication.
+1. **User decides on untested macOS .dmg (765 MB)**. Keep on v3.1.0 Release as untested asset, or remove so release is Windows-only (like v3.0.0). (GitHub Release already published; v3.1.0 downloadable.)
+2. **Ask user before deleting ~11 GB C:\ga_gpu_stage**: Holds only copy of trial GPU pack. Pack must be rebuilt from final source (BUILD_WINDOWS.bat gpu at e3a40fa) before on-device testing per D-47. NVIDIA licence review still pending before any GPU pack publication.
+3. **User decides whether to merge v3-dev into main** (origin main still at 13cba7e before this v3.1.0 work; v3-dev has 86 commits ahead). Recommendation: merge after GPU & high-DPI testing + docs complete.
 
 ## How to run
 ```powershell
