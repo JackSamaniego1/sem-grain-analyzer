@@ -33,3 +33,7 @@ resources/icon.ico
 # NSIS build outputs
 GrainAnalyzer_Setup.exe
 installer.nsi
+
+# GPU pack is internal-only (NVIDIA licence review pending) - never commit
+GrainAnalyzer_GPU_Pack.exe
+.claude/worktrees/
