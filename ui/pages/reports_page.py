@@ -255,6 +255,7 @@ class ReportsPage(QWidget):
     def _wire(self) -> None:
         st = self.state
         st.session_opened.connect(self._on_session_opened)
+        st.scope_changed.connect(self._on_session_opened)     # round 3c: tour scope
         st.session_closed.connect(self._on_session_closed)
         for sig in (st.result_edited, st.image_updated):
             sig.connect(lambda _uid: self._check_timer.start())
@@ -339,12 +340,13 @@ class ReportsPage(QWidget):
         s = self.state.session
         if s is None:
             return
-        if self.model is not None and getattr(self, "_model_session", None) == s.path:
+        home = rb.report_home(self.state)        # round 3c: the tour's own record
+        if self.model is not None and getattr(self, "_model_session", None) == home:
             return
         self._gen += 1
         gen = self._gen
         self._set_model(None)
-        self._model_session = s.path
+        self._model_session = home
         self._set_busy("load", "Loading the saved report…")
 
         def done(d):
@@ -362,7 +364,7 @@ class ReportsPage(QWidget):
                 self._set_busy("")
                 self._toast("Could not read the saved report", msg.splitlines()[0], "danger")
 
-        run_task(rb.load_report, s.path, on_done=done, on_error=failed)
+        run_task(rb.load_report, home, on_done=done, on_error=failed)
 
     def _on_session_closed(self) -> None:
         self._gen += 1
@@ -438,7 +440,7 @@ class ReportsPage(QWidget):
         return dict(title=hd["title"], operator=st.operator(),
                     organization=defaults.get("organization", ""),
                     metadata=rb.session_metadata(st),
-                    asset_dir=str(s.path / rb.REPORT_ASSETS),
+                    asset_dir=str(rb.report_home(self.state) / rb.REPORT_ASSETS),
                     fingerprint=rb.results_fingerprint(st),
                     hierarchy=hd["hierarchy"], export_basename=hd["export_basename"],
                     overlay_opacity=rb.overlay_opacity_arg(st),
@@ -606,7 +608,7 @@ class ReportsPage(QWidget):
             else:
                 self._toast("No saved report", "Build a report from the session first.", "info")
 
-        run_task(rb.load_report, s.path, on_done=done,
+        run_task(rb.load_report, rb.report_home(self.state), on_done=done,
                  on_error=lambda m: (self._set_busy(""),
                                      self._toast("Could not read the report", m.splitlines()[0],
                                                  "danger")))
@@ -816,11 +818,11 @@ class ReportsPage(QWidget):
     # ---------------------------------------------------------------- grains
     def image_doc(self, img):
         full = os.path.normcase(os.path.abspath(img.image_path)) if img.image_path else ""
-        for im in self.state.images():      # same file name may be in several lots
+        for im in rb.report_images(self.state):  # same file name may be in several lots
             if full and im.path and os.path.normcase(os.path.abspath(str(im.path))) == full:
                 return im
         name = os.path.basename(img.image_path or "")
-        for im in self.state.images():
+        for im in rb.report_images(self.state):
             if im.filename == name:
                 return im
         return None
@@ -991,7 +993,7 @@ class ReportsPage(QWidget):
 
     def set_logo(self, path: str) -> None:
         try:
-            self.model.logo_path = rb.copy_logo(path, self.state.session.path)
+            self.model.logo_path = rb.copy_logo(path, rb.report_home(self.state))
         except OSError as e:
             self._toast("Could not use that logo", str(e), "danger")
             return
@@ -1031,7 +1033,8 @@ class ReportsPage(QWidget):
                 self.save_badge.set_kind("success")
                 self.save_badge.updateGeometry()
 
-        run_task(rb.save_report, s.path, data, on_done=done, pool=serial_pool(),
+        run_task(rb.save_report, rb.report_home(self.state), data, on_done=done,
+                 pool=serial_pool(),
                  on_error=lambda m: self._toast("Report autosave failed", m.splitlines()[0],
                                                 "danger"))
 
@@ -1077,7 +1080,8 @@ class ReportsPage(QWidget):
                 basename = f"{basename}_{im.display_name}"
         jobs: List[Tuple[str, str]] = []
         for k in kinds:
-            p = rb.default_export_path(s.path, stem_title, k, basename=basename)
+            p = rb.default_export_path(rb.report_home(self.state), stem_title, k,
+                                       basename=basename)
             if ask:
                 start = self.state.settings.last_export_dir or str(p.parent)
                 chosen, _ = QFileDialog.getSaveFileName(
@@ -1173,7 +1177,7 @@ class ReportsPage(QWidget):
         s = self.state.session
         if s is None:
             return
-        d = s.path / "exports"
+        d = rb.report_home(self.state) / "exports"     # round 3c: tour -> Tutorial job
         d.mkdir(exist_ok=True)
         if sys.platform == "win32":
             os.startfile(str(d))

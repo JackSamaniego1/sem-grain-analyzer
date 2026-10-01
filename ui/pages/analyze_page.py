@@ -28,8 +28,8 @@ from typing import Dict, List, Optional
 
 from PySide6.QtCore import SIGNAL, QEvent, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QSizePolicy, QSpinBox,
-    QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGridLayout, QHBoxLayout, QSizePolicy,
+    QSpinBox, QVBoxLayout, QWidget,
 )
 
 from core.grain_detector import DetectionParams
@@ -2260,17 +2260,39 @@ class AnalyzePage(QWidget):
                              + (f" · {done} already analyzed" if done else ""))
 
     # ------------------------------------------------------------------ batch 4 wizard (D-38)
-    @staticmethod
-    def _button_row(*buttons) -> QHBoxLayout:
-        row = QHBoxLayout()
+    def _button_row(self, *buttons) -> QGridLayout:
+        """All images · Current image · Edit… on one row; round 3c: in the
+        compact side panel (200 % scaling) the last button (Edit…) drops to
+        a second row so the two primary labels are never cut short."""
+        row = QGridLayout()
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(SPACE.sm)
-        for b in buttons:
-            # round 3c: at small logical sizes (200 %) the labels elide (full
-            # text in the tooltip) instead of pushing "Edit…" out of the panel
-            b.setMinimumWidth(56)
-            row.addWidget(b, 1)
+        row.setHorizontalSpacing(SPACE.sm)
+        row.setVerticalSpacing(SPACE.xs)
+        for i, b in enumerate(buttons):
+            b.setMinimumWidth(56)          # last resort: elide (tooltip) rather than clip
+            row.addWidget(b, 0, i)
+            row.setColumnStretch(i, 1)
+        if not hasattr(self, "_step_rows"):
+            self._step_rows = []
+        self._step_rows.append((row, list(buttons)))
         return row
+
+    def _wrap_step_rows(self, two_rows: bool) -> None:
+        for row, buttons in getattr(self, "_step_rows", []):
+            last = buttons[-1]
+            idx = row.indexOf(last)
+            if idx < 0:
+                continue
+            on_second = row.getItemPosition(idx)[0] == 1
+            if on_second == two_rows:
+                continue
+            row.removeWidget(last)
+            if two_rows:
+                row.addWidget(last, 1, 0, 1, len(buttons) - 1, Qt.AlignLeft)
+                row.setColumnStretch(len(buttons) - 1, 0)
+            else:
+                row.addWidget(last, 0, len(buttons) - 1)
+                row.setColumnStretch(len(buttons) - 1, 1)
 
     def _on_params_changed(self) -> None:
         """A detection mode / parameter was chosen: saved with the session,
@@ -2295,6 +2317,7 @@ class AnalyzePage(QWidget):
             self.film.setMaximumWidth(230 if compact else 320)
         if self._side_panel.minimumWidth() != side:
             self._side_panel.setMinimumWidth(side)
+        self._wrap_step_rows(compact)
 
     def wizard_images(self) -> List:
         """The images the wizard's steps are about: every loaded, readable

@@ -277,6 +277,22 @@ class TourController(QObject):
         except Exception:
             pass
 
+    def _show_scoped_image(self) -> None:
+        """Round 3c: the tour's Analyze / Review steps act on the image shown
+        -- make it a Tutorial image (never one of the operator's own)."""
+        if self.hint:
+            return
+        try:
+            st = self.shell.state
+            if not st.scope_active():
+                return
+            mine = st.scoped_images()
+            cur = st.current_image()
+            if mine and (cur is None or not st.in_scope(cur)):
+                st.set_current_image(mine[0].uid)
+        except Exception:
+            pass
+
     def _busy(self) -> bool:
         try:
             return not self.shell.analyze.queue.is_idle()
@@ -306,6 +322,7 @@ class TourController(QObject):
             return
         step = self.steps[index]
         switched = False
+        self._show_scoped_image()
         if step.page == "analyze":
             try:                            # the wizard's steps reflect the data now
                 self.shell.analyze.sync_wizard()

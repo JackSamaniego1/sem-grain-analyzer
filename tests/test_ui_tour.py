@@ -756,6 +756,9 @@ def test_tour_never_touches_the_users_loaded_images(shell, qtbot, env):
                     and not st.is_filtering(), timeout=TIMEOUT)
     mine = auto + hand
     before = [_user_snapshot(st, im) for im in mine]
+    st.save_now()
+    st.flush()
+    user_files = {p for rec in (auto_rec, hand_rec) for p in rec.rglob("*") if p.is_file()}
 
     t = _start(shell, qtbot)
     qtbot.mouseClick(shell.projects.btn_primary, Qt.LeftButton)       # open the Tutorial job
@@ -784,6 +787,24 @@ def test_tour_never_touches_the_users_loaded_images(shell, qtbot, env):
     assert _key(t) in ("go_review", "select"), _key(t)        # past the run step
     assert all(im.result is not None for im in tut)
     assert [_user_snapshot(st, im) for im in mine] == before
+    # Review + Reports steps (edits, report, Excel / PowerPoint export)
+    if _key(t) == "go_review":
+        qtbot.mouseClick(shell.rail.item("review"), Qt.LeftButton)
+        qtbot.waitUntil(lambda: _key(t) == "select", timeout=5000)
+    qtbot.waitUntil(lambda: shell.review.canvas._labels is not None, timeout=TIMEOUT)
+    assert st.in_scope(st.current_image())                 # edits land on a Tutorial image
+    _do_review_actions(shell, t, qtbot)
+    _do_report_actions(shell, t, qtbot)
+    rp = shell.reports
+    tut_paths = {str(im.path) for im in tut}
+    assert rp.model is not None and rp.model.images
+    assert {i.image_path for i in rp.model.images} <= tut_paths   # tutorial images only
+    assert list((t.tutorial_record / "exports").glob("*.xlsx"))
+    assert list((t.tutorial_record / "exports").glob("*.pptx"))
+    assert [_user_snapshot(st, im) for im in mine] == before
     t.finish()
     assert not st.scope_active()
     assert [_user_snapshot(st, im) for im in mine] == before
+    st.flush()
+    after_files = {p for rec in (auto_rec, hand_rec) for p in rec.rglob("*") if p.is_file()}
+    assert after_files <= user_files, sorted(map(str, after_files - user_files))

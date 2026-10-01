@@ -81,12 +81,51 @@ EXCEL_ONLY = frozenset({"parameters", "raw_data", "lot_comparison"})
 # Snapshot + build
 # ======================================================================
 
+# ---------------------------------------------------------------- round 3c: tour scope
+def report_images(state) -> list:
+    """The analyzer images a report is about: all of them -- or, while the
+    guided tour scopes the analyzer to the Tutorial job
+    (``AppState.set_scope``), only that job's images."""
+    f = getattr(state, "scoped_images", None)
+    return list(f()) if f is not None else list(state.images())
+
+
+def _scoped_record(state):
+    """The first scoped record while a scope is active, else None."""
+    if not getattr(state, "scope_active", lambda: False)():
+        return None
+    recs = state._scoped_records()
+    return recs[0] if recs else None
+
+
+def report_home(state) -> Optional[Path]:
+    """Folder the report lives in (report.json, assets, exports/): the open
+    session -- or the scoped record (the Tutorial job during the tour, so its
+    report and exports never land in the operator's own job folder)."""
+    s = getattr(state, "session", None)
+    if s is None:
+        return None
+    rec = _scoped_record(state)
+    return Path(rec.path) if rec is not None else Path(s.path)
+
+
+def report_meta(state):
+    """(meta, project_meta, sample_meta, lot_meta) of the report's record."""
+    s = state.session
+    rec = _scoped_record(state)
+    if rec is not None:
+        return rec.meta, rec.project_meta or {}, rec.sample_meta or {}, rec.lot_meta or {}
+    return (getattr(s, "meta", None), getattr(s, "project_meta", None) or {},
+            getattr(s, "sample_meta", None) or {}, getattr(s, "lot_meta", None) or {})
+
+
 def _session_ids(state) -> Tuple[str, str]:
     s = state.session
     if s is None:
         return "", ""
-    sample = s.meta.sample_id or (s.sample_meta or {}).get("sample_id", "") or ""
-    lot = s.meta.lot_number or (s.lot_meta or {}).get("lot_number", "") or ""
+    m, _pm, sm, lm = report_meta(state)
+    sample = m.sample_id or sm.get("sample_id", "") or ""
+    lot = m.lot_number or lm.get("lot_number", "") or ""
     return str(sample), str(lot)
 
 
@@ -95,7 +134,7 @@ def results_fingerprint(state, images=None) -> str:
     their total area and the calibration per analysed image).  ``images``:
     only these (a multi-lot report over part of what is loaded)."""
     h = hashlib.sha1()
-    for im in (state.images() if images is None else images):
+    for im in (report_images(state) if images is None else images):
         r = im.result
         if r is None or not reportable(state, im):
             continue
@@ -120,7 +159,7 @@ def field_exclusions(state) -> Dict[str, str]:
     if s is None:
         return {}
     try:
-        m = json.loads((Path(s.path) / "manifest.json").read_text(encoding="utf-8"))
+        m = json.loads((report_home(state) / "manifest.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return {str(i.get("filename", "")): str(i.get("exclusion_reason") or "")
@@ -169,12 +208,12 @@ def report_extras_arg(state, inputs: Sequence[ReportImageInput]) -> Optional[dic
     if s is None or getattr(s, "path", None) is None:
         return None
     settings = getattr(state, "settings", None)
-    meta = getattr(s, "meta", None)
+    meta = report_meta(state)[0]
     ppu = next((float(getattr(i.result, "px_per_um", 0.0) or 0.0) for i in inputs or []
                 if getattr(i.result, "has_calibration", False)), 0.0)
     return {
         "root": str(getattr(state, "root", "") or ""),
-        "session": str(s.path),
+        "session": str(report_home(state) or s.path),
         "cfg": {"required_fields": int(getattr(settings, "required_fields", 5) or 5),
                 "target_RA_pct": float(getattr(settings, "target_RA_pct", 10.0) or 10.0)},
         "cal_enabled": bool(getattr(settings, "calibration_verification_enabled", False)),
@@ -264,7 +303,7 @@ def stale_note(state, images=None) -> str:
     f = getattr(state, "stale_reason", None)
     if f is None:
         return ""
-    names = [im.display_name for im in (state.images() if images is None else images)
+    names = [im.display_name for im in (report_images(state) if images is None else images)
              if im.result is not None and f(im)]
     if not names:
         return ""
@@ -275,7 +314,7 @@ def stale_note(state, images=None) -> str:
 
 
 def analysed_count(state) -> int:
-    return sum(1 for im in state.images() if reportable(state, im))
+    return sum(1 for im in report_images(state) if reportable(state, im))
 
 
 def _filters_text(opts) -> str:
@@ -302,18 +341,20 @@ def session_metadata(state) -> dict:
     if s is None:
         return {}
     params = {k: v for k, v in (s.params or {}).items() if not isinstance(v, (dict, list))}
-    mode = params.pop("detection_mode", "") or s.meta.detector_mode or ""
+    m, pm, _sm, _lm = report_meta(state)
+    mode = params.pop("detection_mode", "") or m.detector_mode or ""
     params["grain filters"] = _filters_text(s.filters)
-    manual = sum(len(im.manual) for im in s.images)
+    manual = sum(len(im.manual) for im in report_images(state))
     if manual:
         params["grains removed by hand"] = manual
+    scoped = _scoped_record(state) is not None
     return {
         "detection_mode": mode,
         "detection_params": params,
-        "instrument": s.meta.instrument or "",
-        "magnification": s.meta.magnification or "",
-        "session": s.title,
-        "project": s.meta.project or (s.project_meta or {}).get("name", ""),
+        "instrument": m.instrument or "",
+        "magnification": m.magnification or "",
+        "session": (m.label or report_home(state).name) if scoped else s.title,
+        "project": m.project or pm.get("name", ""),
     }
 
 
@@ -339,7 +380,7 @@ def collect_inputs(state, images=None) -> List[ReportImageInput]:
     when the image is not in use."""
     sample, lot = _session_ids(state)
     out: List[ReportImageInput] = []
-    for im in (state.images() if images is None else images):
+    for im in (report_images(state) if images is None else images):
         if not reportable(state, im):
             continue
         res = light_snapshot(im.result)
@@ -382,7 +423,7 @@ def _distinct_level_values(state, key: str) -> List[str]:
     if s is None:
         return []
     out: List[str] = []
-    for im in state.images():
+    for im in report_images(state):
         if not reportable(state, im):
             continue
         v = image_levels(state, im).get(key, "")
@@ -405,15 +446,16 @@ def report_context(state) -> dict:
     from ui import hierarchy_ui as hui
     s = state.session
     prof = state.profile
-    ctx = hui.context_for_path(s.path if s is not None else None, prof)
+    ctx = hui.context_for_path(report_home(state) if s is not None else None, prof)
     if s is not None:
         sample, lot = _session_ids(state)
-        proj = s.meta.project or (s.project_meta or {}).get("name", "")
+        m, pm, _sm, _lm = report_meta(state)
+        proj = m.project or pm.get("name", "")
         for k, v in (("project", proj), ("sample", sample), ("lot", lot)):
             if v and not ctx.get(k):
                 ctx[k] = v
         if not ctx.get("operator"):
-            ctx["operator"] = s.meta.operator or state.operator()
+            ctx["operator"] = m.operator or state.operator()
         for k in ("project", "sample", "lot"):
             vals = _distinct_level_values(state, k)
             if len(vals) > 1:
@@ -428,7 +470,8 @@ def hierarchy_defaults(state) -> dict:
     prof = state.profile
     ctx = report_context(state)
     s = state.session
-    title = hui.report_title(prof, ctx) or (f"Grain Analysis Report — {s.title}" if s
+    label = (session_metadata(state).get("session") if s is not None else "") or ""
+    title = hui.report_title(prof, ctx) or (f"Grain Analysis Report — {label}" if s
                                             else "Grain Analysis Report")
     return {"hierarchy": hui.hierarchy_rows(prof, ctx),
             "export_basename": hui.export_basename(prof, ctx),
@@ -531,7 +574,7 @@ def _keyed_images(state, images=None):
     doc = state.session
     cache: Dict[int, str] = {}
     out = []
-    for im in (state.images() if images is None else images):
+    for im in (report_images(state) if images is None else images):
         rec = doc.record_for(im) if doc is not None else None
         k = cache.get(id(rec))
         if k is None:
@@ -568,7 +611,7 @@ def model_scope(model: Optional[ReportModel]) -> Optional[List[str]]:
 def scope_images(state, scope: Optional[Sequence[str]] = None) -> list:
     """Analyzer images of the lots in ``scope`` (None = everything)."""
     if not scope:
-        return list(state.images())
+        return report_images(state)
     want = set(scope)
     return [im for k, im in _keyed_images(state) if k in want]
 
@@ -668,7 +711,7 @@ def multi_lot_args(state, scope: Optional[Sequence[str]] = None) -> Optional[dic
     return dict(groups=groups, title=title, operator=state.operator(),
                 organization=defaults.get("organization", ""),
                 metadata=session_metadata(state),
-                asset_dir=str(Path(s.path) / REPORT_ASSETS),
+                asset_dir=str(report_home(state) / REPORT_ASSETS),
                 fingerprint=results_fingerprint(state, scope_images(state, scope)),
                 export_basename=base, baseline=baseline_arg(state, groups, folders),
                 stats_cfg={"required_fields": int(getattr(settings, "required_fields", 5) or 5),

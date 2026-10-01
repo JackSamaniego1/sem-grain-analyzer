@@ -1073,6 +1073,7 @@ class AppState(QObject):
     info_bar_ready = Signal(object)              # uid: info bar detected (or not)
     records_loading = Signal(int, int)           # UX-09: records loaded, total
     records_loaded = Signal()                    # UX-09: every record's pixels are in
+    scope_changed = Signal()                     # round 3c: guided-tour scope set / lifted
     records_added = Signal()                     # round 3: records added to / dropped from
                                                  # the open analyzer set (no reset)
     setup_changed = Signal()                     # UX-02: scan area / scale readiness changed
@@ -2471,6 +2472,7 @@ class AppState(QObject):
             self._scope = new
             self._scope_mode_chosen = False
             self.setup_changed.emit()
+            self.scope_changed.emit()
 
     def scope_active(self) -> bool:
         return self._scope is not None
@@ -2823,7 +2825,13 @@ class AppState(QObject):
                            [uid] if uid is not None else None, resync="filters"):
             return
         opts = options_from_dict(options_to_dict(opts))
-        if uid is None:
+        if uid is None and self._scope is not None:
+            # round 3c (guided tour): "all images" = the scoped images only;
+            # they get the filters as their own, the shared ones are untouched
+            targets = self.scoped_images()
+            for im in targets:
+                im.filter_override = options_from_dict(options_to_dict(opts))
+        elif uid is None:
             self.session.filters = opts
             self.session.filters_touched = True
             targets = [im for im in self.session.images if im.filter_override is None]
@@ -2849,7 +2857,7 @@ class AppState(QObject):
                             if im.filter_override is not None and im.uid in busy],
                            resync="filters"):
             return
-        for im in self.session.images:
+        for im in self.scoped_images():          # round 3c: the tour's job only
             im.filter_override = None
         self.set_filter_options(opts or self.session.filters, None)
 
