@@ -16,55 +16,19 @@ sys.path.insert(0, BASE_DIR)
 from core import offline_guard
 offline_guard.install()
 
-from PySide6.QtWidgets import QApplication, QSplashScreen
-from PySide6.QtGui import QPixmap, QPainter, QColor, QLinearGradient, QPen
-from PySide6.QtCore import Qt, QTimer, QRectF, QElapsedTimer
+from PySide6.QtWidgets import QApplication
 from version import __version__, APP_NAME, APP_PUBLISHER
 
 
-def _create_splash():
-    """Splash painted from the design tokens (dark instrument look)."""
-    from ui.design.theme import ui_font
-    from ui.design.tokens import DARK, TypeStyle
-    from ui.design import icons
+_SPLASH_HEAD_START_MS = 280
 
-    t = DARK
-    w, h = 560, 300
-    pm = QPixmap(w, h)
-    pm.fill(QColor(t.surface.bg))
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing)
-    g = QLinearGradient(0, 0, w, h)
-    g.setColorAt(0.0, QColor(t.surface.surface1))
-    g.setColorAt(1.0, QColor(t.surface.bg))
-    p.fillRect(pm.rect(), g)
-    p.setPen(QPen(QColor(t.border.strong), 1))
-    p.drawRect(QRectF(0.5, 0.5, w - 1, h - 1))
-    # accent rule + icon
-    p.setPen(Qt.NoPen)
-    p.setBrush(QColor(t.accent.base))
-    p.drawRoundedRect(QRectF(40, 52, 4, 64), 2, 2)
-    icons.icon("grains", t.accent.text).paint(p, w - 40 - 56, 52, 56, 56)
-    p.setPen(QColor(t.text.primary))
-    p.setFont(ui_font(TypeStyle(30, 600, 38, -0.5)))
-    p.drawText(QRectF(60, 48, 400, 44), Qt.AlignLeft | Qt.AlignVCenter, APP_NAME)
-    p.setPen(QColor(t.text.secondary))
-    p.setFont(ui_font(TypeStyle(14, 400, 20)))
-    p.drawText(QRectF(60, 92, 440, 24), Qt.AlignLeft | Qt.AlignVCenter,
-               "SEM grain detection · measurement · reporting")
-    p.setPen(QColor(t.text.tertiary))
-    p.setFont(ui_font(TypeStyle(12, 400, 16)))
-    p.drawText(QRectF(40, h - 64, 480, 18), Qt.AlignLeft | Qt.AlignVCenter,
-               f"Version {__version__}  ·  {APP_PUBLISHER}")
-    p.drawText(QRectF(40, h - 44, 480, 18), Qt.AlignLeft | Qt.AlignVCenter,
-               "Works fully offline — your data stays on this computer")
-    p.setPen(Qt.NoPen)
-    p.setBrush(QColor(t.surface.surface3))
-    p.drawRoundedRect(QRectF(40, h - 20, w - 80, 3), 1.5, 1.5)
-    p.setBrush(QColor(t.accent.base))
-    p.drawRoundedRect(QRectF(40, h - 20, (w - 80) * 0.42, 3), 1.5, 1.5)
-    p.end()
-    return QSplashScreen(pm)
+
+def _create_splash():
+    """Animated grain-microstructure splash (ui/widgets/splash.py, D-40).
+    It animates while the main window loads and closes itself once the
+    window is ready and one animation pass has played."""
+    from ui.widgets.splash import GrainSplash
+    return GrainSplash(APP_NAME, __version__, APP_PUBLISHER)
 
 
 def configure_runtime() -> dict:
@@ -108,17 +72,39 @@ def main():
     apply_theme(app, theme if theme in ("dark", "light") else "dark")
 
     splash = _create_splash()
+    splash.set_progress(0.2)
     splash.show()
     app.processEvents()
-    clock = QElapsedTimer()
-    clock.start()
 
-    from ui.app_shell import AppShell
-    window = AppShell()
+    holder = {}
 
-    # keep the splash up for at least ~1.2 s so it reads as intentional
-    delay = max(0, 1200 - clock.elapsed())
-    QTimer.singleShot(delay, lambda: (splash.finish(window), window.show()))
+    def _build_window():
+        # The splash clock counts only rendered time, so the GUI-thread block
+        # below pauses (not skips) the animation; processEvents at the
+        # checkpoints lets a few frames paint in between.
+        try:
+            splash.set_message("Loading workspace…")
+            splash.set_progress(0.45)
+            app.processEvents()
+            from ui.app_shell import AppShell
+            splash.set_progress(0.7)
+            app.processEvents()
+            window = AppShell()
+            holder["window"] = window
+            app.processEvents()
+        except BaseException:
+            splash.close()
+            sys.excepthook(*sys.exc_info())
+            app.exit(1)
+            return
+        # closes once the window is ready AND one rendered pass has played
+        splash.set_message("Ready")
+        splash.finish(window.show)
+
+    # head start: let the first ~0.28 s of the animation actually paint before
+    # the heavy window build blocks the GUI thread
+    from PySide6.QtCore import QTimer
+    QTimer.singleShot(_SPLASH_HEAD_START_MS, _build_window)
 
     sys.exit(app.exec())
 
