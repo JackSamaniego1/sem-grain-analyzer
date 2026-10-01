@@ -342,3 +342,10 @@
 - **GPU pack decision (D-48, new)**: Pack stays INTERNAL ONLY (C:\ga_gpu_stage, 1.47 GiB). NOT published to GitHub Release until NVIDIA CUDA/cuDNN redistribution terms reviewed by legal. Main installer ships CPU-only (torch fallback to CPU at runtime). Must be rebuilt from final source before on-device testing.
 - **GitHub auth**: Still requires push (v3-dev + tag v3.1.0). Release blockers: (1) user PC smoke-test of Setup.exe, (2) GitHub push + Release build, (3) GPU pack NVIDIA legal review before any publication, (4) real high-DPI test 150/200% (offscreen only so far), (5) docs/SECURITY_OVERVIEW.md refresh (v3.0.0 → v3.1.0, 839 → 1446 tests).
 - **Next**: User installs Setup.exe on clean PC → push v3-dev + tag → GitHub Release Setup.exe only → (later) NVIDIA review → GPU pack publication decision.
+
+## 2026-10-01 (v3.1.0 tagged & pushed; Release build queued)
+- **User approved for release (2026-10-01)**: Tested installer on clean/work PC, reported "Tested, publish it".
+- **v3-dev branch synced (86 commits ahead before push)**: All work on v3-dev committed; branch pushed to origin (now in sync with main at origin).
+- **v3.1.0 tag pushed to origin**: Annotated tag at e3a40fa. GitHub Actions "Build & Release" workflow triggered automatically; Windows build expected to succeed, macOS to fail (Windows-only release).
+- **Security documentation refreshed (813e4b4)**: docs/SECURITY_OVERVIEW.md updated for v3.1.0 (1446 tests, OCR/RapidOCR component listed, installer size ~680 MB). Pushed to origin with v3-dev.
+- **Next actions**: (1) Verify Release asset list — must have ONLY GrainAnalyzer_Setup.exe, remove GPU pack if present (D-48 internal-only); (2) Ask user before deleting ~11 GB staging folder; (3) Real high-DPI test 150/200% + NVIDIA licence review still open; (4) Merging v3-dev to main deferred — awaiting user decision.
