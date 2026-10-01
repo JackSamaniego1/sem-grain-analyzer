@@ -1,92 +1,42 @@
 # SESSION STATE - read this first when resuming
 
-**Last updated:** 2026-10-01 (early morning: UPDATE 4 Batch 4 final commits landed; 1419 tests green)  
-**Branch:** `v3-dev` | **Last commit:** `ceeca73` (GPU pack NSIS compression fix, non-solid lzma) | **Phase:** UPDATE 4 code-complete; awaiting user live testing + build rebuild  
-**Resume with:** read this file only. All code committed; full suite 1419 passed, 1 skipped. Decisions D-43..D-47 logged. Next: user live-tests app (splash, wizard, 24-card tutorial, new PPTX); build-engineer rebuilds main + GPU pack installers; GPU trial run + NVIDIA sign-off.
+**Last updated:** 2026-10-01 (v3.1.0 release prep complete; 1446 tests green; GitHub auth fixed; GPU pack internal-only)  
+**Branch:** `v3-dev` | **Last commit:** `4181af2` (gitignore GPU pack + worktrees) | **Phase:** v3.1.0 built locally; awaiting user PC smoke-test + GitHub push
+**Resume with:** read this file only. All code committed. Full suite 1446 passed, 1 skipped. Local tag `v3.1.0` ready. Next: (1) user installs GrainAnalyzer_Setup.exe (~676 MB) on clean PC and tests; (2) push v3-dev + tag to GitHub; (3) GitHub Release with Setup.exe ONLY (GPU pack stays internal pending NVIDIA review); (4) delete ~11 GB staging.
 
-## Done and committed
+## v3.1.0 Release Prep DONE
 
-**v3.0.1 shipped** to user (PPTX summary slide + Excel fixes, 862 tests green).
+**v3.1.0 release commit (e3a40fa)**: version.py bumped to 3.1.0, CHANGELOG entry. Local annotated tag `v3.1.0` created (NOT pushed yet).
 
-**UPDATE 4 COMPLETE (code & tests; 2026-09-29 to 2026-10-01):** All 16 items code-complete + final batch 4 commits (ceeca73).
-- **Batch 1 (2026-09-29)**: Items 1–3, 16, 18 (New Lot/Part multi-entry, drag images, checkboxes, units rescale, percentile slide).
-- **Batch 2 (2026-09-30)**: Items 6, 14, 10a, 17, 4 core, 19, 9, 13, 10b core, 10b packaging (scale dropdown, display persist, distribution slides, OCR, contents page, opacity pill, grouped tree, GPU/CUDA, pack scaffolding).
-- **Batch 3 (2026-09-30)**: Items 15, 11, 5, 10b installer page, 7, 8, 12 (lot summary charts, auto-fill metadata, profiles + out-of-date rule, GC guard, Add grain lasso, overlay LUT/patch + lazy imports). Full suite: **1377 passed, 2 skipped, 0 failed**.
+**Installer built**: GrainAnalyzer_Setup.exe ~676 MB at repo root, v3.1.0, bundle verified (tutorial PNGs, SAM checkpoint, RapidOCR models, fonts, licences). Pre-bump build (same code) live-tested by user: "looks good". Packaged exe boot-checked.
 
-**User manual spot checks (2026-09-30):** All 7 checks on real SEM images PASSED (Add grain, image details JEOL/Thermo, sample report, Resolution Profiles, edit during lock, crash log, scaling 150/200%).
+**Work since last handoff (commits 1ac2f96 → 4181af2)**:
+- Quick UI fixes: Reports inspector no longer clips (long export file names elide); Projects picker tiles toggle individually; Analyzer load ADDS instead of replacing (per-job scale/scan area, no borrowing); Select all / Remove selected in list; removed images vanish with Undo button.
+- PowerPoint: three all-lots "by lot" slides after Grain Size Summary (mean diameter / area / density by lot, bars + connecting line, >20 lots continue on next slide).
+- Bug fix: each job in mixed Analyzer load keeps its OWN scale and scan area (autosave writes per-job values; detection mode + grain filters shared).
+- Tutorial fully scoped to Tutorial job (scan/scale/analyze/filters/edits/report/exports never touch user images/folders).
+- Display scaling fixes for 150/200% (window minimum 940×520, scrolling centre columns, wrapping headers, elided labels; verified offscreen only, not real high-DPI).
+- New tests: test_ui_analyzer_load_remove.py, test_ui_display_scaling.py, test_ui_report_inspector_fit.py, extended tour + report tests.
+- Full suite on f8b004f (before version bump): **1446 passed, 1 skipped, 0 failed**.
 
-## Done — UPDATE 4 Batch 4 (pre-release UX overhaul; code-complete 2026-10-01)
+**Decisions logged (D-48 onwards)**: Loading into Analyzer is additive; removal never deletes, removed items disappear (Undo); per-job scale/scan area with shared mode/filters; three all-lots slides with connecting line; GPU pack INTERNAL ONLY for now (legal NVIDIA CUDA/cuDNN redistribution analysis pending before publication).
 
-**Workstream A (sidebar wizard) DONE (fac4fb7 → ceeca73)**
-- Analyze right sidebar rebuilt as tiered step wizard: Resolution profile → Set scan area → Set scale bar → Detection mode → Start analysis → Progress at bottom.
-- Step gating: each step active only when previous done; check badges on completion.
-- Under-image SetupTile becomes read-only details strip (scan rect, scale, image metadata).
-- Removed: overlay opacity slider + excluded-regions section from sidebar (canvas pill stays per D-34).
+## Environment & Blockers
 
-**Workstream B (tutorial) DONE (5fa98f0 → dae53e3)**
-- Action-driven tour: each step points at one control, auto-advances on signal (no Next/Back buttons).
-- 24 cards now teach Review tools (select/merge/cut/add/delete/undo/opacity/overlay/filters) + Reports features showcase.
-- "Got it" button only on look-only cards (no user action expected); on action cards auto-advances on control interaction.
-- Bundled 3 synthetic SEM images in assets/tutorial/ (JEOL-style 10 µm scale; generated by tools/make_tutorial_images.py).
-- Tour creates/reuses "Tutorial" job › "Sample part" › "Lot 1" on first start.
-- ui/tour/steps.py rebuilt for signal-driven advancement (D-39, D-45).
-
-**Workstream C (splash) DONE (5fa98f0 → ceeca73)**
-- Animated grain microstructure splash: Voronoi polycrystal (~60 grains), 1.2 s animation, QPainter only.
-- Respects GRAIN_REDUCED_MOTION env var (static final frame); 280 ms head start before AppShell build.
-- Splash runs while main window loads; closes when window ready + animation completes ≥1 full pass.
-- Files: main.py, ui/widgets/splash.py, tests/test_ui_splash.py (headless render test).
-- No startup delay; zero new dependencies; offline-compliant.
-
-**Commit sequence (2026-09-30 night → 2026-10-01 morning)**
-- **dae53e3**: Batch 4B round 2 — American spelling in UI + core user-facing messages (D-44); scale label auto-applied on step 2 with read-back in details strip "Scale bar: 10 µm · 160 px → 16 px/µm" (D-43); tutorial 24 cards with Review + Reports; "Got it" logic.
-- **edf0465**: Batch 4D — PowerPoint report restructure per new spec (D-46): after "Grain Size Summary" one "Lot Summary — <part>" slide per part (2x2 layout: ASTM G, mean diameter, mean area, grain density); "Grain Distributions — <part>" per part with stacked bars per lot (no trendlines); REMOVED Methods, Parameters, Appendix, two-table comparison, D10/D50/D90 explainer, footer text.
-- **6b5c625**: Batch 4D UI — Reports page tags (Excel-only) on Methods, Raw data, Lot comparison sections; tutorial wording updates.
-- **ceeca73**: GPU pack NSIS fix — non-solid lzma compression (32 MB dict) so 32-bit makensis can compress 3.7 GB payload.
-
-**Environment status (2026-10-01)**
-- NSIS 3.12 installed on dev PC (winget, user PATH).
-- Dev PC: NVIDIA RTX 4080 SUPER 16 GB (driver 591.86); `torch.cuda.is_available()` True.
-- GPU trial pack built: C:\ga_gpu_stage\GrainAnalyzer_GPU_Pack.exe 1.39 GB (torch 2.14.0+cu126, CUDA 12.6, cuDNN 9.10).
-- Pack assembled against Sep 25 dist\GrainAnalyzer bundle (NOT via BUILD_WINDOWS.bat gpu).
-- ~11 GB staging left in ga_gpu_stage.
-- **Blockers**: owner sign-off on NVIDIA CUDA/cuDNN redistribution (THIRD_PARTY_LICENSES.txt says "believed permitted"; EULA texts not attached); real rebuild + on-device install test; RTX 50xx unsupported by cu126 torch 2.14 (falls back to CPU).
+**GPU Pack Status (D-47, D-48 follow-up)**:
+- Trial pack built: C:\ga_gpu_stage\GrainAnalyzer_GPU_Pack.exe 1.47 GiB (torch 2.14.0+cu126, CUDA 12.6, cuDNN 9.10).
+- Pack NOT yet rebuilt from final source (BUILD_WINDOWS.bat gpu).
+- Pack NOT yet installed or tested on-device.
+- **Blocker 1 (D-48, new)**: GPU pack NOT published to GitHub Release yet. User decision: stay INTERNAL ONLY until NVIDIA CUDA/cuDNN redistribution terms reviewed by legal. Main installer GrainAnalyzer_Setup.exe (CPU torch, fallback to CPU at runtime) ships alone.
+- **Blocker 2**: Fine-grained NVIDIA licence review before any public GPU pack release (check THIRD_PARTY_LICENSES.txt against actual EULA).
+- **Blocker 3**: Real high-DPI test at 150/200% on actual hardware (verified offscreen only so far).
+- ~11 GB staging folder C:\ga_gpu_stage can be deleted once pack copied to permanent location (if user decides to publish).
 
 ## NEXT 3 ACTIONS
 
-1. **User live-tests the app**: splash animation, Analyze step wizard, 24-card tutorial (Help → restart tour) with Review tools + Reports showcase, new PowerPoint export from real multi-lot job. Report any issues.
-2. **Build-engineer: full rebuild** of main installer (BUILD_WINDOWS.bat) + GPU pack (BUILD_WINDOWS.bat gpu) from final source. Note: GPU build installs CUDA torch into .venv; run only when no tests/agents using .venv; restore CPU torch or build in separate venv.
-3. **User GPU install test**: pack next to GrainAnalyzer_Setup.exe on lab PC, confirm GPU tile + SAM run, then sign-off on NVIDIA licence. Also: display scaling 150/200% re-check of wizard. Release prep only when user asks.
-
-**Batch 3 final status (code & tests complete; 2026-09-30):**
-- [x] Item 15 DONE (b4e38a5): Lot Summary in Excel (per-lot distribution chart + subtotals) + PowerPoint (job summary table + bar+trendline charts).
-- [x] Item 11 DONE (37e6040 UI, 959ffe0 core): Auto-fill mag/instrument/kV/WD on image load. Fills Analyze card fields on image load.
-- [x] Item 5 DONE + FOLLOW-UPS (502d8c8 UI, a21da9d data, 7ec0338 follow-ups): Resolution Profiles data + UI. Out-of-date rule (scale/scan changes flag + exclude from reports, survive reopen); label clear on hand changes; card tests added.
-- [x] Item 8 DONE (37e6040 UI, 273750b core): Add grain lasso tool on Review canvas (split-tool style). Shortcut A.
-- [x] Item 7 DONE + GC FIX (502d8c8 UI, a51a2d2 core, d880550 GC guard): Stability during analysis on weak CPUs. Thread caps, crash log, analysis lock. GC guard (d880550): Python cycle collector runs only on UI thread → no hard crashes from freed Qt objects.
-- [~] Item 10 PARTIAL (code done): GPU/CPU modes, installer page, pack scripts complete (822bfb3, fcf57cc, c4b2584, 455e548); trial build + manual checks deferred (NSIS not installed locally).
-- [~] Item 12 PARTIAL (step 1 done): Thread cap optimisation done (b5b1e7b); UI-side work deferred (overlay, grain edits, batch startup).
-
-**Batch 2 status** ✓ complete:
-- [x] Item 6: Unit dropdown + pulse (7a70d74)
-- [x] Item 14: Display mode persist (7a70d74)
-- [x] Item 10a: Remove CPU tile (7a70d74)
-- [x] Item 17: PPTX distribution slides (83a864e)
-- [x] Item 4: RapidOCR core + UI auto-fill on Auto-find (455e548 reviewed; core 8a059e0)
-- [x] Item 9: Overlay opacity slider (4127728)
-- [x] Item 13: Review image list grouped (4127728)
-- [x] Item 19: PPTX contents page (1c3eec9)
-- [x] Item 10b: Core + packaging + UI modes (822bfb3, fcf57cc, c4b2584 installer, 455e548 UI modes). Trial build + manual GPU pack checks pending (D-35, D-36)
-
-**User decisions this session (D-34 through D-37):**
-- D-34: Keep BOTH opacity controls (new pill + Analyze side-panel slider).
-- D-35: GPU option ships as SEPARATE file on GitHub Release (GrainAnalyzer_GPU_Pack.exe). Main installer auto-detects pack in $EXEDIR; if not found, Browse button.
-- D-36: App is "universal": one install, GPU if usable else CPU (auto).
-- D-37: JEOL 110–135 mm check stays as is (user has no images at other magnifications).
-
-## Blocked items
-- **GPU trial pack rebuild**: Need to rebuild from final source (BUILD_WINDOWS.bat gpu) before on-device testing. Awaiting build-engineer action.
-- **GPU ship-out blockers**: (1) Owner sign-off on NVIDIA CUDA/cuDNN redistribution (EULA texts needed for THIRD_PARTY_LICENSES.txt); (2) on-device install test + SAM-on-GPU validation; (3) RTX 50xx fallback validation.
+1. **User installs GrainAnalyzer_Setup.exe on clean/work PC** and smoke-tests (splash, wizard, Reports, tutorial). Report any issues. Installer itself not yet run on a clean PC; user live-tested the packaged pre-bump build only.
+2. **Fix GitHub auth and push**: Push v3-dev + local tag v3.1.0 to GitHub origin. Trigger GitHub Release build for Windows (macOS builder is expected to fail; v3.1.0 Windows-only like v3.0.0).
+3. **GitHub Release and public availability**: Attach GrainAnalyzer_Setup.exe ONLY (no GPU pack). GPU pack stays in C:\ga_gpu_stage (internal testing only) pending D-48 NVIDIA legal review. Later: docs/SECURITY_OVERVIEW.md refresh (still says v3.0.0 / 839 tests).
 
 ## How to run
 ```powershell
@@ -96,10 +46,8 @@ cd "C:\Users\saman\GRAIN ANALYSIS TOOL"
 ```
 
 ## Handoff bookmarks
-- `handoff/UPDATE_4.md` — 16-item checklist (batch 4 added to this folder; see UPDATE_4_BATCH4.md)
-- `handoff/UPDATE_4_BATCH4.md` — batch 4 spec (workstreams A/B/C, decisions D-38..D-41)
+- `handoff/03_TASK_BOARD.md` — task tracking (REL-03 done, REL-04 review, GPU pack blocked internal-only)
+- `handoff/05_DECISIONS.md` — ADR-style decision log (D-01..D-48)
+- `handoff/06_PROGRESS_LOG.md` — append-only session log
 - `handoff/02_TEAM_ROSTER.md` — agent roster and concurrency rules
-- `handoff/03_TASK_BOARD.md` — task tracking (items 4A/4B/4C batch 4 rows added)
-- `handoff/05_DECISIONS.md` — ADR-style decision log (D-01..D-42)
-- `handoff/07_IDEAS_BACKLOG.md` — ideas (top 25 active; rest archived)
 

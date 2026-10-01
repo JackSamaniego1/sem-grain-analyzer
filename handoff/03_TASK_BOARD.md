@@ -112,13 +112,15 @@ Status values: `todo` · `doing` · `review` · `done` · `blocked`. Keep IDs st
 |----|------|-------|--------|-------|
 | REV-S2 | Code review of report designer | code-reviewer | doing | |
 
-## Phase 6 — Release
+## Phase 6 — Release (v3.0.0 shipped; v3.1.0 release prep complete)
 | ID | Task | Owner | Status | Notes |
 |----|------|-------|--------|-------|
 | REL-01 | Journey tests (open→calibrate→analyze→edit→save→reload→report→export) | qa-engineer | done | 5845451: 3 journeys (threshold+scale-bar full lifecycle, boundary+FEI metadata+merge, XLSX+PPTX); 641 tests |
-| REL-02 | Update `docs/`, README, GUIDE for v3 | coordinator (haiku agent) | todo | User may defer post-release |
-| REL-03 | Local PyInstaller build + NSIS installer test; size report | build-engineer | done | 8f8753c: dist 1.3 GB (exe launches, offline guard clean), GrainAnalyzer_Setup.exe 644 MB (portable NSIS 3.12, gitignored). Silent install test requires UAC/admin; user to test manually. |
-| REL-04 | Tag `v3.0.0` locally, user push + CI build | build-engineer | review | v3.0.0 tag created; awaiting user GitHub auth (FND-04) to push origin main v3-dev --tags |
+| REL-02 | Update `docs/`, README, GUIDE for v3 | coordinator (haiku agent) | todo | User may defer post-release; docs/SECURITY_OVERVIEW.md needs v3.0.0→v3.1.0 + test count update (839→1446) |
+| REL-03 | Local PyInstaller build + NSIS installer test; size report | build-engineer | done | v3.1.0: GrainAnalyzer_Setup.exe 676 MB; dist 1.3 GB; exe boots; offline guard clean. Packaged exe tested by user ("looks good"). Silent install requires UAC/admin; user to test on clean PC. |
+| REL-04 | Tag `v3.0.0` locally, push + CI build to GitHub | build-engineer | done | v3.0.0 tag created 2026-09-25, pushed + CI built successfully; Release published with GrainAnalyzer_Setup.exe. |
+| REL-05 | Tag `v3.1.0` locally, push + CI build to GitHub | build-engineer | review | v3.1.0 tag created locally at e3a40fa (not pushed). GrainAnalyzer_Setup.exe 676 MB ready. Awaiting: (1) user PC smoke-test, (2) GitHub push (auth ready), (3) CI Release build. GPU pack stays INTERNAL (D-48). |
+| REL-GPU-BLOCK | GPU Pack: NVIDIA CUDA/cuDNN licence review before publication | coordinator + legal | blocked | Decision D-48 (2026-10-01): GPU pack NOT in GitHub Release. Pack stays internal in C:\ga_gpu_stage (1.47 GiB, torch 2.14.0+cu126). Must rebuild from final source (BUILD_WINDOWS.bat gpu) before on-device test. Legal review of THIRD_PARTY_LICENSES.txt vs NVIDIA EULA needed before any public release. |
 
 ## Phase 6 — User feedback (2026-09-25 post-install fixes)
 | ID | Task | Owner | Status | Notes |
