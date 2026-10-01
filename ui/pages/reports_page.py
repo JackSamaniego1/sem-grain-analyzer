@@ -179,7 +179,8 @@ class ReportsPage(QWidget):
         self.btn_add_text.setToolTip("Add a slide of free text (conclusions, preparation, "
                                      "acceptance criteria…) after the selected section")
         lv.addWidget(self.btn_add_text)
-        hint = label("Colors match the workbook's sheet tabs. Raw data always comes last.",
+        hint = label("Colors match the workbook's sheet tabs. Raw data always comes last. "
+                     "\"Excel only\" sections are in the workbook but not the PowerPoint.",
                      "caption")
         hint.setWordWrap(True)
         lv.addWidget(hint)

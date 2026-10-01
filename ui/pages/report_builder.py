@@ -56,17 +56,25 @@ SECTION_LABELS = {
 }
 
 # Where each section ends up in the two outputs (shown in the preview header).
+#
+# Batch 4D: the PowerPoint no longer has Methods & Parameters, Appendix or
+# lot comparison slides -- those sections now exist only in the workbook
+# (``EXCEL_ONLY``; the outline tags them "Excel only").
+PPT_NONE = "None (Excel only)"
 SECTION_TARGETS = {
     "cover": ("Overview sheet header", "Title slide"),
-    "overview_table": ("Overview sheet", "Executive summary slide"),
-    "lot_comparison": ("Lot Comparison sheet (blue tab)", "Lot comparison slide(s)"),
-    "lot_summary": ("Lot Summary sheet (blue tab)", "Job summary + lot chart slides"),
+    "overview_table": ("Overview sheet", "Grain size summary, percentile, data table "
+                                         "and per-part distribution slides"),
+    "lot_comparison": ("Lot Comparison sheet (blue tab)", PPT_NONE),
+    "lot_summary": ("Lot Summary sheet (blue tab)",
+                    "Lot chart slides per part (after the summary) + job summary table"),
     "combined_distribution": ("Summary Charts sheet", "2 distribution slides"),
     "image": ("One sheet per image", "One slide per image"),
-    "parameters": ("Methods sheet", "Methods slide"),
-    "raw_data": ("Raw sheets — always last", "Appendix slide"),
+    "parameters": ("Methods sheet", PPT_NONE),
+    "raw_data": ("Raw sheets — always last", PPT_NONE),
     "custom_text": ("Notes sheet (purple tab)", "Text slide"),
 }
+EXCEL_ONLY = frozenset({"parameters", "raw_data", "lot_comparison"})
 
 
 # ======================================================================
@@ -1185,7 +1193,7 @@ def problem_hints(model: ReportModel) -> List[Tuple[str, str, str]]:
 
 
 __all__ = [
-    "REPORT_ASSETS", "SECTION_COLORS", "SECTION_LABELS", "SECTION_TARGETS",
+    "REPORT_ASSETS", "SECTION_COLORS", "SECTION_LABELS", "SECTION_TARGETS", "EXCEL_ONLY",
     "results_fingerprint", "analysed_count", "session_metadata", "collect_inputs",
     "build_model", "outline_order", "apply_order", "normalize", "add_custom_text",
     "remove_section", "merge_refresh", "prepare_render_model",

@@ -26,7 +26,7 @@ from reports.charts import (
 )
 from ui.design import icons
 from ui.design.tokens import SPACE
-from ui.pages.report_builder import SECTION_LABELS, SECTION_TARGETS
+from ui.pages.report_builder import EXCEL_ONLY, SECTION_LABELS, SECTION_TARGETS
 from ui.pages.report_widgets import Swatch
 from ui.widgets import (
     AnimatedButton, CollapsibleSection, IconButton, KeyValueList, SegmentedControl, label,
@@ -542,7 +542,8 @@ class ReportInspector(QWidget):
         if sec.type != "cover":
             cb = QCheckBox("Include in the report")
             cb.setChecked(sec.enabled)
-            cb.setToolTip("Untick to leave this section out")
+            cb.setToolTip("Untick to leave this section out of the workbook"
+                          if sec.type in EXCEL_ONLY else "Untick to leave this section out")
             cb.toggled.connect(lambda on, s=sec: self.page.set_section_enabled(s.id, on))
             self.sel_lay.addWidget(cb)
             self.include_box = cb

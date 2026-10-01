@@ -8,8 +8,10 @@ Report outline (left column of the designer).
         ■ s014_t_1.png        [x]   ← drag to reorder, tick to include
         ...
     ■ Notes (text)            [x]   ← custom text: drag anywhere between
-    ■ Methods                 [x]      Cover and Raw data
-    ■ Raw data                [x]   ← always last
+    ■ Methods      Excel only [x]      Cover and Raw data
+    ■ Raw data     Excel only [x]   ← always last
+
+"Excel only" tags sections the PowerPoint no longer renders (batch 4D).
 
 Colour chips match the workbook's tab colours.  Structural rules the
 renderers depend on (Cover first, Raw data last, images stay in the Images
@@ -21,10 +23,14 @@ import os
 from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtWidgets import QAbstractItemView, QTreeWidget, QTreeWidgetItem
+from PySide6.QtGui import QBrush, QFont
+from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QTreeWidget, QTreeWidgetItem
 
-from ui.pages.report_builder import SECTION_COLORS, SECTION_LABELS, outline_order
+from ui.pages.report_builder import EXCEL_ONLY, SECTION_COLORS, SECTION_LABELS, outline_order
 from ui.pages.report_widgets import swatch_icon
+from ui.widgets._base import qcolor, tokens
+
+EXCEL_ONLY_TAG = "Excel only"
 
 KEY_ROLE = Qt.UserRole + 1
 FIXED_LOCKED = ("cover", "raw_data")   # cannot be dragged
@@ -39,7 +45,12 @@ class ReportOutline(QTreeWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setHeaderHidden(True)
-        self.setColumnCount(1)
+        # column 1 = small "Excel only" tag for sections the PowerPoint skips
+        self.setColumnCount(2)
+        hdr = self.header()
+        hdr.setStretchLastSection(False)
+        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.setIndentation(18)
         self.setIconSize(QSize(14, 14))
         self.setUniformRowHeights(True)
@@ -110,11 +121,26 @@ class ReportOutline(QTreeWidget):
             if s.type == "lot_comparison":
                 it.setToolTip(0, "Lot comparison — ΔG matrix and equivalence verdicts of each "
                                  "lot vs the baseline lot. Tick to include this section")
+            if s.type in EXCEL_ONLY:
+                self._tag_excel_only(it)
             it.setFlags(flags)
             self.addTopLevelItem(it)
         self._filling = False
         if keep_key:
             self.select_key(keep_key, emit=False)
+
+    def _tag_excel_only(self, it: QTreeWidgetItem) -> None:
+        """Small muted "Excel only" tag: the section is written to the
+        workbook but has no slide in the PowerPoint."""
+        it.setText(1, EXCEL_ONLY_TAG)
+        it.setForeground(1, QBrush(qcolor(tokens().text.secondary)))
+        f = QFont(self.font())
+        f.setPointSizeF(max(7.0, f.pointSizeF() * 0.85))
+        it.setFont(1, f)
+        it.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
+        tip = "Excel only — this section is in the workbook but not in the PowerPoint"
+        it.setToolTip(1, tip)
+        it.setToolTip(0, it.toolTip(0) + "\n" + tip)
 
     @staticmethod
     def _images_label(model) -> str:

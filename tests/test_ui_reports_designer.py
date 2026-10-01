@@ -186,7 +186,12 @@ def test_build_edit_export_roundtrip(analysed, qtbot, tmp_path):
     # before the per-image (original + overlay) slides (charts disabled).
     assert concl[0] > 0
     assert concl[0] < img_slides[0]
-    assert "Appendix" in all_text[-1]
+    # batch 4D: the deck has no Appendix / Methods & Parameters / lot
+    # comparison slides any more (raw data + parameters live in the Excel
+    # workbook); per-image slides close the deck.
+    assert not any("Appendix" in t for t in all_text)
+    assert not any("Methods" in t and "Parameters" in t for t in all_text)
+    assert img_slides[-1] == len(all_text) - 1
     pages = [t.split()[-1] for t in all_text]
     assert pages == [str(i) for i in range(1, len(prs.slides) + 1)]   # footers renumbered
 

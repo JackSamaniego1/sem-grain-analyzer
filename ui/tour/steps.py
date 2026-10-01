@@ -501,7 +501,8 @@ def _report_steps() -> Tuple[TourStep, ...]:
     return (
         _act("outline", "The report outline",
              "Every sheet and slide of the report is listed here. Untick a section to leave it "
-             "out of the export (tick it again to bring it back).",
+             "out of the export (tick it again to bring it back). Sections tagged Excel only "
+             "are in the workbook but not in the PowerPoint.",
              ("tourReportOutline",), "toggle", page=rp, report=True),
         _act("reorder", "Reorder the report",
              "Change the order of the image pages: select an image under Images in the "
@@ -521,7 +522,8 @@ def _report_steps() -> Tuple[TourStep, ...]:
         _info("compare", "Comparing lots",
               "To compare lots, select several lots in Projects (Compare lots) or load them "
               "together. The report then adds lot summary and lot comparison sections (against "
-              "the baseline lot) to the outline.",
+              "the baseline lot) to the outline. The PowerPoint gets lot charts for each part; "
+              "the lot comparison tables are in the Excel workbook only.",
               ("tourReportOutline",), page=rp),
         _act("excel", "Export to Excel",
              "Click Excel to write the workbook: an Overview sheet, summary charts, one sheet "

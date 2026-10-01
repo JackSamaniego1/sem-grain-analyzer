@@ -113,6 +113,12 @@ def test_multi_lot_report_journey(env, qtbot, tmp_path):
     r = shell.reports
     it = r.outline.item_for(("section", "lot_comparison"))
     assert it is not None and it.text(0) == "Lot comparison"
+    # batch 4D: sections the PowerPoint skips carry an "Excel only" tag
+    assert it.text(1) == "Excel only"
+    for sid in ("parameters", "raw_data"):
+        assert r.outline.item_for(("section", sid)).text(1) == "Excel only"
+    for sid in ("overview_table", "lot_summary"):
+        assert r.outline.item_for(("section", sid)).text(1) == ""
     r.select(("section", "lot_comparison"))
     qtbot.waitUntil(lambda: isinstance(r.current_preview(), LotComparisonPreview), timeout=5000)
     pv = r.current_preview()

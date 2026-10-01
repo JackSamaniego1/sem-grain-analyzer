@@ -158,8 +158,11 @@ def _heading(p: QPainter, w: float, text: str) -> None:
 
 
 def _footer(p: QPainter, w: float, h: float, title: str, page: str) -> None:
+    """Footer bar with ONLY the page number, bottom-right (mirrors the
+    PowerPoint renderer since batch 4D). ``title`` is kept for call
+    compatibility and is not printed."""
+    del title
     p.fillRect(QRectF(0, h - 32, w, 32), NAVY)
-    _text(p, QRectF(30, h - 32, w * 0.7, 32), title, 12, WHITE)
     _text(p, QRectF(w - 130, h - 32, 100, 32), page, 12, WHITE, 400,
           Qt.AlignRight | Qt.AlignVCenter)
 
