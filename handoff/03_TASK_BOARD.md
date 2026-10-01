@@ -175,9 +175,9 @@ See handoff/UPDATE_4.md: 19 items, 3 batches, execution checklist.
 | 8 | Review: "Add grain" tool | ui-designer + detection-engineer | done | 37e6040 UI + 273750b core; split-tool lasso on Review page, shortcut A |
 | 12 | Fable: speed & usability optimisation | fable | done | f440f40: detection (b5b1e7b thread cap) + UI-side (overlay LUT+patch, lazy imports, 980→510 ms startup); full suite 1360 passed |
 
-**Batch 4 (2026-09-30 evening; pre-release UX overhaul):**
+**Batch 4 (2026-09-30 code-complete):**
 | # | Item | Owner | Status | Notes |
 |---|------|-------|--------|-------|
 | 4A | Analyze sidebar step wizard (D-38) | ui-designer (opus) | done | fac4fb7: tiered profile > scan > scale > mode > run > progress; read-only details strip; removed overlay slider + excluded regions. 1377 tests passed. Code review independent APPROVE pending. |
-| 4B | Tutorial rebuild with action-drive auto-advance (D-39) | ui-designer | doing | Action-driven tour; points at control, auto-advances on signal (session open, scan/scale/mode set, analysis done, grain select, export done). Bundled 3 synthetic SEM images (assets/tutorial/ + JEOL-style 10 µm scale). ui/tour/steps.py rebuild. Uncommitted. |
-| 4C | Launcher splash animated grain rendering (D-40, D-41) | ui-designer | doing | Voronoi polycrystal splash (QPainter, 1.2 s animation, respects GRAIN_REDUCED_MOTION). Files: main.py, ui/widgets/splash.py, tests/test_ui_splash.py. Animation fix in progress (ensure one full pass before close). Uncommitted. |
+| 4B | Tutorial rebuild with action-drive auto-advance (D-39) | ui-designer | done | 5fa98f0: Action-driven tour; auto-advances on signal (session open, scan/scale/mode set, analysis done, grain select, PPTX export). Bundled 3 synthetic SEM images (assets/tutorial/ + JEOL-style 10 µm scale). core/resources.py + data/tutorial.py + ui/tour/ rebuild. No Next/Back; Skip kept. Not yet live-tested. |
+| 4C | Launcher splash animated grain rendering (D-40, D-41) | ui-designer | done | 5fa98f0: Voronoi polycrystal splash (QPainter, 1.2 s animation, respects GRAIN_REDUCED_MOTION). Animation waits for one full pass + 280 ms head start before AppShell. Files: main.py, ui/widgets/splash.py, tests/test_ui_splash.py. No blocking delays; offscreen render. Not yet live-tested. |
