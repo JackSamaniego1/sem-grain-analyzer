@@ -145,7 +145,7 @@ class ThemedHistogram(HistogramBase):
             p.setPen(qcolor(t.text.tertiary))
             p.setFont(ui_font(TYPE.body))
             p.drawText(QRectF(0, 0, w, h), Qt.AlignCenter,
-                       "Analyse the image to see the distribution")
+                       "Analyze the image to see the distribution")
             return
         ml, mr, mt, mb = self.MARGIN_LEFT, self.MARGIN_RIGHT, self.MARGIN_TOP, self.MARGIN_BOTTOM
         px, py, pw, ph = ml, mt, w - ml - mr, h - mt - mb

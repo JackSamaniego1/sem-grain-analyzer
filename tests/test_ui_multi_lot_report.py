@@ -81,7 +81,7 @@ def test_multi_lot_report_journey(env, qtbot, tmp_path):
     assert t.report_btn.isVisible() and t.report_btn.isEnabled()
     menu = t.show_report_menu()
     texts = [x.text() for x in menu.actions() if x.text()]
-    assert texts[0].startswith("Everything loaded: 3 lots · 9 analysed images")
+    assert texts[0].startswith("Everything loaded: 3 lots · 9 analyzed images")
     assert "Open in report designer…" in texts and "Export Excel + PowerPoint" in texts
     shell.resize(1500, 950)
     qtbot.wait(50)

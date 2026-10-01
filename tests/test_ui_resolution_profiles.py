@@ -115,7 +115,7 @@ def test_create_apply_persist_and_label_survives_delete(env, qtbot):
     assert other.profile["name"] == "Zeiss 5kx"
     assert other.status == "pending"                  # not analysed: stays so
     from ui.pages.image_tree import image_status
-    assert image_status(other)[1] == "Not analysed"
+    assert image_status(other)[1] == "Not analyzed"
     assert page.setup_tile.isHidden() and not page.profile_tile.isHidden()
     assert "Zeiss 5kx" in page.profile_tile.title.text()
     # one undo step restores everything
@@ -308,7 +308,7 @@ def test_analysed_image_is_out_of_date_everywhere(env, qtbot):
     qtbot.addWidget(table)
     rows = {r["uid"]: r for r in table.rows()}
     assert rows[a.uid]["status"] == "Needs re-analysis — scale changed"
-    assert rows[b.uid]["status"] == "Analysed"
+    assert rows[b.uid]["status"] == "Analyzed"
     assert rb.analysed_count(st) == 1
     assert [i.display_name for i in rb.collect_inputs(st)] == [b.display_name]
     assert a.display_name in rb.stale_note(st)

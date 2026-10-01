@@ -29,21 +29,21 @@ _log = logging.getLogger(__name__)
 
 WAIT, CONTINUE, STOP = "wait", "continue", "stop"
 
-EDIT_TITLE = "Images are being analysed"
+EDIT_TITLE = "Images are being analyzed"
 EDIT_TEXT = (
-    "Images are being analysed right now.\n\n"
+    "Images are being analyzed right now.\n\n"
     "{action} while an analysis is running can be unreliable on low-performance PCs - "
     "the computer may slow down a lot or stop responding for a while.\n\n"
     "Wait until the analysis has finished, or continue anyway.")
-BUSY_TITLE = "This image is being analysed"
+BUSY_TITLE = "This image is being analyzed"
 BUSY_TEXT = ("{action} is not possible on an image that is waiting for analysis or being "
-             "analysed. It becomes available as soon as that image is finished.")
+             "analyzed. It becomes available as soon as that image is finished.")
 SESSION_TITLE = "Analysis is running"
-SESSION_TEXT = ("{action} is not possible while images are being analysed.\n\n"
+SESSION_TEXT = ("{action} is not possible while images are being analyzed.\n\n"
                 "Stop the analysis now (images already finished are kept), or keep "
-                "analysing and try again when it has finished.")
+                "analyzing and try again when it has finished.")
 #: tooltip of controls that are locked for the run
-LOCKED_TIP = "Not available while images are being analysed - wait for the analysis to finish."
+LOCKED_TIP = "Not available while images are being analyzed - wait for the analysis to finish."
 
 Answer = Tuple[str, bool]
 
@@ -58,7 +58,7 @@ def build_prompt(kind: str, action: str, parent=None):
     if kind == "session":
         box.setWindowTitle(SESSION_TITLE)
         box.setText(SESSION_TEXT.format(action=action))
-        keep = box.addButton("Keep analysing", QMessageBox.RejectRole)
+        keep = box.addButton("Keep analyzing", QMessageBox.RejectRole)
         stop = box.addButton("Stop analysis", QMessageBox.AcceptRole)
         box.setDefaultButton(keep)
         box.setEscapeButton(keep)

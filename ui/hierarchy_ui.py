@@ -31,7 +31,7 @@ KIND_ICON = {"workspace": "database", "project": "projects", "sample": "sample",
 
 # v3.0 fixed fields, used when the profile defines none (legacy preset)
 LEGACY_FIELDS: Dict[str, List[FieldDef]] = {
-    "project": [FieldDef("customer", "Customer / programme"),
+    "project": [FieldDef("customer", "Customer / program"),
                 FieldDef("description", "Description", kind="multiline")],
     "sample": [FieldDef("material", "Material"), FieldDef("alloy_grade", "Grade"),
                FieldDef("heat_treatment", "Heat treatment"),

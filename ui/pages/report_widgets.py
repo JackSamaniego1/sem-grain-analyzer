@@ -804,7 +804,7 @@ class LotTrendChart(ThemeAware, QWidget):
         # legend (top right)
         p.setFont(small)
         items = [("bar", qcolor(t.dataviz[0]), "Lot value" if not c.get("multi_level")
-                  else "Lot value (colour = part)")]
+                  else "Lot value (color = part)")]
         if trend:
             items.append(("line", qcolor(t.text.primary), "Lot values (line)"))
         x = r.right()

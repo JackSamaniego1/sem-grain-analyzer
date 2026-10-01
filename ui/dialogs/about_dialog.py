@@ -129,15 +129,15 @@ class AboutDialog(QDialog):
         v.addWidget(self.details)
 
         # licences
-        self.lic_section = CollapsibleSection("Third-party licences", expanded=False)
+        self.lic_section = CollapsibleSection("Third-party licenses", expanded=False)
         self.lic_section.setToolTip("Open-source components bundled with this application")
         self.licences = QPlainTextEdit(licences_text())
         self.licences.setReadOnly(True)
         self.licences.setLineWrapMode(QPlainTextEdit.WidgetWidth)
         self.licences.setProperty("role", "mono")
         self.licences.setMinimumHeight(200)
-        self.licences.setAccessibleName("Third-party licence texts")
-        self.licences.setToolTip("Licence texts bundled with the application (read-only)")
+        self.licences.setAccessibleName("Third-party license texts")
+        self.licences.setToolTip("License texts bundled with the application (read-only)")
         self.lic_section.add_widget(self.licences)
         v.addWidget(self.lic_section)
         v.addStretch(1)

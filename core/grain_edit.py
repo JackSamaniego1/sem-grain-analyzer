@@ -95,7 +95,7 @@ def label_offset(label_shape: Sequence[int], image_shape: Sequence[int],
         if (r1 - r0, c1 - c0) == (lh, lw):
             return c0, r0
     raise GrainEditError("The grain map does not line up with the image — "
-                         "analyse the image again before editing grains.")
+                         "analyze the image again before editing grains.")
 
 
 def to_label_coords(points, offset: Tuple[int, int] = (0, 0)) -> np.ndarray:
@@ -375,7 +375,7 @@ def add_grain(labels: np.ndarray, outline, valid_mask: Optional[np.ndarray] = No
         {"op": "add", "id": 31, "outline": [[x, y], ...], "area_px": 412}
     """
     if labels is None or getattr(labels, "ndim", 0) < 2 or labels.size == 0:
-        return _nothing(labels, "This image has no grain map to edit - analyse it first.")
+        return _nothing(labels, "This image has no grain map to edit - analyze it first.")
     try:
         pts = np.asarray(outline if outline is not None else [], dtype=np.float64)
     except (TypeError, ValueError):           # ragged / non-numeric points
@@ -394,13 +394,13 @@ def add_grain(labels: np.ndarray, outline, valid_mask: Optional[np.ndarray] = No
     if valid_mask is not None and (getattr(valid_mask, "ndim", 0) < 2
                                    or valid_mask.shape[:2] != labels.shape[:2]):
         return _nothing(labels, "The scan area does not match this image's grain "
-                                "map - analyse the image again, then add the grain.")
+                                "map - analyze the image again, then add the grain.")
     # keep int32 safe; vertices far outside only matter up to the image edge
     ipts = _int_pts(np.clip(pts, [-4 * W - 4, -4 * H - 4], [5 * W + 4, 5 * H + 4]))
     x0, y0 = max(0, int(ipts[:, 0].min())), max(0, int(ipts[:, 1].min()))
     x1, y1 = min(W, int(ipts[:, 0].max()) + 1), min(H, int(ipts[:, 1].max()) + 1)
     if x1 <= x0 or y1 <= y0:
-        return _nothing(labels, "The outline is outside the analysed area.")
+        return _nothing(labels, "The outline is outside the analyzed area.")
     # draw on a 1-px padded crop so hole filling sees the true outline even
     # where the shape leaves the image
     pad = 1
@@ -412,7 +412,7 @@ def add_grain(labels: np.ndarray, outline, valid_mask: Optional[np.ndarray] = No
     drawn = ndi.binary_fill_holes(poly > 0)[pad:-pad, pad:-pad]
     n_drawn = int(drawn.sum())
     if n_drawn == 0:
-        return _nothing(labels, "The outline is outside the analysed area.")
+        return _nothing(labels, "The outline is outside the analyzed area.")
     region = drawn & (labels[y0:y1, x0:x1] == 0)
     in_field = region
     if valid_mask is not None:

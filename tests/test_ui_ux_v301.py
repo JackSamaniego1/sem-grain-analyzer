@@ -165,7 +165,12 @@ def test_ux02_gate_blocks_until_scan_and_scale_confirmed(env, qtbot):
     shell.close()
 
 
-def test_ux02_autofind_info_bar_scale_bar_and_length_entry(env, qtbot):
+def test_ux02_autofind_info_bar_scale_bar_and_length_entry(env, qtbot, monkeypatch):
+    # batch 4 follow-up: a label read off the image is applied at once; this
+    # test covers the fallback when it can NOT be read -> the length row
+    from core import info_bar_ocr
+    monkeypatch.setattr(info_bar_ocr, "read_info_bar",
+                        lambda *a, **k: info_bar_ocr.InfoBarReading(status="no_text"))
     sample = _lots(env, 1, 3, bar=True)
     lot = next(p for p in sample.iterdir() if p.is_dir() and (p / "lot.json").exists())
     rec = next(d for d in lot.iterdir() if (d / "manifest.json").exists())
@@ -191,7 +196,8 @@ def test_ux02_autofind_info_bar_scale_bar_and_length_entry(env, qtbot):
         assert st.px_for(im) == pytest.approx(im.bar_px / 20.0)
         assert st.setup_ready(im)
     assert im0.scale_source == "manual"
-    assert "Manual" in a.setup_tile.scale_src.text()
+    assert "Set by hand" in a.setup_tile.scale_src.text()
+    assert a.setup_tile.scale_val.text().startswith("Scale bar: 20 µm · ")
     shell.close()
 
 

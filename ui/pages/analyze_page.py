@@ -61,8 +61,8 @@ GATE_TEXT = ("This must be set. Check the scan regions and magnifications on eac
              "and edit any that are wrong before starting analysis.")
 GATE_TITLE = "Scan area and scale needed"
 
-_SOURCE = {"auto": ("Auto", "info"), "metadata": ("Metadata", "info"),
-           "manual": ("Manual", "success"), "all": ("All images", "neutral"),
+_SOURCE = {"auto": ("Auto", "info"), "metadata": ("From file metadata", "info"),
+           "manual": ("Set by hand", "success"), "label": ("Read from image", "info"), "all": ("All images", "neutral"),
            "saved": ("Saved", "neutral"), "profile": ("Profile", "info"),
            "": ("", "neutral")}
 
@@ -234,7 +234,7 @@ class ParamPanel(QWidget):
         self.ws_dist = QSpinBox()
         self.ws_dist.setRange(1, 100)
         self.ws_dist.setSuffix(" px")
-        self.ws_dist.setToolTip("Minimum distance between grain centres when splitting "
+        self.ws_dist.setToolTip("Minimum distance between grain centers when splitting "
                                 "touching grains (watershed)")
         self.clahe = QCheckBox("CLAHE contrast boost")
         self.clahe.setToolTip("Local contrast enhancement so faint grooves become visible")
@@ -671,7 +671,7 @@ class ScaleLengthRow(QWidget):
             check = True
             hint = (f"Read “{shown}” from the label; it could not be double-checked. "
                     "Compare it with the image, then press Apply.")
-        elif read_um > 0 and im.bar_um > 0 and im.scale_source == "auto":
+        elif read_um > 0 and im.bar_um > 0 and im.scale_source in ("auto", "label"):
             hint = f"Read from the scale-bar label ({shown})."
         self.bar_check.setVisible(check)
         self.bar_hint.setText(hint)
@@ -700,6 +700,8 @@ class ScaleLengthRow(QWidget):
             self.hide()
             return
         px = state.px_for(im)
+        # batch 4 follow-up: a label read off the image is applied at once and
+        # shown in the strip under the image -- the row is for what is missing
         show = im.bar_px > 0 and (px <= 0 or im.scale_source == "auto"
                                   or self.reading_conflict(im))
         if show:
@@ -768,7 +770,7 @@ class SetupTile(Card):
         top.addWidget(label("Scan area & scale", "body_strong"))
         self.status = Badge("Not checked", "warning", dot=True)
         self.status.setToolTip("Every image needs a confirmed scan area and scale "
-                               "(magnification) before it is analysed")
+                               "(magnification) before it is analyzed")
         top.addWidget(self.status)
         self.progress = label("", "caption")
         self.progress.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
@@ -943,10 +945,16 @@ class SetupTile(Card):
                 if im.bar_px > 0 else "Not set — step 2 in the side panel")
             self.scale_val.setProperty("tone", "warning")
             self._set_src(self.scale_src, "")
+        elif im.bar_px > 0 and im.bar_um > 0 and abs(im.bar_px / im.bar_um - px) <= 1e-6 * px:
+            # batch 4 follow-up: the detected scale bar, explicitly
+            v, u = split_length_um(im.bar_um)
+            self.scale_val.setText(f"Scale bar: {v:g} {u} · {im.bar_px:.0f} px → "
+                                   f"{px:.4g} px/µm  ({1.0 / px:.4g} µm/px)")
+            self.scale_val.setProperty("tone", None)
+            self._set_src(self.scale_src, im.scale_source or (
+                "all" if im.px_override <= 0 else "saved"))
         else:
-            bar = (f"  ·  bar {im.bar_px:.0f} px = {im.bar_um:g} µm"
-                   if im.bar_px > 0 and im.bar_um > 0 else "")
-            self.scale_val.setText(f"{px:.4g} px/µm  ({1.0 / px:.4g} µm/px){bar}")
+            self.scale_val.setText(f"{px:.4g} px/µm  ({1.0 / px:.4g} µm/px)")
             self.scale_val.setProperty("tone", None)
             self._set_src(self.scale_src, im.scale_source or (
                 "all" if im.px_override <= 0 else "saved"))
@@ -1060,7 +1068,7 @@ class AnalyzePage(QWidget):
                                    "analyzer (group and sort by job, part or lot)")
         self.centre_seg.setFixedWidth(210)
         self.view_seg = SegmentedControl(["Original", "Overlay", "Excluded"])
-        self.view_seg.setToolTip("Original image · detected grains · areas not analysed")
+        self.view_seg.setToolTip("Original image · detected grains · areas not analyzed")
         self.view_seg.setFixedWidth(270)
         self.btn_zo = IconButton("zoom_out", "Zoom out (−)")
         self.btn_zi = IconButton("zoom_in", "Zoom in (+)")
@@ -1088,7 +1096,7 @@ class AnalyzePage(QWidget):
         self.centre_stack.addWidget(self.table)
         cv.addWidget(self.centre_stack, 1)
 
-        self.st_images = MetricCard("Images analysed", 0, "", 0)
+        self.st_images = MetricCard("Images analyzed", 0, "", 0)
         self.st_grains = MetricCard("Grains (session)", 0, "", 0)
         self.st_diam = MetricCard("Mean diameter", 0, "µm", 2)
         self.st_g = MetricCard("ASTM grain size", 0, "G", 1)
@@ -1162,7 +1170,7 @@ class AnalyzePage(QWidget):
         ir.setSpacing(SPACE.sm)
         self.ib_chip = Badge("Info bar excluded", "info", dot=True)
         self.ib_chip.setToolTip("The microscope's data bar (text and scale bar) was found in "
-                                "this image.\nIt is never analysed — shown hatched on the image.")
+                                "this image.\nIt is never analyzed — shown hatched on the image.")
         self.btn_ib_scan = AnimatedButton("Use for all images", "scan_area", "ghost", "sm")
         self.btn_ib_scan.setToolTip("Every image uses this image's area above the info bar as "
                                     "its scan area (border grains at its edge are excluded)")
@@ -1229,7 +1237,7 @@ class AnalyzePage(QWidget):
         self.cal_spin.setRange(0.0, 100000.0)
         self.cal_spin.setDecimals(4)
         self.cal_spin.setSuffix(" px/µm")
-        self.cal_spin.setToolTip("Pixels per micrometre for this image only")
+        self.cal_spin.setToolTip("Pixels per micrometer for this image only")
         self.cal_spin.setAccessibleName("Scale of this image (px/µm)")
         self.cal_spin.setKeyboardTracking(False)
         self.cal_spin.setEnabled(False)
@@ -1261,10 +1269,10 @@ class AnalyzePage(QWidget):
         self.step_run.setObjectName("wizard_step_run")
         self.btn_all = AnimatedButton("Analyze all", "run", "primary", "lg")
         self.btn_all.setObjectName("run_all")
-        self.btn_all.setToolTip("Analyse every image in the analyzer (F5)")
+        self.btn_all.setToolTip("Analyze every image in the analyzer (F5)")
         self.btn_cur = AnimatedButton("Analyze current", "run", "secondary")
         self.btn_cur.setObjectName("run_current")
-        self.btn_cur.setToolTip("Re-analyse only the selected image (Ctrl+F5)")
+        self.btn_cur.setToolTip("Re-analyze only the selected image (Ctrl+F5)")
         self.btn_cancel = AnimatedButton("Cancel", "stop", "danger")
         self.btn_cancel.setObjectName("run_cancel")
         self.btn_cancel.setToolTip("Stop the analysis right away (Esc)")
@@ -1296,7 +1304,7 @@ class AnalyzePage(QWidget):
         rl.addWidget(self.ring)
         rc = QVBoxLayout()
         rc.setSpacing(2)
-        self.run_title = label("Ready to analyse", "h3")
+        self.run_title = label("Ready to analyze", "h3")
         self.run_sub = label("", "caption")
         self.run_sub.setWordWrap(True)
         rc.addWidget(self.run_title)
@@ -1558,7 +1566,7 @@ class AnalyzePage(QWidget):
         self.btn_scan_reset.setText(f"Reset to {rec} scan area")
         self.btn_scan_reset.setToolTip(f"Drop this image's own scan area — it uses the "
                                        f"{rec}'s again")
-        self.step_run.set_tooltip_for(self.btn_all, "Analyse every image in the analyzer (F5)")
+        self.step_run.set_tooltip_for(self.btn_all, "Analyze every image in the analyzer (F5)")
         if self.state.session is not None:
             self._refresh_calibration()
             self._set_idle()
@@ -1589,6 +1597,10 @@ class AnalyzePage(QWidget):
         scale bar outlined on the canvas (before the image is analysed)."""
         self.setup_tile.refresh(self.state, im)
         self.scale_row.refresh(self.state, im)
+        if im is not None and "scale" not in self._tried and self.state.px_for(im) <= 0:
+            # batch 4 follow-up: step 2 "All images" reads and applies the
+            # length; the row is only the fallback when that could not read it
+            self.scale_row.hide()
         self.canvas.set_scale_bar_rect(
             im.bar_rect if im is not None and im.result is None and im.bar_rect else None)
 
@@ -1606,7 +1618,7 @@ class AnalyzePage(QWidget):
         analysed = any(x.result is not None for x in self.state.images())
         self._toast_action("Scan area set above the info bar",
                            ("This image" if this_only else "All images")
-                           + (" — re-analyse to apply it to existing results." if analysed
+                           + (" — re-analyze to apply it to existing results." if analysed
                               else "."),
                            "success", "Undo",
                            lambda: (self.state.set_scan_rect(prev, uid), self._refresh_info_bar()))
@@ -1880,7 +1892,8 @@ class AnalyzePage(QWidget):
         if st.get("scale_bar"):
             parts.append(f"scale from the scale bar on {st['scale_bar']}")
         if st.get("label_read"):                    # UPDATE 4 item 4
-            parts.append(f"scale-bar label read on {st['label_read']}")
+            parts.append(f"scale-bar label read on {st['label_read']} (shown under the "
+                         "image — Edit… to correct it)")
         if st.get("label_check"):
             k = int(st["label_check"])
             parts.append(f"{k} scale-bar reading{'s' if k != 1 else ''} to check")
@@ -2019,7 +2032,7 @@ class AnalyzePage(QWidget):
 
     def _start(self, images, button: Optional[AnimatedButton] = None) -> None:
         if self.state.session is None or not images:
-            self._toast("Nothing to analyse", f"Add images to the {self._rec} first.",
+            self._toast("Nothing to analyze", f"Add images to the {self._rec} first.",
                         "warning")
             return
         if self.queue.is_running():
@@ -2049,7 +2062,7 @@ class AnalyzePage(QWidget):
         self.ring.set_tone("accent")
         self.ring.set_label(None)
         self.ring.set_value(0, animate=False)
-        self.run_title.setText(f"Analysing {len(jobs)} image{'s' if len(jobs) != 1 else ''}")
+        self.run_title.setText(f"Analyzing {len(jobs)} image{'s' if len(jobs) != 1 else ''}")
         self.scroll_to(self.progress_card)          # the progress card is at the bottom
         self.busy_changed.emit(True)
         started = False
@@ -2078,7 +2091,7 @@ class AnalyzePage(QWidget):
             if im is not None:
                 self.state.set_image_status(uid, "done" if im.result is not None else "pending")
         self.queue.cancel()
-        self.run_title.setText("Cancelling…")
+        self.run_title.setText("Canceling…")
         self.run_sub.setText("Analysis stops right away.")
 
     def _on_job_progress(self, uid, pct: int, msg: str) -> None:
@@ -2133,10 +2146,10 @@ class AnalyzePage(QWidget):
         if cancelled:
             self.ring.set_tone("warning")
             self.ring.set_label("—")
-            self.ring.set_caption("cancelled")
-            self.run_title.setText("Analysis cancelled")
+            self.ring.set_caption("canceled")
+            self.run_title.setText("Analysis canceled")
             self.run_sub.setText(f"{len(ok)} of {self._batch_total} images finished.")
-            self._toast("Analysis cancelled", f"{len(ok)} of {self._batch_total} images finished.",
+            self._toast("Analysis canceled", f"{len(ok)} of {self._batch_total} images finished.",
                         "warning")
             return
         failed = [im for im in imgs if im is not None and im.status == "error"]
@@ -2185,9 +2198,9 @@ class AnalyzePage(QWidget):
         doc = self.state.session
         where = (f"from {len(doc.records)} folders" if doc is not None and doc.multi
                  else f"in this {self._rec}")
-        self.run_title.setText("Ready to analyse" if n else "Add images to begin")
+        self.run_title.setText("Ready to analyze" if n else "Add images to begin")
         self.run_sub.setText(f"{n} image{'s' if n != 1 else ''} {where}"
-                             + (f" · {done} already analysed" if done else ""))
+                             + (f" · {done} already analyzed" if done else ""))
 
     # ------------------------------------------------------------------ batch 4 wizard (D-38)
     @staticmethod
@@ -2296,7 +2309,7 @@ class AnalyzePage(QWidget):
         if enabled[3]:
             k_res = sum(1 for im in imgs if im.result is not None)
             self.step_run.set_status(f"{n} image{'s' if n != 1 else ''} ready"
-                                     + (f" · {k_res} analysed" if k_res else ""))
+                                     + (f" · {k_res} analyzed" if k_res else ""))
         else:
             self.step_run.set_status("")
         if self._run_btn is None:                   # idle: gated per target
@@ -2319,8 +2332,8 @@ class AnalyzePage(QWidget):
                 (self.step_scale, self.btn_scale_all, self._find_tips[id(self.btn_scale_all)]),
                 (self.step_scale, self.btn_scale_cur, self._find_tips[id(self.btn_scale_cur)])]
 
-    RUN_TIPS = {"all": "Analyse every image in the analyzer (F5)",
-                "current": "Re-analyse only the selected image (Ctrl+F5)",
+    RUN_TIPS = {"all": "Analyze every image in the analyzer (F5)",
+                "current": "Re-analyze only the selected image (Ctrl+F5)",
                 "selected": "Analyze only the images ticked in the image list"}
 
     def _gate_run_buttons(self, unlocked: bool, imgs, ready) -> None:
@@ -2345,7 +2358,7 @@ class AnalyzePage(QWidget):
         on_cur = unlocked and cur is not None and cur.uid in ready_ids
         tip_cur = self.RUN_TIPS["current"] if on_cur or not unlocked else (
             f"This image still needs {missing(cur)} (steps 1 and 2)" if cur is not None
-            and missing(cur) else "This image cannot be analysed yet")
+            and missing(cur) else "This image cannot be analyzed yet")
         ticked = set(self.film.checked_uids())
         sel = [im for im in imgs if im.uid in ticked]
         k_sel = sum(1 for im in sel if im.uid not in ready_ids)

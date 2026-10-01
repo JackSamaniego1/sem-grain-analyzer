@@ -720,7 +720,7 @@ def compute_astm(labels: Optional[np.ndarray],
                f"of test pattern (E112 sec. 13: >= 50 recommended)")
     _check(checks, f"Valid area >= {MIN_VALID_FRACTION:.0%} of frame",
            "PASS" if res.valid_fraction >= MIN_VALID_FRACTION else "WARN",
-           f"{res.valid_fraction * 100:.1f} % of frame analysed")
+           f"{res.valid_fraction * 100:.1f} % of frame analyzed")
     if res.coverage_pct is not None:
         _check(checks, f"Segmented coverage >= {MIN_COVERAGE_PCT:.0f} %",
                "PASS" if res.coverage_pct >= MIN_COVERAGE_PCT else "WARN",

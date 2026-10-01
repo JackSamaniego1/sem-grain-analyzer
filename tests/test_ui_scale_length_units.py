@@ -91,7 +91,12 @@ def test_attention_ring_pulses_then_goes(qapp, qtbot):
         set_reduced_motion(was)
 
 
-def test_autofind_highlights_and_focuses_length_box(env, qtbot):  # noqa: F811
+def test_autofind_highlights_and_focuses_length_box(env, qtbot, monkeypatch):  # noqa: F811
+    # batch 4 follow-up: a label that is read is applied at once; the length
+    # box is the fallback when it can NOT be read -- that is what this covers
+    from core import info_bar_ocr
+    monkeypatch.setattr(info_bar_ocr, "read_info_bar",
+                        lambda *a, **k: info_bar_ocr.InfoBarReading(status="no_text"))
     sample = _lots(env, 1, 2, bar=True)
     lot = next(p for p in sample.iterdir() if p.is_dir() and (p / "lot.json").exists())
     rec = next(d for d in lot.iterdir() if (d / "manifest.json").exists())

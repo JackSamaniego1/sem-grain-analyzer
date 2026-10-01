@@ -569,7 +569,7 @@ class MethodsPreview(SectionPreview):
 class RawPreview(SectionPreview):
     def __init__(self, page, section) -> None:
         super().__init__(page, "raw_data", "Raw data")
-        c = Card("Raw grain sheets", "Placed after every other sheet — grey tabs, one per image")
+        c = Card("Raw grain sheets", "Placed after every other sheet — gray tabs, one per image")
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["Sheet", "Grain rows", "Units", "Columns"])
         self.table.verticalHeader().setVisible(False)

@@ -353,7 +353,7 @@ class NamingCard(Card):
         self.storage.setToolTip("In the lot folder: one continuous record per lot (re-analysis "
                                 "keeps the previous results in results/_history).\n"
                                 "In timestamped runs: every analysis session gets its own "
-                                "dated sub-folder (v3.0 behaviour).")
+                                "dated sub-folder (v3.0 behavior).")
         srow.addWidget(self.storage)
         srow.addStretch(1)
         self.body_layout().addLayout(srow)

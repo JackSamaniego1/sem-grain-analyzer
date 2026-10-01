@@ -139,24 +139,57 @@ def test_no_next_or_back_buttons(shell, qtbot):
     c = t.overlay.callout
     texts = [b.text() for b in c.findChildren(QAbstractButton) if b.isVisible()]
     assert texts == ["Skip tour"], texts                # action step: Skip only
-    assert c.step_lbl.text() == "STEP 1 OF 7" and not c.dont_show.isVisible()
+    n = len([s for s in t.steps if not s.centred])
+    assert c.step_lbl.text() == f"STEP 1 OF {n}" and n == 22
+    assert not c.dont_show.isVisible()
     for k in (Qt.Key_Right, Qt.Key_PageDown, Qt.Key_Return, Qt.Key_Left):
         QTest.keyClick(t.overlay, k)
     assert _key(t) == "open_job"                        # keys never advance an action step
     t.finish()
 
 
-def test_steps_are_the_spec_list_each_with_one_target_and_a_hook():
+STEP_KEYS = ["welcome", "open_job", "scan", "scale", "mode", "run",
+             "go_review", "select", "merge", "split", "add", "delete", "undo", "opacity",
+             "view", "filter",
+             "outline", "reorder", "inspector", "preview", "compare", "excel",
+             "export", "finish"]
+
+
+def test_steps_are_the_spec_list_each_with_a_target_and_a_hook():
     from ui.tour import default_steps
     steps = default_steps()
-    assert [s.key for s in steps] == ["welcome", "open_job", "scan", "scale", "mode", "run",
-                                      "review", "export", "finish"]
+    assert [s.key for s in steps] == STEP_KEYS
     for s in steps[1:-1]:
-        assert len(s.targets) == 1, s.key               # exactly one control
-        assert s.advance_on is not None and s.kind == "click", s.key
-    assert steps[2].targets == ("scan_all",) and steps[3].targets == ("scale_all",)
-    assert steps[5].targets == ("run_all",) and steps[7].targets == ("tourExportPptx",)
+        assert 1 <= len(s.targets) <= 2, s.key          # one control (or an arrow pair)
+        if s.kind == "info":
+            assert s.advance_on is None                 # "Got it" only
+        else:
+            assert s.advance_on is not None and s.kind == "click", s.key
+    info = [s.key for s in steps if s.kind == "info"]
+    assert info == ["preview", "compare"]               # few "look at this" steps
+    by = {s.key: s for s in steps}
+    assert by["scan"].targets == ("scan_all",) and by["scale"].targets == ("scale_all",)
+    assert by["run"].targets == ("run_all",) and by["export"].targets == ("tourExportPptx",)
+    assert by["go_review"].targets == ("tourRail_review",) and by["go_review"].page is None
+    for k, t in (("merge", "tourToolMerge"), ("split", "tourToolSplit"),
+                 ("add", "tourToolAdd"), ("delete", "tourToolDelete"),
+                 ("undo", "tourToolUndo"), ("view", "tourReviewView")):
+        assert by[k].targets == (t,) and "tourReviewCanvas" in by[k].areas, k
+    # the shortcut is in the text of every Review tool step
+    for k, key in (("select", "V"), ("merge", "M"), ("split", "C"), ("add", "A"),
+                   ("delete", "Delete"), ("undo", "Ctrl+Z")):
+        assert key in by[k].text("body", None), k
 
+
+def test_tour_texts_use_american_spelling():
+    """Regression guard (user request): no British spellings in the tour."""
+    import re
+
+    from tests.test_american_spelling import BRITISH, string_literals
+    for p in (ROOT / "ui" / "tour").glob("*.py"):
+        for line, text in string_literals(p):
+            assert not re.search(r"(?i)analys(e|ed|es|ing)\b", text), (p.name, line, text)
+            assert not BRITISH.search(text), (p.name, line, text)
 
 # ---------------------------------------------------------------------- Tutorial job
 def test_assets_bundled_and_loadable():
@@ -240,81 +273,189 @@ def test_tour_start_creates_job_once_and_selects_it(shell, qtbot, env):
     assert node is not None and Path(node.path) == t.tutorial_record
 
 
-# ---------------------------------------------------------------------- end to end
-def test_end_to_end_by_doing_each_action(shell, qtbot, env):
-    """Every step advances from the action itself: open the job, auto-find
-    scan area and scale, choose a mode, analyse, select a grain, export."""
-    st, a = shell.state, shell.analyze
-    t = _start(shell, qtbot)
-    seen, done = [], []
-    t.step_changed.connect(lambda i: seen.append(t.steps[i].key))
-    t.finished.connect(done.append)
+def _spot_on(shell, t, name):
     from PySide6.QtWidgets import QWidget
+    w = shell.findChild(QWidget, name)
+    if w is None or not w.isVisible():
+        return False
+    c = QRectF(QRect(w.mapTo(shell, w.rect().topLeft()), w.size())).center()
+    return t.overlay.spot().contains(c)
 
-    def spot_on(name):
-        w = shell.findChild(QWidget, name)
-        c = QRectF(QRect(w.mapTo(shell, w.rect().topLeft()), w.size())).center()
-        return t.overlay.spot().contains(c)
 
-    # 2. open the Tutorial job: the spotlit "Open Lot" button
-    assert shell.current_page() == "projects" and spot_on("tourNewSession")
+def _clickable(t, shell, w):
+    """``w``'s centre is not covered by the scrim (spotlight or work area)."""
+    c = w.mapTo(shell, w.rect().center())
+    return not t.overlay.mask().contains(c)
+
+
+def _grains(shell):
+    import numpy as np
+    st = shell.state
+    im = st.current_image()
+    lab = im.raw.label_image
+    kept = st.kept_ids(im.uid)
+    return im, lab, kept, np
+
+
+def _touching_pair(shell):
+    im, lab, kept, np = _grains(shell)
+    for d in (1, 2, 3, 4):
+        a, b = lab[:, :-d], lab[:, d:]
+        m = (a > 0) & (b > 0) & (a != b)
+        for x, y in zip(a[m][:400], b[m][:400]):
+            if int(x) in kept and int(y) in kept:
+                yield [int(x), int(y)]
+
+
+def _big_grain(shell):
+    im, lab, kept, np = _grains(shell)
+    ids, counts = np.unique(lab[lab > 0], return_counts=True)
+    order = [int(i) for i in ids[np.argsort(-counts)] if int(i) in kept]
+    gid = order[0]
+    ys, xs = np.nonzero(lab == gid)
+    cy = int(np.median(ys))
+    row = xs[ys == cy]
+    return gid, [(float(row.min() - 3), float(cy)), (float(row.max() + 3), float(cy))]
+
+
+def _do_review_actions(shell, t, qtbot, by_ui=True):
+    """Perform every Review step's action on the tutorial image."""
+    rv, st = shell.review, shell.state
+    cv = rv.canvas
+    # select
+    assert _key(t) == "select" and _spot_on(shell, t, "tourToolSelect")
+    assert _clickable(t, shell, cv)                         # the image is a work area
+    body = QRectF(t.overlay.callout.geometry()).adjusted(14, 14, -14, -14)
+    cvr = QRectF(QRect(cv.mapTo(shell, cv.rect().topLeft()), cv.size()))
+    assert not body.intersects(cvr)                         # callout keeps off the image
+    gid, line = _big_grain(shell)
+    cv.select([gid])
+    qtbot.waitUntil(lambda: _key(t) == "merge", timeout=5000)
+    # merge any two touching grains
+    for pair in _touching_pair(shell):
+        cv.select(pair)
+        if rv.edits.merge() is not None:
+            break
+    qtbot.waitUntil(lambda: _key(t) == "split", timeout=TIMEOUT)
+    # cut a grain
+    gid, line = _big_grain(shell)
+    cv.split_requested.emit(line)
+    qtbot.waitUntil(lambda: _key(t) == "add", timeout=TIMEOUT)
+    # add: trying it is enough (every pixel already belongs to a grain here)
+    h, w = st.current_image().shape[:2]
+    cv.add_requested.emit([(w * 0.4, h * 0.4), (w * 0.45, h * 0.4), (w * 0.45, h * 0.45)])
+    qtbot.waitUntil(lambda: _key(t) == "delete", timeout=TIMEOUT)
+    # delete any grain
+    gid, _line = _big_grain(shell)
+    cv.select([gid])
+    rv.delete_selected()
+    qtbot.waitUntil(lambda: _key(t) == "undo", timeout=TIMEOUT)
+    shell.act_undo.trigger()                                # Ctrl+Z
+    qtbot.waitUntil(lambda: _key(t) in ("opacity", "view"), timeout=TIMEOUT)
+    if _key(t) == "opacity":
+        assert _spot_on(shell, t, "tourOpacityPill")
+        cv.overlay_opacity_edited.emit(0.5, True)           # the pill, dragged
+        qtbot.waitUntil(lambda: _key(t) == "view", timeout=5000)
+    rv.view_seg.set_current_index(0)                        # Original
+    qtbot.waitUntil(lambda: _key(t) == "filter", timeout=5000)
+    rv.view_seg.set_current_index(1)
+    assert _clickable(t, shell, rv.filters.border.switch)
+    rv.filters.border.switch.click()                        # a filter switch
+    qtbot.waitUntil(lambda: _key(t) == "outline", timeout=TIMEOUT)
+
+
+def _do_report_actions(shell, t, qtbot):
+    from PySide6.QtTest import QTest
+    rp = shell.reports
+    assert shell.current_page() == "reports"
+    qtbot.waitUntil(lambda: rp.model is not None and rp.outline.topLevelItemCount() > 2,
+                    timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: _spot_on(shell, t, "tourReportOutline"), timeout=5000)
+    # untick a section in the outline
+    sec = next(s for s in rp.model.sections if s.enabled and s.id not in ("raw", "images"))
+    rp.outline.toggled.emit(("section", sec.id), False)
+    qtbot.waitUntil(lambda: _key(t) == "reorder", timeout=5000)
+    rp.outline.toggled.emit(("section", sec.id), True)
+    assert _clickable(t, shell, rp.outline)                 # select a section to move it
+    rp.select(("image", rp.model.images[0].id))           # images can be reordered
+    rp.btn_down.click()
+    qtbot.waitUntil(lambda: _key(t) == "inspector", timeout=5000)
+    rp.inspector.title.setFocus()
+    QTest.keyClicks(rp.inspector.title, " (tutorial)")
+    qtbot.waitUntil(lambda: _key(t) == "preview", timeout=5000)
+    for key in ("preview", "compare"):                      # "Got it" cards
+        c = t.overlay.callout
+        assert c.btn_primary.isVisible() and c.btn_primary.text() == "Got it"
+        assert c.btn_skip.isVisible()
+        qtbot.mouseClick(c.btn_primary, Qt.LeftButton)
+    qtbot.waitUntil(lambda: _key(t) == "excel", timeout=5000)
+    rp.btn_xlsx.click()
+    qtbot.waitUntil(lambda: _key(t) == "export", timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: rp.btn_pptx.isEnabled(), timeout=TIMEOUT)
+    assert _spot_on(shell, t, "tourExportPptx")
+    rp.btn_pptx.click()
+    qtbot.waitUntil(lambda: _key(t) == "finish", timeout=TIMEOUT)
+
+
+def _setup_and_run(shell, t, qtbot):
+    st, a = shell.state, shell.analyze
+    assert shell.current_page() == "projects" and _spot_on(shell, t, "tourNewSession")
     assert shell.projects.btn_primary.text().startswith("Open")
-    btn = shell.projects.btn_primary
     assert not t.overlay.mask().contains(t.overlay.spot().center().toPoint())  # clicks reach it
-    qtbot.mouseClick(btn, Qt.LeftButton)
+    qtbot.mouseClick(shell.projects.btn_primary, Qt.LeftButton)
     qtbot.waitUntil(lambda: _key(t) == "scan", timeout=TIMEOUT)
     assert Path(st.session.path) == t.tutorial_record and len(st.images()) == 3
     qtbot.waitUntil(lambda: not st.is_loading(), timeout=TIMEOUT)
     a.sync_wizard()
-    # 3. step 1 All images
-    assert shell.current_page() == "analyze" and spot_on("scan_all")
+    assert shell.current_page() == "analyze" and _spot_on(shell, t, "scan_all")
     a.btn_scan_all.click()
     qtbot.waitUntil(lambda: _key(t) == "scale", timeout=TIMEOUT)
-    # 4. step 2 All images (scale bar + OCR on the bundled images)
+    # one click: the label read off each image is applied; the strip shows it
+    assert "strip under the image" in t.overlay.callout.body.text()
+    assert _clickable(t, shell, a.setup_tile)               # the strip is left clear
     qtbot.waitUntil(lambda: a.btn_scale_all.isEnabled(), timeout=5000)
     a.btn_scale_all.click()
-    # the label read off the image (10 µm) waits for the operator's OK: the
-    # spotlight moves to the length row and its Apply button
-    qtbot.waitUntil(lambda: a.scale_row.isVisible() and spot_on("scaleLengthRow"),
-                    timeout=TIMEOUT)
-    assert t.overlay.callout.title.text() == "Check the scale-bar length"
-    qtbot.waitUntil(lambda: a.scale_row.bar_len.value() == pytest.approx(10.0), timeout=5000)
-    assert a.scale_row.bar_same.isChecked()
-    qtbot.mouseClick(a.scale_row.btn_bar, Qt.LeftButton)
     qtbot.waitUntil(lambda: _key(t) == "mode", timeout=TIMEOUT)
     assert all(st.px_for(im) == pytest.approx(16.0, rel=0.02) for im in st.images())
-    # 5. step 3: the tiles are shown now; choose Boundary
+    assert a.setup_tile.scale_val.text().startswith("Scale bar: 10 µm · 160 px → 16 px/µm")
+    assert a.setup_tile.scale_src.text() == "Read from image"
+    assert not a.scale_row.isVisible()                      # nothing to confirm
     assert not a.step_mode.body.isHidden()
     a.params.mode_cards["boundary"].clicked.emit()
     qtbot.waitUntil(lambda: _key(t) == "run", timeout=5000)
-    # 6. step 4 Analyze all: the progress card is spotlit while it runs
-    assert spot_on("run_all")
+    assert _spot_on(shell, t, "run_all")
     a.btn_all.click()
-    qtbot.waitUntil(lambda: a.queue.is_running() and spot_on("wizard_progress") or
+    qtbot.waitUntil(lambda: a.queue.is_running() and _spot_on(shell, t, "wizard_progress") or
                     _key(t) != "run", timeout=TIMEOUT)
-    qtbot.waitUntil(lambda: _key(t) == "review", timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: _key(t) == "go_review", timeout=TIMEOUT)
     assert all(im.result is not None for im in st.images())
-    # 7. Review: click (select) a grain
+    # the Review nav item, not the canvas: the page opens when the user clicks it
+    assert shell.current_page() == "analyze" and _spot_on(shell, t, "tourRail_review")
+    qtbot.mouseClick(shell.rail.item("review"), Qt.LeftButton)
+    qtbot.waitUntil(lambda: _key(t) == "select", timeout=5000)
     assert shell.current_page() == "review"
-    cv = shell.review.canvas
-    qtbot.waitUntil(lambda: cv._labels is not None, timeout=TIMEOUT)
-    gid = int(next(v for v in set(cv._labels.ravel().tolist()) if v > 0))
-    cv.select([gid])
-    qtbot.waitUntil(lambda: _key(t) == "export", timeout=5000)
-    # 8. Reports: the report is built for the user, then PowerPoint
-    rp = shell.reports
-    assert shell.current_page() == "reports"
-    qtbot.waitUntil(lambda: rp.btn_pptx.isEnabled(), timeout=TIMEOUT)
-    assert spot_on("tourExportPptx")
-    rp.btn_pptx.click()
-    qtbot.waitUntil(lambda: _key(t) == "finish", timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: shell.review.canvas._labels is not None, timeout=TIMEOUT)
+
+
+# ---------------------------------------------------------------------- end to end
+def test_end_to_end_by_doing_each_action(shell, qtbot, env):
+    """Every step advances from the action itself: open the job, auto-find
+    scan area and scale, choose a mode, analyze, review tools, report
+    designer tools, Excel and PowerPoint export."""
+    t = _start(shell, qtbot)
+    keys, done = [], []
+    t.step_changed.connect(lambda i: keys.append(t.steps[i].key))
+    t.finished.connect(done.append)
+    _setup_and_run(shell, t, qtbot)
+    _do_review_actions(shell, t, qtbot)
+    _do_report_actions(shell, t, qtbot)
     assert list((t.tutorial_record / "exports").glob("*.pptx"))
-    # 9. Finish: Done
+    assert list((t.tutorial_record / "exports").glob("*.xlsx"))
     c = t.overlay.callout
     assert c.btn_primary.text() == "Done" and not c.btn_skip.isVisible()
     qtbot.mouseClick(c.btn_primary, Qt.LeftButton)
     assert done == [True] and not t.is_active()
-    assert seen == ["scan", "scale", "mode", "run", "review", "export", "finish"]
+    assert keys == STEP_KEYS[2:]
     assert _projects(env) == ["Tutorial"]
     qtbot.waitUntil(lambda: not _overlays(shell), timeout=2000)
 
@@ -337,16 +478,72 @@ def test_steps_advance_on_signals_in_order(shell, qtbot):
     qtbot.waitUntil(lambda: _key(t) == "run", timeout=5000)
     with qtbot.waitSignal(a.queue.queue_finished, timeout=TIMEOUT):
         shell.act_run_all.trigger()                       # F5
-    qtbot.waitUntil(lambda: _key(t) == "review", timeout=TIMEOUT)
-    shell.review.canvas.selection_changed.emit([1])
-    shell.review.canvas.selected = lambda: [1]
-    shell.review.canvas.selection_changed.emit([1])
-    qtbot.waitUntil(lambda: _key(t) == "export", timeout=5000)
-    shell.reports.exported.emit(["x.xlsx"])               # not the PowerPoint: stays
+    qtbot.waitUntil(lambda: _key(t) == "go_review", timeout=TIMEOUT)
+    shell.go("review")                                    # Ctrl+3
+    qtbot.waitUntil(lambda: _key(t) == "select", timeout=5000)
+    for key in ("select", "merge", "split", "add", "delete", "undo", "opacity", "view",
+                "filter", "toggle", "order", "edit"):
+        t.note(key)
+    qtbot.waitUntil(lambda: _key(t) == "preview", timeout=TIMEOUT)
+    qtbot.mouseClick(t.overlay.callout.btn_primary, Qt.LeftButton)
+    qtbot.mouseClick(t.overlay.callout.btn_primary, Qt.LeftButton)
+    qtbot.waitUntil(lambda: _key(t) == "excel", timeout=5000)
+    shell.reports.exported.emit(["x.pptx"])               # not the workbook: stays
     qtbot.wait(50)
-    assert _key(t) == "export"
-    shell.reports.exported.emit([str(t.tutorial_record / "exports" / "r.pptx")])
-    qtbot.waitUntil(lambda: _key(t) == "finish", timeout=5000)
+    assert _key(t) == "excel"
+    shell.reports.exported.emit(["book.xlsx"])
+    qtbot.waitUntil(lambda: _key(t) == "finish", timeout=5000)   # pptx already seen
+    t.finish()
+
+
+def test_out_of_order_actions_never_dead_end(shell, qtbot):
+    """An action done before its step (here: every Review edit while the
+    analysis step is still open) completes that step when it comes up."""
+    from ui.tour import TourController
+    t = TourController(shell)
+    t.start(prepare=False)
+    t.seen.clear()
+    for key in ("review_page", "select", "merge", "split", "add_try", "delete", "undo"):
+        t.note(key)
+    keys = [s.key for s in t.steps]
+    i = keys.index("go_review")
+    t.start(i, prepare=False)
+    shell.go("review")
+    # every step whose action was already done is passed by itself
+    qtbot.waitUntil(lambda: not t.is_active() or t.index > keys.index("undo"), timeout=5000)
+    t.finish()
+
+
+def test_review_edit_kinds_are_told_apart(shell, qtbot):
+    """watch_actions classifies the undo stack: merge / split / add /
+    delete / undo of a grain edit -- a scale undo is not a grain undo."""
+    from PySide6.QtGui import QUndoCommand
+
+    from ui.tour import TourController
+    t = TourController(shell)
+    t.start(prepare=False)
+    t.seen.clear()
+    stack = shell.state.undo_stack
+
+    class GrainGeometryCommand(QUndoCommand):
+        pass
+
+    class ExcludeGrainsCommand(QUndoCommand):
+        pass
+
+    class ScaleCommand(QUndoCommand):
+        pass
+    for cls, text in ((GrainGeometryCommand, "Merge 2 grains"),
+                      (GrainGeometryCommand, "Split grain #4"),
+                      (GrainGeometryCommand, "Add grain #9"), (ExcludeGrainsCommand, "x"),
+                      (ScaleCommand, "Set scale")):
+        stack.push(cls(text))
+    assert {"merge", "split", "add", "delete"} <= t.seen and "undo" not in t.seen
+    stack.undo()                                            # the scale: not a grain edit
+    assert "undo" not in t.seen
+    stack.undo()
+    assert "undo" in t.seen
+    stack.clear()
     t.finish()
 
 

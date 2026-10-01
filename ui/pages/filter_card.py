@@ -138,7 +138,7 @@ class FilterCard(Card):
         b = self.body_layout()
         b.setSpacing(SPACE.sm)
         self.border = ToggleRow(
-            "Remove border grains", "Grains cut by the edge of the analysed area",
+            "Remove border grains", "Grains cut by the edge of the analyzed area",
             "Exclude grains that touch the image edge or the scan-area border — they are "
             "only partially visible, so their size is unknown (ASTM E112 practice).")
         self.false = ToggleRow(
@@ -168,7 +168,7 @@ class FilterCard(Card):
         self.lc_std.setSpecialValueText("")
         self.dark = QSpinBox()
         self.dark.setRange(0, 80)
-        self.dark.setToolTip("Mean grey level at or below which a region counts as "
+        self.dark.setToolTip("Mean gray level at or below which a region counts as "
                              "too dark (void / black area)")
         self.dark.valueChanged.connect(lambda _v: self._debounce.start())
         self.area_lbl_min = label("Min area")
@@ -178,13 +178,13 @@ class FilterCard(Card):
         f.addRow("Max aspect ratio", self.max_ar)
         f.addRow("Min circularity", self.min_circ)
         f.addRow("Low-contrast limit (σ)", self.lc_std)
-        f.addRow("Too-dark limit (grey)", self.dark)
+        f.addRow("Too-dark limit (gray)", self.dark)
         host = QWidget()
         host.setLayout(f)
         self.more.add_widget(host)
         b.addWidget(self.more)
 
-        self.show_ex = QCheckBox("Show excluded grains (greyed) on the overlay")
+        self.show_ex = QCheckBox("Show excluded grains (grayed) on the overlay")
         self.show_ex.setChecked(True)
         self.show_ex.setToolTip("Hide or show the grains removed by filters or by hand")
         self.show_ex.toggled.connect(self.show_excluded_toggled)

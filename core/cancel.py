@@ -40,7 +40,7 @@ def make_cancel_check(cancel: Any = None) -> Callable[[], None]:
 
     def check() -> None:
         if probe():
-            raise AnalysisCancelled("Analysis cancelled")
+            raise AnalysisCancelled("Analysis canceled")
 
     return check
 

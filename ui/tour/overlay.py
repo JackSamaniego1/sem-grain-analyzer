@@ -128,7 +128,9 @@ class TourCallout(ThemeAware, QWidget):
     # ------------------------------------------------------------------ content
     def set_content(self, title: str, body: str, step_text: str, dots: Tuple[int, int],
                     centred: bool, icon: Optional[str], first: bool, last: bool,
-                    show_check: bool) -> None:
+                    show_check: bool, primary: Optional[str] = "") -> None:
+        """``primary``: the one button's text ("Start tour" / "Done" / "Got
+        it"); ``None`` = no button (an action step); "" = by position."""
         self._centred = centred
         self.title.setText(title)
         self.body.setText(body)
@@ -144,9 +146,13 @@ class TourCallout(ThemeAware, QWidget):
         self.step_lbl.setAlignment(Qt.AlignHCenter if centred else Qt.AlignLeft)
         self.dont_show.setVisible(show_check)
         self.btn_skip.setVisible(not last)
-        self.btn_primary.setVisible(centred)
-        self.btn_primary.setText("Start tour" if first else "Done")
-        self.btn_primary.setToolTip("Start the tour (Enter)" if first else "Close the tour (Enter)")
+        if primary == "":
+            primary = ("Start tour" if first else "Done") if centred else None
+        self.btn_primary.setVisible(primary is not None)
+        self.btn_primary.setText(primary or "")
+        self.btn_primary.setToolTip({"Start tour": "Start the tour (Enter)",
+                                     "Done": "Close the tour (Enter)"}.get(
+                                         primary or "", "Continue the tour (Enter)"))
         for b in (self.btn_skip, self.btn_primary):
             b.setMinimumWidth(b.sizeHint().width())
         m = EDGE + (SPACE.xxl if centred else SPACE.xl)
@@ -245,6 +251,7 @@ class TourOverlay(ThemeAware, QWidget):
         self.setObjectName("tourOverlay")
         self._host = host
         self._spot = QRectF()
+        self._areas: list = []              # extra clear, clickable areas (no ring)
         self._level = 0.0
         self._pulse = 0.0
         self._pulsing = False
@@ -340,12 +347,27 @@ class TourOverlay(ThemeAware, QWidget):
         self._update_mask()
         self.update()
 
+    def set_areas(self, rects) -> None:
+        """Work areas shown clear and clickable besides the spotlight (e.g.
+        the image while a Review tool is spotlit); overlay coordinates."""
+        rects = [QRectF(r) for r in (rects or []) if r is not None and not QRectF(r).isEmpty()]
+        if rects == self._areas:
+            return
+        self._areas = rects
+        self._update_mask()
+        self.update()
+
+    def areas(self) -> list:
+        return [QRectF(r) for r in self._areas]
+
     def _update_mask(self) -> None:
-        """Clicks inside the spotlight reach the highlighted control."""
+        """Clicks inside the spotlight (and the work areas) reach the app."""
         full = QRegion(self.rect())
         s = self._spot
         if s.width() > 8 and s.height() > 8:
             full = full.subtracted(QRegion(s.adjusted(3, 3, -3, -3).toAlignedRect()))
+        for a in self._areas:
+            full = full.subtracted(QRegion(a.toAlignedRect()))
         self.setMask(full)
 
     def set_pulsing(self, on: bool) -> None:
@@ -367,12 +389,13 @@ class TourOverlay(ThemeAware, QWidget):
     # ------------------------------------------------------------------ callout
     def show_callout(self, title: str, body: str, step_text: str, dots, centred: bool,
                      icon: Optional[str], first: bool, last: bool, show_check: bool,
-                     target: QRectF, animate: bool = True) -> None:
+                     target: QRectF, animate: bool = True, primary: Optional[str] = "") -> None:
         c = self.callout
         for a in self._callout_anims:
             stop(a)
         self._callout_anims = []
-        c.set_content(title, body, step_text, dots, centred, icon, first, last, show_check)
+        c.set_content(title, body, step_text, dots, centred, icon, first, last, show_check,
+                      primary)
         pos, side, at = self.place(QSize(c.width(), c.height()), target, centred)
         c.set_arrow(side, at)
         fx = c.opacity_effect()
@@ -417,6 +440,10 @@ class TourOverlay(ThemeAware, QWidget):
         if centred or target.isEmpty():
             return (QPoint(int(bounds.center().x() - W / 2),
                            int(bounds.center().y() - H / 2)), None, 0.0)
+        if self._areas:
+            free = self._place_clear(size, target, bounds)
+            if free is not None:
+                return free
         ring = target.adjusted(-SPOT_PAD, -SPOT_PAD, SPOT_PAD, SPOT_PAD)
         off = GAP + ARROW - EDGE                     # widget edge → ring distance
         cands = {
@@ -452,6 +479,42 @@ class TourOverlay(ThemeAware, QWidget):
             at = max(lo, min(c.x() - r.left(), W - lo))
         return QPoint(int(r.left()), int(r.top())), side, float(at)
 
+    def _place_clear(self, size: QSize, target: QRectF, bounds: QRectF):
+        """With work areas: a callout position covering neither the
+        spotlight nor a work area -- next to the target if possible, else in
+        a free corner (no arrow).  None = no such place."""
+        W, H = size.width(), size.height()
+        ring = target.adjusted(-SPOT_PAD, -SPOT_PAD, SPOT_PAD, SPOT_PAD)
+        keep = [ring] + list(self._areas)
+
+        def clear(r: QRectF) -> bool:
+            body = r.adjusted(EDGE, EDGE, -EDGE, -EDGE)
+            return bounds.contains(r) and not any(body.intersects(k) for k in keep)
+        off = GAP + ARROW - EDGE
+        cands = {
+            "left": QRectF(ring.right() + off, ring.center().y() - H / 2, W, H),
+            "right": QRectF(ring.left() - off - W, ring.center().y() - H / 2, W, H),
+            "top": QRectF(ring.center().x() - W / 2, ring.bottom() + off, W, H),
+            "bottom": QRectF(ring.center().x() - W / 2, ring.top() - off - H, W, H),
+        }
+        lo = EDGE + RADII.lg + ARROW + 2
+        c = ring.center()
+        for side, r in cands.items():
+            if side in ("left", "right"):
+                r.moveTop(max(bounds.top(), min(r.top(), bounds.bottom() - H)))
+            else:
+                r.moveLeft(max(bounds.left(), min(r.left(), bounds.right() - W)))
+            if clear(r):
+                at = (max(lo, min(c.y() - r.top(), H - lo)) if side in ("left", "right")
+                      else max(lo, min(c.x() - r.left(), W - lo)))
+                return QPoint(int(r.left()), int(r.top())), side, float(at)
+        for x in (bounds.right() - W, bounds.left()):
+            for y in (bounds.bottom() - H, bounds.top()):
+                r = QRectF(x, y, W, H)
+                if clear(r):
+                    return QPoint(int(x), int(y)), None, 0.0
+        return None
+
     # ------------------------------------------------------------------ events
     def eventFilter(self, obj, ev) -> bool:
         if obj is self._host and ev.type() == QEvent.Resize and self.isVisible():
@@ -486,11 +549,15 @@ class TourOverlay(ThemeAware, QWidget):
         scrim.setAlphaF(max(scrim.alphaF(), 0.58) * self._level)
         s = self._spot
         path = QPainterPath()
-        path.setFillRule(Qt.OddEvenFill)
         path.addRect(QRectF(self.rect()))
         has_spot = s.width() > 2 and s.height() > 2
+        holes = QPainterPath()
         if has_spot:
-            path.addRoundedRect(s, SPOT_RADIUS, SPOT_RADIUS)
+            holes.addRoundedRect(s, SPOT_RADIUS, SPOT_RADIUS)
+        for a in self._areas:
+            holes.addRoundedRect(a, RADII.md, RADII.md)
+        if not holes.isEmpty():
+            path = path.subtracted(holes)
         p.fillPath(path, scrim)
         if not has_spot:
             return

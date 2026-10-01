@@ -29,7 +29,7 @@ from core.postfilter import (
 )
 
 REASON_LABELS = {
-    "border": "Cut by the edge of the analysed area",
+    "border": "Cut by the edge of the analyzed area",
     "touching_invalid": "Touches an excluded (black) region",
     "low_contrast": "Low contrast — likely not a real grain",
     "too_dark": "Too dark — likely a void / black region",

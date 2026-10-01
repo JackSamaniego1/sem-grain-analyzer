@@ -133,9 +133,9 @@ class ReportInspector(QWidget):
             sb.setToolTip(f"Histogram bins for grain {what} (Auto = square-root rule)")
         self.palette = QComboBox()
         self._reload_palette_combo()
-        self.palette.setToolTip("Colour scheme of the exported workbook and deck (navy titles, "
-                                "colour-coded sheet tabs). \"New custom palette...\" picks 3 "
-                                "colours and derives the rest.")
+        self.palette.setToolTip("Color scheme of the exported workbook and deck (navy titles, "
+                                "color-coded sheet tabs). \"New custom palette...\" picks 3 "
+                                "colors and derives the rest.")
         rows = [("Title", self.title), ("File name", self.export_name),
                 ("Organization", self.org), ("Operator", self.operator),
                 ("Date", drow), ("Logo", lrow), ("Units", self.units),
@@ -190,13 +190,13 @@ class ReportInspector(QWidget):
             g.addWidget(title_edit, 2, 1)
             swatch = Swatch("#888888", 16)
             color_edit = QLineEdit()
-            color_edit.setPlaceholderText("Palette colour")
-            color_edit.setToolTip("Bar colour override, e.g. #2E5FA3 (blank = palette colour)")
+            color_edit.setPlaceholderText("Palette color")
+            color_edit.setToolTip("Bar color override, e.g. #2E5FA3 (blank = palette color)")
             color_row = QHBoxLayout()
             color_row.setSpacing(SPACE.xs)
             color_row.addWidget(swatch, 0, Qt.AlignVCenter)
             color_row.addWidget(color_edit, 1)
-            g.addWidget(label("Bar colour", tone="secondary"), 3, 0)
+            g.addWidget(label("Bar color", tone="secondary"), 3, 0)
             g.addLayout(color_row, 3, 1)
             cv.addLayout(g)
             self.metric_rows[metric] = dict(enabled=enabled_cb, min=min_edit, max=max_edit,

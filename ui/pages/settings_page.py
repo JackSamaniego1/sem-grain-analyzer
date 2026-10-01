@@ -100,7 +100,7 @@ class SettingsPage(QWidget):
         self.motion.toggled.connect(self._set_motion)
         ap.add_widget(self.motion)
         # UPDATE 4 item 7: re-enable the "images are being analysed" question
-        self.warn_edit = QCheckBox("Ask before changes while images are being analysed")
+        self.warn_edit = QCheckBox("Ask before changes while images are being analyzed")
         self.warn_edit.setChecked(state.warn_edit_during_analysis)
         self.warn_edit.setToolTip(
             "Editing grains, filters, scale or scan area while an analysis is running can "
@@ -152,7 +152,7 @@ class SettingsPage(QWidget):
         self.req_fields.setValue(int(getattr(state.settings, "required_fields", 5) or 5))
         self.req_fields.setSuffix(" fields")
         self.req_fields.setAccessibleName("Required fields")
-        self.req_fields.setToolTip("Minimum number of analysed images (fields) per lot "
+        self.req_fields.setToolTip("Minimum number of analyzed images (fields) per lot "
                                    "(ASTM E112: at least 5)")
         self.target_ra = QDoubleSpinBox()
         self.target_ra.setRange(1.0, 50.0)
@@ -219,11 +219,11 @@ class SettingsPage(QWidget):
         self.naming.rename_requested.connect(self.open_rename_dialog)
         v.addWidget(self.naming)
 
-        lic = Card("Third-party licences", "Open-source components bundled with this application")
+        lic = Card("Third-party licenses", "Open-source components bundled with this application")
         self.lic = QPlainTextEdit(licences_text())
         self.lic.setReadOnly(True)
         self.lic.setMinimumHeight(260)
-        self.lic.setToolTip("Licence texts (read-only)")
+        self.lic.setToolTip("License texts (read-only)")
         lic.add_widget(self.lic)
         v.addWidget(lic)
         v.addStretch(1)

@@ -87,7 +87,7 @@ class NewProfileDialog(QDialog):
         form.setSpacing(SPACE.sm)
         self.name = QLineEdit(suggested_name)
         self.name.setPlaceholderText("e.g. Zeiss 5000x 1024")
-        self.name.setToolTip("A name you will recognise, e.g. instrument and magnification")
+        self.name.setToolTip("A name you will recognize, e.g. instrument and magnification")
         self.name.setAccessibleName("Profile name")
         form.addRow("Name", self.name)
         lr = QHBoxLayout()
@@ -207,7 +207,7 @@ class ResolutionProfilesCard(CollapsibleSection):
         b.addLayout(row)
         self.btn_apply = AnimatedButton("Apply to this image", "check", "primary", "sm")
         self.btn_apply.setToolTip("Use this profile's scale and scan area. The image goes back "
-                                  "to Not analysed, ready to analyse.")
+                                  "to Not analyzed, ready to analyze.")
         self.btn_apply.clicked.connect(lambda: self.apply_selected())
         b.addWidget(self.btn_apply)
         br = QHBoxLayout()
@@ -362,9 +362,9 @@ class ResolutionProfilesCard(CollapsibleSection):
             doc = self.state.session
             stale = [u for u in done if doc is not None
                      and self.state.stale_reason(doc.image(u))]
-            body = f"'{p.name}' on {k} image{'s' if k != 1 else ''} — ready to analyse."
+            body = f"'{p.name}' on {k} image{'s' if k != 1 else ''} — ready to analyze."
             if stale:
-                body += (f" {len(stale)} already analysed image"
+                body += (f" {len(stale)} already analyzed image"
                          f"{'s need' if len(stale) != 1 else ' needs'} re-analysis; "
                          "the old result is left out of reports until then.")
             self._toast("Profile applied", body, "success")

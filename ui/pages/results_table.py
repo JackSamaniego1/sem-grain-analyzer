@@ -256,7 +256,7 @@ class ResultsTable(QWidget):
             if stale:
                 status = f"Needs re-analysis — {stale} changed"
             elif im.result is not None and im.status == "done":
-                status = "Analysed"
+                status = "Analyzed"
             else:
                 status = image_status(im)[1]
             out.append(dict(uid=im.uid, image=im.display_name, project=ids.get("project", ""),
@@ -306,9 +306,9 @@ class ResultsTable(QWidget):
         if n_imgs:
             what = "Selected" if scope else "Everything loaded"
             head = m.addAction(f"{what}: {n_lots} {lot_w}{'s' if n_lots != 1 else ''} · "
-                               f"{n_imgs} analysed image{'s' if n_imgs != 1 else ''}")
+                               f"{n_imgs} analyzed image{'s' if n_imgs != 1 else ''}")
         else:
-            head = m.addAction("Analyse images first — nothing to report yet")
+            head = m.addAction("Analyze images first — nothing to report yet")
         head.setEnabled(False)
         m.addSeparator()
         items = (("designer", "mdi6.pencil-ruler", "Open in report designer…",
@@ -377,7 +377,7 @@ class ResultsTable(QWidget):
         done = sum(1 for r in rows if r["grains"] is not None and not r.get("stale"))
         stale = sum(1 for r in rows if r.get("stale"))
         lots = len({(r["project"], r["sample"], r["lot"]) for r in rows})
-        self.summary.setText(f"{len(rows)} images · {done} analysed · "
+        self.summary.setText(f"{len(rows)} images · {done} analyzed · "
                              + (f"{stale} need re-analysis · " if stale else "")
                              + f"{lots} "
                              f"{hui.kind_label(self.state.profile, 'lot').lower()}"
@@ -403,9 +403,9 @@ class ResultsTable(QWidget):
             from PySide6.QtGui import QBrush, QColor
             from ui.design.theme import current_tokens
             it.setForeground(COL_STATUS, QBrush(QColor(current_tokens().warning.fg)))
-            tip = (f"The {row['stale']} changed after this image was analysed: the "
+            tip = (f"The {row['stale']} changed after this image was analyzed: the "
                    "numbers shown are from the old analysis and are left out of reports "
-                   "and exports. Analyse the image again (or undo the change).")
+                   "and exports. Analyze the image again (or undo the change).")
             for c in (COL_STATUS, COL_SCALE, COL_SCAN, COL_GRAINS, COL_DIAM, COL_G):
                 it.setToolTip(c, tip)
         return it
@@ -422,7 +422,7 @@ class ResultsTable(QWidget):
             if level in ("project", "sample", "lot") and \
                     GROUP_LEVELS.index(k) <= GROUP_LEVELS.index(level):
                 g.setText(c, first.get(k, ""))
-        g.setText(COL_STATUS, f"{len(done)} of {n} analysed")
+        g.setText(COL_STATUS, f"{len(done)} of {n} analyzed")
         g.setText(COL_GRAINS, fmt_int(grains) if done else "—")
         g.setText(COL_DIAM, f"{sum(ds) / len(ds):.2f}" if ds else "—")
         g.setText(COL_G, f"{sum(gs) / len(gs):.1f}" if gs else "—")
@@ -436,7 +436,7 @@ class ResultsTable(QWidget):
         f.setBold(True)
         for c in range(self.tree.columnCount()):
             g.setFont(c, f)
-        g.setToolTip(COL_IMAGE, "Mean diameter and ASTM G are the means of the analysed "
+        g.setToolTip(COL_IMAGE, "Mean diameter and ASTM G are the means of the analyzed "
                                 "images in this group")
 
     def group_items(self) -> List[QTreeWidgetItem]:

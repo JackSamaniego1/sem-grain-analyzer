@@ -413,9 +413,9 @@ class LotRow(QWidget):
             self.g.setText("G —")
             self.g_caption.setText("not calibrated")
             self._badge("No calibrated results", "neutral")
-            self.sentence.setText("None of this lot's analysed images has a scale set, so it is "
+            self.sentence.setText("None of this lot's analyzed images has a scale set, so it is "
                                   "left out of the comparison. Set the scale bar (Ctrl+K) and "
-                                  "analyse again.")
+                                  "analyze again.")
             return
         if summary.ci_low is not None:
             self.g.setText(f"G {_g(summary.mean)} ± {_g(summary.ci_high - summary.mean)}")
@@ -633,9 +633,9 @@ class LotComparePage(QWidget):
                          for f in l["fields"])]
         if len(usable) < 2:
             missing = [l["name"] for l in self.lots if l not in usable]
-            body = ("Two or more lots need analysed images with a scale set. "
+            body = ("Two or more lots need analyzed images with a scale set. "
                     + (f"Not calibrated yet: {', '.join(missing)}. " if missing else "")
-                    + "Set the scale bar (Ctrl+K), analyse, then compare again.")
+                    + "Set the scale bar (Ctrl+K), analyze, then compare again.")
             self.problem.set_texts("Not enough calibrated results", body)
             self.stack.set_current_widget(self.problem)
             return

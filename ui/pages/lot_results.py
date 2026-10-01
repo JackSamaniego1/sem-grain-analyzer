@@ -234,7 +234,7 @@ class LotResultCard(Card):
         self.add_action(self.scope)
         self.chip = Badge("—", "neutral", dot=True)
         self.chip.setToolTip("Green: enough fields and %RA within target. Amber: image more "
-                             "fields. Grey: the images are not calibrated.")
+                             "fields. Gray: the images are not calibrated.")
         self.add_action(self.chip)
         self.verdict = None
         self.verdict_badge = VerdictBadge()
@@ -265,7 +265,7 @@ class LotResultCard(Card):
                             "confidence bounds of N_A (planimetric) or mean intercept ℓ̄")
         self.f_ra = _Figure("Relative accuracy", "%RA = 100 · CI95 / mean, on N_A or ℓ̄ "
                             "(ASTM E112). 10 % or less is generally acceptable.")
-        self.f_fields = _Figure("Fields", "Analysed images counted in the statistics, and "
+        self.f_fields = _Figure("Fields", "Analyzed images counted in the statistics, and "
                                 "how many are needed for the target %RA")
         self.fields_bar = QProgressBar()
         self.fields_bar.setTextVisible(False)
@@ -317,7 +317,7 @@ class LotResultCard(Card):
         self.figures.hide()
         self.g_value.setText("G …")
         self.g_pm.setText("")
-        self.summary.setText("Collecting the lot’s analysed fields…")
+        self.summary.setText("Collecting the lot’s analyzed fields…")
         self.chip.set_text("Loading")
         self.chip.set_kind("info")
 
@@ -691,7 +691,7 @@ class LotResultPanel(QWidget):
         self.table.set_fields(shown, d.get("thumbs", {}), dict(d["sessions"]),
                               set(st.outlier_field_ids))
         n_ex = sum(1 for f in shown if not f.included)
-        self.table_title.setText(f"FIELDS · {len(shown)} ANALYSED"
+        self.table_title.setText(f"FIELDS · {len(shown)} ANALYZED"
                                  + (f" · {n_ex} EXCLUDED" if n_ex else ""))
 
     def verdict(self):

@@ -269,7 +269,7 @@ class ImageDoc:
         if orig and orig != self.filename:
             tip = f"{self.filename}\nOriginal file: {orig}"
         if self.stale and self.result is not None:
-            tip += (f"\nNeeds re-analysis — {self.stale} changed since it was analysed. "
+            tip += (f"\nNeeds re-analysis — {self.stale} changed since it was analyzed. "
                     "The old result is kept but left out of reports and exports.")
         return tip
 
@@ -2010,7 +2010,11 @@ class AppState(QObject):
                 if rd.get("status") == "engine_missing":
                     st["ocr_missing"] += 1
             read_um = float(rd.get("um") or 0.0) if rd else 0.0
-            sure = read_um > 0 and not rd.get("confirm", True)
+            # batch 4 follow-up (user decision): a label read successfully is
+            # applied at once -- the strip under the image shows the value
+            # read ("read from image") and Edit… corrects a wrong reading.
+            # A label the file's own metadata contradicts is never used.
+            sure = read_um > 0 and rd.get("meta_ok") is not False
             agrees = im.bar_um <= 0 or abs(im.bar_um - read_um) <= 0.01 * read_um
             cal = im.cal_suggestion
             if "scale" not in parts:
@@ -2024,11 +2028,10 @@ class AppState(QObject):
                 if read_um > 0 and rd.get("meta_ok") is False:
                     st["label_check"] += 1     # label and file disagree: hint shown
             elif im.bar_px > 0 and sure and agrees:
-                # label read and independently confirmed (FW / magnification
-                # reference / file metadata): use it
+                # label read off the image: use it (shown as "read from image")
                 im.bar_um = read_um
                 im.px_override = im.bar_px / im.bar_um
-                im.scale_source = "auto"
+                im.scale_source = "label"
                 st["scale_bar"] += 1
                 st["label_read"] += 1
             elif im.bar_px > 0 and (im.bar_um > 0 or self._matching_bar_um(im) > 0):
@@ -2654,7 +2657,7 @@ class AppState(QObject):
         im = self.session.image(uid) if (self.session and uid is not None) else None
         self.ensure_arrays(im)
         if im is None or im.raw is None or im.raw.label_image is None:
-            raise GrainEditError("Analyse this image before editing its grains.")
+            raise GrainEditError("Analyze this image before editing its grains.")
         lab = im.raw.label_image
         shape = tuple(im.shape[:2]) if im.shape else lab.shape[:2]
         off = label_offset(lab.shape, shape, getattr(im.raw, "auto_crop_rect", None))

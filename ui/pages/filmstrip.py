@@ -19,9 +19,9 @@ from ui.widgets._base import ThemeAware, animate_value, lerp_color, qcolor, stop
 from ui.workers import IMAGE_EXTS
 
 _STATUS = {
-    "pending": ("neutral", "Not analysed"),
+    "pending": ("neutral", "Not analyzed"),
     "queued": ("warning", "Queued"),
-    "running": ("info", "Analysing"),
+    "running": ("info", "Analyzing"),
     "done": ("success", ""),
     "error": ("danger", "Error"),
 }
@@ -34,7 +34,7 @@ def status_text(im) -> tuple:
     elif im.status == "done" and im.result is not None:
         text = f"{fmt_int(im.result.grain_count)} grains"
     elif im.status == "running":
-        text = f"Analysing {im.progress} %"
+        text = f"Analyzing {im.progress} %"
     return kind, text
 
 

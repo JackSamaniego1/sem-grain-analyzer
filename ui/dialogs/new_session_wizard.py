@@ -50,7 +50,7 @@ STEPS = [("Project", "Which project does this work belong to?"),
          ("Sample", "Which sample is being examined?"),
          ("Lot", "Which lot (heat / batch) of that sample?"),
          ("Session", "Acquisition details for this sitting at the microscope"),
-         ("Images", "Add the SEM images to analyse")]
+         ("Images", "Add the SEM images to analyze")]
 
 NEW = "__new__"
 
@@ -71,7 +71,7 @@ def wizard_steps(profile) -> List[tuple]:
     else:
         steps.append(("session", "Session", "Acquisition details for this sitting at the "
                                              "microscope"))
-        steps.append(("images", "Images", "Add the SEM images to analyse"))
+        steps.append(("images", "Images", "Add the SEM images to analyze"))
     return steps
 
 
@@ -524,7 +524,7 @@ class NewSessionWizard(QDialog):
         f = self._form()
         self.f_label = self._line("Short label shown on the session card (optional)",
                                   "e.g. Transverse section, 500×")
-        self.f_operator = self._line("Who acquired / analysed the images")
+        self.f_operator = self._line("Who acquired / analyzed the images")
         self.f_instrument = self._line("Microscope (read from the image metadata when "
                                        "available)", "e.g. Zeiss Sigma 300")
         self.f_mag = self._line("Nominal magnification", "e.g. 1000×")

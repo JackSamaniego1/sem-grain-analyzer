@@ -163,7 +163,7 @@ class GridPreview(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setAccessibleName("Reference image preview")
         self.setToolTip("Reference image. Detected period lines are drawn in the accent "
-                        "colour; in manual mode drag across a whole number of periods.")
+                        "color; in manual mode drag across a whole number of periods.")
 
     def set_image(self, qimage) -> None:
         self.pix = QPixmap.fromImage(qimage) if qimage is not None else None

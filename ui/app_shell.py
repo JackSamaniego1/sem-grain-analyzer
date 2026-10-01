@@ -314,7 +314,7 @@ class AppShell(QMainWindow):
         self._act(hm, "&Keyboard shortcuts", self.overlay.toggle, None, "keyboard")
         hm.addSeparator()
         self.act_about = self._act(hm, f"&About {APP_NAME}", self.show_about, None, "info",
-                                   "Version, privacy statement and third-party licences")
+                                   "Version, privacy statement and third-party licenses")
 
     def _wire(self) -> None:
         st = self.state
@@ -663,7 +663,7 @@ class AppShell(QMainWindow):
             self.toasts.show_toast(
                 "Scale set", f"{px:.4f} px/µm — " + ("this image only" if per_image
                                                      else "all images")
-                + (". Re-analyse to apply it to existing results." if analysed else "."),
+                + (". Re-analyze to apply it to existing results." if analysed else "."),
                 "success", "Undo" if snap else None,
                 (lambda s=snap: self.state.restore_scales(s)) if snap else None)
         dlg.calibration_set.connect(apply)
@@ -784,7 +784,7 @@ class AppShell(QMainWindow):
         st, r = self.state, self.reports
         if st.session is None or not rb.analysed_count(st):
             self.toasts.show_toast("No results to report",
-                                   rb.stale_note(st) or "Analyse images first.", "info")
+                                   rb.stale_note(st) or "Analyze images first.", "info")
             return
         # several lots loaded: always the multi-lot report (a selection of one
         # lot of them gives that lot only, still with Job / Part / Lot columns)
@@ -824,7 +824,7 @@ class AppShell(QMainWindow):
         if rb.analysed_count(self.state):
             return True
         self.toasts.show_toast("No results to export",
-                               rb.stale_note(self.state) or "Analyse images first.", "info")
+                               rb.stale_note(self.state) or "Analyze images first.", "info")
         return False
 
     def export_all_excel(self, only_current: bool = False) -> None:
@@ -950,9 +950,9 @@ class AppShell(QMainWindow):
         box.setIcon(QMessageBox.Warning)
         box.setWindowTitle("Analysis running")
         box.setText("Analysis running — stop and close?\n\nImages already finished are "
-                    "saved. The image being analysed now is not.")
+                    "saved. The image being analyzed now is not.")
         stop = box.addButton("Stop and close", QMessageBox.AcceptRole)
-        keep = box.addButton("Keep analysing", QMessageBox.RejectRole)
+        keep = box.addButton("Keep analyzing", QMessageBox.RejectRole)
         box.setDefaultButton(keep)
         box.setEscapeButton(keep)
         box.exec()

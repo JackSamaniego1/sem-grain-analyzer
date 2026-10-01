@@ -146,7 +146,7 @@ class GalleryWindow(QMainWindow):
 
     # -- pages --------------------------------------------------------------
     def _overview_page(self) -> QWidget:
-        inner, v = self._page("Lot overview", "Alloy 718 · 12 images analysed · "
+        inner, v = self._page("Lot overview", "Alloy 718 · 12 images analyzed · "
                                               "last run 14:32 by A. Operator")
         stats = QHBoxLayout()
         stats.setSpacing(SPACE.lg)

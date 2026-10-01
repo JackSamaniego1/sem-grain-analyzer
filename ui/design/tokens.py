@@ -340,7 +340,7 @@ def hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
     if len(h) == 8:
         h = h[2:]
     if len(h) != 6:
-        raise ValueError(f"bad colour {hex_color!r}")
+        raise ValueError(f"bad color {hex_color!r}")
     return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
 

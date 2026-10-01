@@ -107,7 +107,7 @@ def test_comparison_table_has_one_row_per_image(analysed):
     shell, _ = analysed
     shell.go("review")
     assert shell.review.comparison_rows() == len(shell.state.images()) == 2
-    assert shell.review.cmp.item(0, 1).text() == "Analysed"
+    assert shell.review.cmp.item(0, 1).text() == "Analyzed"
 
 
 def test_review_delete_and_undo(analysed, qtbot):

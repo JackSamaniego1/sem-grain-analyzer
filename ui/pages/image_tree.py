@@ -72,12 +72,12 @@ def image_status(im) -> tuple:
     if s == "done" and im.result is not None:
         return "success", f"{fmt_int(im.result.grain_count)} grains"
     if s == "running":
-        return "info", f"Analysing {im.progress} %"
+        return "info", f"Analyzing {im.progress} %"
     if s == "queued":
         return "warning", "Queued"
     if s == "error":
         return "danger", "Error"
-    return "neutral", "Not analysed"
+    return "neutral", "Not analyzed"
 
 
 def record_levels(rec, profile, with_session: bool = True) -> List[tuple]:
@@ -613,13 +613,13 @@ class ImageTree(ThemeAware, QWidget):
         g.setData(0, ROLE_CAL, "warning" if no_scale else ("success" if n and not loading
                                                            else "neutral"))
         parts = [f"{n} image{'s' if n != 1 else ''}"]
-        parts.append(f"{loading} loading" if loading else f"{done} analysed")
+        parts.append(f"{loading} loading" if loading else f"{done} analyzed")
         g.setData(0, ROLE_LINE2, " · ".join(parts))
         scale = ("Loading…" if loading else
                  f"{no_scale} image{'s' if no_scale != 1 else ''} without a scale" if no_scale
                  else "Every image has a scale" if n else "")
         tip = [str(g.data(0, ROLE_TITLE) or ""),
-               f"{n} images · {done} analysed" + (f" · {err} with errors" if err else ""),
+               f"{n} images · {done} analyzed" + (f" · {err} with errors" if err else ""),
                scale]
         g.setToolTip(0, "\n".join(x for x in tip if x))
 

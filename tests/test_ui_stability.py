@@ -618,11 +618,11 @@ def test_locked_controls_look_disabled(env, qtbot):
     st.set_current_image(im.uid)
     rv = shell.review
     assert not rv.btn_tool_split.isEnabled() and not rv.btn_tool_add.isEnabled()
-    assert "being analysed" in rv.btn_tool_split.toolTip()
+    assert "being analyzed" in rv.btn_tool_split.toolTip()
     lock.set_active(False)
     for a in (shell.act_close, shell.act_new, shell.act_run_all, shell.act_run_cur):
         assert a.isEnabled() and a.toolTip() != LOCKED_TIP
-    assert rv.btn_tool_split.isEnabled() and "being analysed" not in rv.btn_tool_split.toolTip()
+    assert rv.btn_tool_split.isEnabled() and "being analyzed" not in rv.btn_tool_split.toolTip()
     _close_shell(shell, qtbot)
 
 

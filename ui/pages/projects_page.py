@@ -185,11 +185,11 @@ def session_summary(sdir: Path, n_thumbs: int = 3) -> dict:
     if not imgs:
         status = ("Empty", "neutral")
     elif len(analysed) == len(imgs):
-        status = ("Analysed", "success")
+        status = ("Analyzed", "success")
     elif analysed:
-        status = ("Partly analysed", "warning")
+        status = ("Partly analyzed", "warning")
     else:
-        status = ("Not analysed", "neutral")
+        status = ("Not analyzed", "neutral")
     return {"kind": "session", "path": sdir, "meta": m, "n_images": len(imgs),
             "n_analysed": len(analysed),
             "grains": int(sum(int(i.get("grain_count", 0)) for i in analysed)),
@@ -437,8 +437,8 @@ class NodeCard(SelectableCard):
         row = QHBoxLayout()
         row.setSpacing(SPACE.xs)
         if kind == "image":          # status in the badge row: the title row stays readable
-            status = (("Analysed", "success") if item.get("has_result")
-                      else ("Not analysed", "neutral"))
+            status = (("Analyzed", "success") if item.get("has_result")
+                      else ("Not analyzed", "neutral"))
         self.status_badge: Optional[Badge] = None
         if status is not None:
             self.status_badge = Badge(status[0], status[1], dot=True)
@@ -485,10 +485,10 @@ class NodeCard(SelectableCard):
     def _lot_status(self):
         n, a = self.item.get("n_images", 0), self.item.get("n_analysed", 0)
         if a and a == n:
-            return "Analysed", "success"
+            return "Analyzed", "success"
         if a:
-            return "Partly analysed", "warning"
-        return "Not analysed", "neutral"
+            return "Partly analyzed", "warning"
+        return "Not analyzed", "neutral"
 
     def title_text(self) -> str:
         it, m = self.item, self.item.get("meta", {})
@@ -1771,7 +1771,7 @@ class ProjectsPage(QWidget):
         if kind == "lot":
             gs = [it["g"] for it in items if it.get("g") is not None]
             vals = [("Images", s("n_images"), "", 0),
-                    ("Analysed", s("n_analysed"), "", 0),
+                    ("Analyzed", s("n_analysed"), "", 0),
                     ("Grains measured", s("grains"), "", 0),
                     ("Mean ASTM grain size", (sum(gs) / len(gs)) if gs else None,
                      "G" if gs else "n/a", 1)]
@@ -1779,7 +1779,7 @@ class ProjectsPage(QWidget):
                 vals[1] = ("Sessions", n, "", 0)
         elif kind == "sample":
             vals = [(L("lot"), n, "", 0),
-                    ("Analysed images" if lot_mode else "Sessions",
+                    ("Analyzed images" if lot_mode else "Sessions",
                      s("n_analysed") if lot_mode else s("n_sessions"), "", 0),
                     ("Images", s("n_images"), "", 0), ("Latest activity",
                      fmt_date_utc(max((it.get("created", "") for it in items), default=""),
@@ -1918,7 +1918,7 @@ class ProjectsPage(QWidget):
         chain = " › ".join(L(k) for k in hui.LEVELS)
         if kind == "workspace":
             e.title_label.setText("Set up your lab workspace")
-            e.body_label.setText(f"Analyses are stored in labelled folders — {chain} — "
+            e.body_label.setText(f"Analyses are stored in labeled folders — {chain} — "
                                  f"on this computer:\n{self.state.root}\n\nStart by creating your "
                                  f"first {L('project')}. The folder structure and names can be "
                                  "changed in Settings ▸ Folder structure & naming.")
@@ -1979,8 +1979,8 @@ class ProjectsPage(QWidget):
             extra = {"Original name": e.get("original_name") or "—",
                      "Size": f"{e.get('width', 0)} × {e.get('height', 0)} px"
                      if e.get("width") else "—",
-                     "Analysis": (f"Analysed · {fmt_int(it.get('n_grains', 0))} grains"
-                                  if it.get("has_result") else "Not analysed"),
+                     "Analysis": (f"Analyzed · {fmt_int(it.get('n_grains', 0))} grains"
+                                  if it.get("has_result") else "Not analyzed"),
                      "Calibration": (f"{it['px_per_um']:.4g} px/µm" if it.get("px_per_um")
                                      else "Not set")}
             if e.get("notes"):
@@ -1990,7 +1990,7 @@ class ProjectsPage(QWidget):
         if it["kind"] == "session":
             if it.get("record"):
                 node = NodeRef("lot", it["path"])
-            extra = {"Images": f"{it['n_analysed']} of {it['n_images']} analysed",
+            extra = {"Images": f"{it['n_analysed']} of {it['n_images']} analyzed",
                      "Grains": fmt_int(it.get("grains", 0))}
             if it.get("g") is not None:
                 extra["ASTM grain size"] = f"G {fmt_opt(it['g'], 1)}"

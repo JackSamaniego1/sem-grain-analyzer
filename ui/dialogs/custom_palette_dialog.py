@@ -24,8 +24,8 @@ from ui.pages.report_widgets import Swatch
 from ui.widgets import AnimatedButton, label
 
 DEFAULT_COLORS = ["#2E5FA3", "#48B07A", "#DC3278"]
-FIELD_LABELS = ("Colour 1 — area bars & header", "Colour 2 — diameter bars & accent",
-                "Colour 3 — normal-fit line")
+FIELD_LABELS = ("Color 1 — area bars & header", "Color 2 — diameter bars & accent",
+                "Color 3 — normal-fit line")
 
 
 class _ColorField(QWidget):
@@ -40,9 +40,9 @@ class _ColorField(QWidget):
         self.edit = QLineEdit(initial)
         self.edit.setMaxLength(7)
         self.edit.setPlaceholderText("#RRGGBB")
-        self.edit.setToolTip("6-digit hex colour, e.g. #2E5FA3")
+        self.edit.setToolTip("6-digit hex color, e.g. #2E5FA3")
         self.btn = AnimatedButton("Pick...", None, "ghost", "sm")
-        self.btn.setToolTip("Choose from the colour wheel")
+        self.btn.setToolTip("Choose from the color wheel")
         row.addWidget(self.swatch, 0)
         row.addWidget(self.edit, 1)
         row.addWidget(self.btn, 0)
@@ -57,7 +57,7 @@ class _ColorField(QWidget):
 
     def _pick(self) -> None:
         start = normalize_hex(self.edit.text()) or "#808080"
-        c = QColorDialog.getColor(QColor(start), self, "Choose a colour")
+        c = QColorDialog.getColor(QColor(start), self, "Choose a color")
         if c.isValid():
             self.edit.setText(c.name().upper())
 
@@ -80,8 +80,8 @@ class CustomPaletteDialog(QDialog):
         v.setContentsMargins(SPACE.xl, SPACE.lg, SPACE.xl, SPACE.lg)
         v.setSpacing(SPACE.md)
         v.addWidget(label("New custom palette", "h2"))
-        hint = label("Pick 3 colours — type a hex code or use the colour picker. Headers, "
-                     "accents and tab colours are derived automatically so the report reads as "
+        hint = label("Pick 3 colors — type a hex code or use the color picker. Headers, "
+                     "accents and tab colors are derived automatically so the report reads as "
                      "one system.", tone="secondary")
         hint.setWordWrap(True)
         v.addWidget(hint)
@@ -118,7 +118,7 @@ class CustomPaletteDialog(QDialog):
         name = self.name.text().strip() or "Custom"
         colors = [f.hex() for f in self.fields]
         if any(c is None for c in colors):
-            self.error.setText("Every colour must be a valid #RRGGBB hex code.")
+            self.error.setText("Every color must be a valid #RRGGBB hex code.")
             self.error.show()
             return
         self.submitted.emit(name, colors)

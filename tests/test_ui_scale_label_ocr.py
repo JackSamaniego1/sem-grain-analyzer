@@ -180,34 +180,41 @@ def test_confirmed_label_fills_number_unit_and_scale_off_the_gui_thread(env, qtb
     _auto_find(shell, qtbot)
     assert f.calls and threading.get_ident() not in f.threads      # worker thread only
     for im in st.images():
-        assert im.bar_um == pytest.approx(20.0) and im.scale_source == "auto"
+        assert im.bar_um == pytest.approx(20.0) and im.scale_source == "label"
         assert st.px_for(im) == pytest.approx(im.bar_px / 20.0)
         assert st.setup_ready(im)
-    assert tile.bar_row.isVisibleTo(tile)
-    assert tile.bar_len.value() == pytest.approx(20.0) and tile.bar_unit.currentText() == "µm"
-    assert not tile.bar_check.isVisibleTo(tile)
-    assert "Read from the scale-bar label" in tile.bar_hint.text()
+    # batch 4 follow-up: applied, so nothing to enter -- the strip shows it
+    assert not tile.bar_row.isVisibleTo(tile)
+    strip = shell.analyze.setup_tile
+    im0 = st.current_image()
+    assert strip.scale_val.text().startswith(
+        f"Scale bar: 20 µm · {im0.bar_px:.0f} px → {im0.bar_px / 20.0:.4g} px/µm")
+    assert strip.scale_src.text() == "Read from image"
     shell.close()
 
 
-def test_unsure_label_prefilled_with_please_check_and_not_applied(env, qtbot, fake_ocr):
+def test_unconfirmed_label_is_applied_and_shown_for_checking(env, qtbot, fake_ocr):
+    """Batch 4 follow-up (user decision; replaces "unsure label prefilled
+    and not applied"): a label read successfully is used at once, even when
+    nothing in the file can double-check it.  The strip under the image
+    shows the length read; Edit… / typing corrects a wrong reading."""
     fake_ocr(_reading(500.0, "nm", confirm=True, bar_px=120))
     shell = _open(qtbot, env)
-    st, tile = shell.state, shell.analyze.scale_row
+    st, a = shell.state, shell.analyze
     _auto_find(shell, qtbot)
     for im in st.images():
-        assert st.setup_issues(im) == ["scale"]                    # operator confirms
-        assert im.bar_read["um"] == pytest.approx(0.5)
-    assert tile.bar_len.value() == pytest.approx(500.0) and tile.bar_unit.currentText() == "nm"
-    assert tile.bar_check.isVisibleTo(tile)
-    assert tile.bar_check.text() == "Please check"
-    assert "500 nm" in tile.bar_hint.text() and "double-checked" in tile.bar_hint.text()
-    assert tile.bar_hint.property("tone") == "warning"
-    # one Apply confirms it (µm under the hood)
-    tile.btn_bar.click()
+        assert st.setup_issues(im) == []
+        assert im.bar_read["um"] == pytest.approx(0.5) and im.scale_source == "label"
+        assert st.px_for(im) == pytest.approx(im.bar_px / 0.5)
+    assert not a.scale_row.isVisibleTo(a)
+    assert a.setup_tile.scale_val.text().startswith("Scale bar: 500 nm · 120 px → 240 px/µm")
+    assert a.setup_tile.scale_src.text() == "Read from image"
+    assert a.canvas.scale_bar_rect() is not None                   # bar stays highlighted
+    assert not a.btn_scale_edit.isHidden()                         # the way to correct it
+    # correcting it by hand wins and says so
     im0 = st.current_image()
-    assert im0.scale_source == "manual" and im0.bar_um == pytest.approx(0.5)
-    assert st.px_for(im0) == pytest.approx(im0.bar_px / 0.5)
+    st.set_bar_length(im0.uid, 1.0, same_bar=False)
+    assert im0.scale_source == "manual" and st.px_for(im0) == pytest.approx(120.0)
     shell.close()
 
 
@@ -229,9 +236,12 @@ def test_value_set_by_hand_is_never_overwritten(env, qtbot, fake_ocr):
 
 
 def test_length_being_typed_survives_a_label_read(env, qtbot, fake_ocr):
-    fake_ocr(_reading(500.0, "nm", confirm=True, bar_px=120))
+    # the row shows when the label disagrees with the file's metadata
+    fake_ocr(_reading(500.0, "nm", confirm=True, bar_px=120, meta_ok=False))
     shell = _open(qtbot, env)
     st, tile = shell.state, shell.analyze.scale_row
+    for im in st.images():
+        im.cal_suggestion = (3.0, "Zeiss", "high")
     _auto_find(shell, qtbot)
     tile.bar_unit.setCurrentText("µm")                            # operator starts typing
     tile.bar_len.setValue(7.0)
@@ -300,10 +310,11 @@ def test_results_are_per_image_and_dropped_after_the_session_closes(env, qtbot, 
     a, b = st.images()
     got = {a.uid: a.bar_read["um"], b.uid: b.bar_read["um"]}
     assert sorted(got.values()) == [5.0, 20.0]
-    for im in (a, b):                                             # box follows the image
+    strip = shell.analyze.setup_tile
+    for im in (a, b):                                             # strip follows the image
         st.set_current_image(im.uid)
-        qtbot.waitUntil(lambda im=im: tile.bar_len.value() == pytest.approx(got[im.uid]),
-                        timeout=5000)
+        qtbot.waitUntil(lambda im=im: strip.scale_val.text().startswith(
+            f"Scale bar: {got[im.uid]:g} µm"), timeout=5000)
     # a read that arrives after the session was closed is dropped, no crash
     doc = st.session
     late = {"shape": a.shape, "bar_px": 120.0, "info": {},

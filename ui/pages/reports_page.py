@@ -48,6 +48,9 @@ KIND_FILTER = {"xlsx": "Excel workbook (*.xlsx)", "pptx": "PowerPoint presentati
 class ReportsPage(QWidget):
     report_changed = Signal()          # model replaced (built / reloaded / refreshed)
     exported = Signal(list)            # paths written
+    #: any edit of the report by the operator: "include" / "section" (on-off),
+    #: "order", "title", or an inspector field name (guided tour, batch 4)
+    report_edited = Signal(str)
     _rec = "session"                   # HIER-01: what one record is called ("lot")
 
     AUTOSAVE_MS = 800
@@ -144,7 +147,7 @@ class ReportsPage(QWidget):
             "Open from Projects", "projects")
         self.empty_results = EmptyState(
             "analyze", "Nothing to report yet",
-            "Analyse the session's images first; the report is built from the filtered "
+            "Analyze the session's images first; the report is built from the filtered "
             "results you see on the Review page.", None)
         self.empty_build = EmptyState(
             "reports", "Build the report",
@@ -176,7 +179,7 @@ class ReportsPage(QWidget):
         self.btn_add_text.setToolTip("Add a slide of free text (conclusions, preparation, "
                                      "acceptance criteria…) after the selected section")
         lv.addWidget(self.btn_add_text)
-        hint = label("Colours match the workbook's sheet tabs. Raw data always comes last.",
+        hint = label("Colors match the workbook's sheet tabs. Raw data always comes last.",
                      "caption")
         hint.setWordWrap(True)
         lv.addWidget(hint)
@@ -295,7 +298,7 @@ class ReportsPage(QWidget):
             n = len(self.model.ordered_images()) if has_model else rb.analysed_count(self.state)
             self.header.subtitle.setText(
                 f"{s.title} — {n} image{'s' if n != 1 else ''} in the report" if has_model
-                else f"{s.title} — {n} analysed image{'s' if n != 1 else ''}")
+                else f"{s.title} — {n} analyzed image{'s' if n != 1 else ''}")
         self.header.subtitle.setVisible(True)
         self.stack.set_current_widget(target)
         busy = bool(self._busy)
@@ -420,7 +423,7 @@ class ReportsPage(QWidget):
             "sections and image order, exported to Excel and PowerPoint.")
         self.empty_results.set_texts(
             "Nothing to report yet",
-            f"Analyse the {rec}'s images first; the report is built from the filtered "
+            f"Analyze the {rec}'s images first; the report is built from the filtered "
             "results you see on the Review page.")
         self.empty_build.set_texts(
             "Build the report",
@@ -457,7 +460,7 @@ class ReportsPage(QWidget):
             return
         inputs = rb.collect_inputs(self.state)
         if not inputs:
-            self._toast("No results to report", "Analyse the images first.", "info")
+            self._toast("No results to report", "Analyze the images first.", "info")
             return
         if then:
             self._after_ready.append(then)
@@ -510,7 +513,7 @@ class ReportsPage(QWidget):
             return
         args = rb.multi_lot_args(self.state, scope)
         if args is None:
-            self._toast("No results to report", "Analyse the images first.", "info")
+            self._toast("No results to report", "Analyze the images first.", "info")
             return
         if then:
             self._after_ready.append(then)
@@ -675,6 +678,7 @@ class ReportsPage(QWidget):
         self._validate_timer.start()
         if what in ("include", "section", "order"):
             self._update_view()
+        self.report_edited.emit(str(what))
 
     def _on_doc_changed(self, field: str) -> None:
         if field == "organization":
@@ -1015,7 +1019,7 @@ class ReportsPage(QWidget):
             return
         if self.model is None:
             if rb.analysed_count(self.state) == 0:
-                self._toast("No results to export", "Analyse images first.", "info")
+                self._toast("No results to export", "Analyze images first.", "info")
                 return
             self.build_from_session(then=lambda: self.export(kinds, ask, only_uid, False))
             return
@@ -1035,7 +1039,7 @@ class ReportsPage(QWidget):
             if im is None or not rb.reportable(self.state, im):
                 self._toast("No results for this image",
                             (rb.stale_note(self.state, [im]) if im is not None else "")
-                            or "Analyse it first.", "info")
+                            or "Analyze it first.", "info")
                 return
             model = rb.only_image_model(model, str(im.path) if im.path else im.filename)
             stem_title = Path(im.filename).stem

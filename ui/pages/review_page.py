@@ -160,7 +160,7 @@ class ReviewPage(QWidget):
         self.stack = FadeStackedWidget()
         outer.addWidget(self.stack)
         self.empty = EmptyState("review", "Nothing to review yet",
-                                "Open a session from Projects, or analyse images on the "
+                                "Open a session from Projects, or analyze images on the "
                                 "Analyze page — results appear here.",
                                 "Open from Projects", "projects")
         self.empty.action_triggered.connect(self.open_projects_requested)
@@ -195,7 +195,7 @@ class ReviewPage(QWidget):
             w.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             col.addWidget(w)
         self.view_seg = SegmentedControl(["Original", "Overlay", "Mask", "Excluded"], 1)
-        self.view_seg.setToolTip("Original image · grain overlay · grain mask · areas not analysed")
+        self.view_seg.setToolTip("Original image · grain overlay · grain mask · areas not analyzed")
         self.view_seg.setFixedWidth(330)
         self.btn_undo = IconButton("undo", "Undo (Ctrl+Z)")
         self.btn_redo = IconButton("redo", "Redo (Ctrl+Y)")
@@ -237,7 +237,7 @@ class ReviewPage(QWidget):
                        self.btn_tool_add, self.btn_merge, self.btn_del),
             tool_group(self.btn_zo, self.btn_zi, self.btn_fit, self.btn_11)])
         tv.addWidget(self.toolbar)
-        self.canvas = GrainCanvas(placeholder="Select an analysed image")
+        self.canvas = GrainCanvas(placeholder="Select an analyzed image")
         self.canvas.enable_opacity_control()        # UPDATE 4 item 9
         tv.addWidget(self.canvas, 1)
         hint = label("Click a grain to select · Ctrl+click adds · L lasso · M merge · "
@@ -253,13 +253,13 @@ class ReviewPage(QWidget):
         cmp_card = self.cmp_card = Card("All images in this session",
                         "One row per image — click a row to open that image")
         self.btn_export = AnimatedButton("Export report", "excel", "secondary", "sm")
-        self.btn_export.setToolTip("Excel report of every analysed image, saved in the session's "
+        self.btn_export.setToolTip("Excel report of every analyzed image, saved in the session's "
                                    "exports folder (Ctrl+E). Edit it on the Reports page.")
         self.btn_export.clicked.connect(self.export_requested)
         cmp_card.add_action(self.btn_export)
         self.cmp = QTableWidget(0, 10)
         self.cmp.setHorizontalHeaderLabels(["Image", "Status", "Grains", "Excluded", "Mean area",
-                                            "Mean diameter", "Coverage", "Not analysed",
+                                            "Mean diameter", "Coverage", "Not analyzed",
                                             "ASTM G", "Scale"])
         self.cmp.verticalHeader().setVisible(False)
         self.cmp.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -293,9 +293,9 @@ class ReviewPage(QWidget):
         self.c_area = MetricCard("Mean area", 0, "µm²", 2)
         self.c_diam = MetricCard("Mean diameter", 0, "µm", 2)
         self.c_cov = MetricCard("Coverage", 0, "%", 1)
-        self.c_inv = MetricCard("Not analysed", 0, "%", 1)
+        self.c_inv = MetricCard("Not analyzed", 0, "%", 1)
         self.c_g = MetricCard("ASTM grain size", 0, "G", 1)
-        self.c_cov.setToolTip("Grain area ÷ analysed (valid) area")
+        self.c_cov.setToolTip("Grain area ÷ analyzed (valid) area")
         self.c_inv.setToolTip("Share of the frame excluded from analysis (black regions, "
                               "outside the scan area)")
         self.c_g.setToolTip("ASTM E112 grain size number (needs a calibrated image)")
@@ -382,11 +382,11 @@ class ReviewPage(QWidget):
         from ui import hierarchy_ui as hui
         rec = hui.record_word(self.state.profile)
         self.empty.set_texts("Nothing to review yet",
-                             f"Open a {rec} from Projects, or analyse images on the Analyze "
+                             f"Open a {rec} from Projects, or analyze images on the Analyze "
                              "page — results appear here.")
         self.cmp_card.set_title(f"All images in this {rec}",
                                 "One row per image — click a row to open that image")
-        self.btn_export.setToolTip(f"Excel report of every analysed image, saved in the {rec}'s "
+        self.btn_export.setToolTip(f"Excel report of every analyzed image, saved in the {rec}'s "
                                    "exports folder (Ctrl+E). Edit it on the Reports page.")
         self.cmp.setToolTip(f"Every image of the {rec} side by side")
 
@@ -458,7 +458,7 @@ class ReviewPage(QWidget):
         queued or being analysed; viewing tools stay available."""
         from ui.analysis_lock import show_locked
         locked = self._edit_locked()
-        why = ("This image is waiting for analysis or being analysed - editing its grains "
+        why = ("This image is waiting for analysis or being analyzed - editing its grains "
                "is available when it is finished.")
         for b in (self.btn_tool_split, self.btn_tool_add):
             b.setEnabled(not locked)
@@ -583,7 +583,7 @@ class ReviewPage(QWidget):
                 c.set_metric(None, "")
             self.hist_area.clear_data()
             self.hist_diam.clear_data()
-            self.stats_kv.set_items([("Status", "Not analysed yet")])
+            self.stats_kv.set_items([("Status", "Not analyzed yet")])
             return
         au, am, du, dm = units_for(r)
         self.c_count.set_metric(r.grain_count, "", 0)
@@ -615,10 +615,10 @@ class ReviewPage(QWidget):
                      (f"Std. dev. diameter ({du})", smart_format(float(diams.std())))]
         rows += [("Mean circularity", f"{r.mean_circularity:.3f}"),
                  ("Mean aspect ratio", f"{r.mean_aspect_ratio:.3f}"),
-                 ("Grain coverage", f"{r.grain_coverage_pct:.2f} % of analysed area"),
-                 ("Not analysed", f"{getattr(r, 'invalid_area_pct', 0.0):.2f} % of frame")]
+                 ("Grain coverage", f"{r.grain_coverage_pct:.2f} % of analyzed area"),
+                 ("Not analyzed", f"{getattr(r, 'invalid_area_pct', 0.0):.2f} % of frame")]
         if r.has_calibration:
-            rows += [("Analysed area", f"{smart_format(getattr(r, 'valid_area_um2', 0.0))} µm²"),
+            rows += [("Analyzed area", f"{smart_format(getattr(r, 'valid_area_um2', 0.0))} µm²"),
                      ("Calibration", f"{r.px_per_um:.4g} px/µm")]
         else:
             rows.append(("Calibration", "Not calibrated — sizes in pixels"))
@@ -645,7 +645,7 @@ class ReviewPage(QWidget):
         for row, im in enumerate(imgs):
             r = im.result
             kind, text = status_text(im)
-            vals = [im.display_name, text if r is None else "Analysed"]
+            vals = [im.display_name, text if r is None else "Analyzed"]
             if r is not None:
                 au, am, du, dm = units_for(r)
                 g = astm_g(r)
