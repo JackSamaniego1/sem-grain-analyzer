@@ -2,6 +2,19 @@
 
 All notable changes to Grain Analyzer are documented here.
 
+## [3.1.1] — 2026-10-02
+
+Two fixes found while testing 3.1.0 in the lab.
+
+### Fixed
+
+- **Double-clicking a lot opens the lot** and shows its images again. It no
+  longer loads the lot straight into the Analyzer. To load a lot into the
+  Analyzer, right-click the lot or use the button inside the open lot.
+- **Acquisition details are readable when adding images to a lot.** The boxes
+  were squeezed together unless the window was enlarged; the window now
+  scrolls instead.
+
 ## [3.1.0] — 2026-10-01
 
 A big usability update driven by lab feedback: a guided step-by-step Analyze
