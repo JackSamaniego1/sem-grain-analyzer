@@ -22,11 +22,11 @@ import json
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QFontMetricsF, QPainter, QPen
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout, QLineEdit,
-    QListWidget, QListWidgetItem, QPlainTextEdit, QVBoxLayout, QWidget,
+    QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout,
+    QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from data.catalog import Catalog
@@ -37,7 +37,7 @@ from data.workspace import Workspace
 from ui import hierarchy_ui as hui
 from ui.design import icons
 from ui.design.theme import ui_font
-from ui.design.tokens import RADII, SPACE, TYPE, TypeStyle
+from ui.design.tokens import MOTION, RADII, SPACE, TYPE, TypeStyle
 from ui.widgets import (
     AnimatedButton, CollapsibleSection, FadeStackedWidget, KeyValueList, label,
 )
@@ -285,7 +285,7 @@ class NewSessionWizard(QDialog):
         self._take_profile()
         self.setModal(True)
         self.resize(920, 640)
-        self.setMinimumSize(780, 560)
+        self.setMinimumSize(self.MIN_W, self.MIN_H)
         self._images: List[str] = []
         self._step = 0
         self._busy = False
@@ -337,8 +337,26 @@ class NewSessionWizard(QDialog):
         except RuntimeError:
             pass    # C++ side already gone
 
+    #: preferred minimum; clamped to the screen at 150-200 % scaling
+    MIN_W, MIN_H = 780, 560
+
+    def _fit_minimum_to_screen(self) -> None:
+        """v3.1.1: a 1920x1080 screen at 200 % is only 960x540 logical px --
+        never ask for more than the screen has; the steps scroll instead."""
+        scr = self.screen()
+        if scr is None:
+            return
+        avail = scr.availableGeometry()
+        w = min(self.MIN_W, max(480, avail.width() - 40))
+        h = min(self.MIN_H, max(400, avail.height() - 60))
+        self.setMinimumSize(w, h)
+        if self.height() > avail.height() or self.width() > avail.width():
+            self.resize(min(self.width(), avail.width() - 40),
+                        min(self.height(), avail.height() - 60))
+
     def showEvent(self, e) -> None:
         self.refresh_profile()
+        self._fit_minimum_to_screen()
         super().showEvent(e)
 
     def refresh_profile(self) -> bool:
@@ -435,13 +453,18 @@ class NewSessionWizard(QDialog):
         rv.addWidget(self.subtitle)
         rv.addSpacing(SPACE.sm)
         self.pages = FadeStackedWidget()
+        self.page_scrolls: List[QScrollArea] = []
         for key, _t, _s in self.steps_def:
             if key in hui.LEVELS:
-                self.pages.addWidget(self._level_page(key))
+                page = self._level_page(key)
             elif key == "session":
-                self.pages.addWidget(self._session_page())
+                page = self._session_page()
             else:
-                self.pages.addWidget(self._images_page())
+                page = self._images_page()
+            # v3.1.1: every step scrolls vertically when the dialog is short
+            # (small screen / 150-200 % scaling / acquisition details open)
+            # instead of the layout squeezing its rows on top of each other
+            self.pages.addWidget(self._scroll_page(page))
         rv.addWidget(self.pages, 1)
         self.error = label("", tone="danger")
         self.error.setWordWrap(True)
@@ -464,6 +487,16 @@ class NewSessionWizard(QDialog):
         foot.addWidget(self.next_btn)
         rv.addLayout(foot)
         root.addWidget(right, 1)
+
+    def _scroll_page(self, page: QWidget) -> QScrollArea:
+        sa = QScrollArea()
+        sa.setObjectName("wizardPageScroll")
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QFrame.NoFrame)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        sa.setWidget(page)
+        self.page_scrolls.append(sa)
+        return sa
 
     @staticmethod
     def _form() -> QFormLayout:
@@ -539,7 +572,7 @@ class NewSessionWizard(QDialog):
         self.f_wd.setSuffix(" mm")
         self.f_wd.setToolTip("Working distance")
         self.f_notes = QPlainTextEdit()
-        self.f_notes.setFixedHeight(64 if with_label else 48)
+        self.f_notes.setFixedHeight(64)            # ~3 lines; was 48 in lot mode
         self.f_notes.setToolTip("Free-text notes (etchant, polishing, observations …)")
         if with_label:
             f.addRow("Session label", self.f_label)
@@ -571,9 +604,13 @@ class NewSessionWizard(QDialog):
         self.img_list.setToolTip("Images that will be copied into the folder. "
                                  "Select and press Delete to remove.")
         self.img_list.setSelectionMode(QListWidget.ExtendedSelection)
+        # at least ~4 rows: the list never collapses to a sliver; the page
+        # scrolls instead (v3.1.1)
+        self.img_list.setMinimumHeight(4 * max(22, self.img_list.fontMetrics().height() + 8))
         v.addWidget(self.img_list, 1)
         row = QHBoxLayout()
         self.img_count = label("No images yet — you can also add them later.", "caption")
+        self.img_count.setWordWrap(True)
         row.addWidget(self.img_count, 1)
         rm = AnimatedButton("Remove selected", "remove", "ghost", "sm")
         rm.setToolTip("Remove the selected images from this list")
@@ -588,7 +625,30 @@ class NewSessionWizard(QDialog):
             host.setLayout(self._acq_form(False))
             self.acq.add_widget(host)
             v.addWidget(self.acq)
+            self.acq.toggled.connect(self._reveal_acq)
         return w
+
+    def _reveal_acq(self, expanded: bool) -> None:
+        """Opening Acquisition details scrolls the step so the fields show."""
+        if not expanded:
+            return
+        acq = self.acq
+
+        def reveal():
+            try:
+                p = acq.parentWidget()
+                while p is not None and not isinstance(p, QScrollArea):
+                    p = p.parentWidget()
+                if p is not None and p.widget() is not None:
+                    # vertical only: never scroll the labels out to the left
+                    y = acq.mapTo(p.widget(), QPoint(0, 0)).y()
+                    bar = p.verticalScrollBar()
+                    bar.setValue(min(bar.maximum(), max(bar.value(), y + acq.height()
+                                                         - p.viewport().height(), 0)
+                                     if acq.height() <= p.viewport().height() else y))
+            except RuntimeError:
+                pass    # wizard closed / rebuilt meanwhile
+        QTimer.singleShot(MOTION.slow + 30, reveal)
 
     # ------------------------------------------------------------------ data
     def _ws(self) -> Workspace:

@@ -590,12 +590,14 @@ class NodeCard(SelectableCard):
                     "Review. Right-click to rename, move or delete the image.")
         if k == "session":
             if self.item.get("record"):
-                return "Double-click (or Enter) to open the images and results of this " + \
-                    hui.kind_label(self.profile, "lot").lower()
+                L = hui.kind_label(self.profile, "lot")
+                return (f"This {L.lower()}'s images and results. Use Open {L} (or right-click) "
+                        "to load them into Analyze / Review.")
             return "Double-click (or Enter) to open this session in Analyze / Review"
         if k == "lot" and hui.lot_mode(self.profile):
-            return (f"Double-click to open this {hui.kind_label(self.profile, 'lot')} — its "
-                    "images and results are stored in the folder itself")
+            L = hui.kind_label(self.profile, "lot")
+            return (f"Double-click to open this {L} and see its images. Right-click to load "
+                    "it into Analyze / Review.")
         return f"Double-click to open this {hui.kind_label(self.profile, k)}"
 
 
@@ -1145,7 +1147,8 @@ class ProjectsPage(QWidget):
         self.btn_new_project.setToolTip(f"New {top}…")
         self.btn_new_project.setAccessibleName(f"New {top}")
         self.tree.setToolTip(f"{chain}. F2 renames; right-click for more."
-                             + (f" Double-click a {self.lbl('lot')} to open it."
+                             + (f" Click a {self.lbl('lot')} to see its images; right-click "
+                                "to load it into Analyze."
                                 if hui.lot_mode(p) else ""))
         self.btn_import.setToolTip("Bring an existing folder of SEM images into the workspace "
                                    f"(into the selected {self.lot_word()}, or a new one)")
@@ -1436,8 +1439,11 @@ class ProjectsPage(QWidget):
         self.state.set_node(NodeRef(kind, path))
 
     def _on_tree_double(self, idx: QModelIndex) -> None:
-        if idx.isValid() and idx.data(KIND_ROLE) == "lot" and hui.lot_mode(self.profile):
-            self.open_session_requested.emit(Path(idx.data(PATH_ROLE)))
+        """v3.1.1: double-clicking a lot OPENS the lot (its images in the
+        browser) -- it never loads it into the Analyzer.  Loading stays on the
+        right-click menu and the lot view's "Open Lot" button."""
+        if idx.isValid() and idx.data(KIND_ROLE) == "lot":
+            self.state.set_node(NodeRef("lot", Path(idx.data(PATH_ROLE))))
 
     def _on_state_node(self, node: Optional[NodeRef]) -> None:
         if node is None:
@@ -2181,9 +2187,16 @@ class ProjectsPage(QWidget):
         if it["kind"] == "image":
             self.open_image_requested.emit(Path(it["session"]), it.get("filename") or
                                            Path(it["path"]).name)
-        elif it["kind"] == "session" or (it["kind"] == "lot" and hui.lot_mode(self.profile)):
+        elif it["kind"] == "session" and it.get("record"):
+            # the lot's own record tile inside the lot view: that IS the lot,
+            # already open here -- never load it into the Analyzer (v3.1.1)
+            self.state.set_node(NodeRef("lot", Path(it["path"])))
+        elif it["kind"] == "session":
             self.open_session_requested.emit(it["path"])
         else:
+            # project / sample / lot (any storage mode): open it in the browser.
+            # v3.1.1: a lot double-click used to load it into the Analyzer
+            # whenever images live in the lot (HIER-01, 93937b1).
             self.state.set_node(NodeRef(it["kind"], it["path"]))
 
     # ------------------------------------------------------------------ actions
