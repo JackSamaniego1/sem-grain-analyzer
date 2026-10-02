@@ -359,3 +359,13 @@
   2. Ask user before deleting ~11 GB C:\ga_gpu_stage (trial pack; rebuild required per D-47 before on-device testing).
   3. User decides: merge v3-dev→main (86 commits ahead; v3.0.0 was at 13cba7e); recommended after GPU testing + high-DPI 150/200% + NVIDIA legal review.
   4. Pending: Real high-DPI test at 150/200% on actual hardware (offscreen-verified so far; wizard step display, image canvas, table wrapping need live PC). NVIDIA CUDA/cuDNN redistribution licence review before any GPU pack publication.
+
+## 2026-10-02 — v3.1.0 post-release polish fixes tested; D-49 decision logged
+- **User tested v3.1.0 and found two bugs** (reported 2026-10-02 against v3.1.0 release):
+  1. Double-click on a lot loaded straight into the Analyzer with images. Cause: ui/pages/projects_page.py `_card_open()` and `_on_tree_double()` passed images to Analyzer. Expected: double-click opens the lot view, not the Analyzer.
+  2. Add-images wizard acquisition details fields (magnification, kV, WD, instrument) were squeezed together at default window size. Expected: form steps scroll instead of compressing.
+- **Both bugs fixed in commit 3a6e450** (projects_page.py: double-click now opens lot view; new_session_wizard.py: scroll-enabled step layout). Pushed to origin v3-dev. Changes NOT in v3.1.0 on GitHub Release.
+- **Test coverage**: New file tests/test_ui_v311_lot_open_and_acq_form.py with 8 tests covering lot open behaviour and wizard form layout.
+- **Full suite status**: 1452 passed, 1 skipped, 2 failed. The 2 failures are timing-budget flakes in tests/test_detect_cancel.py (test_cancel_mid_image_returns_within_budget[42-threshold] and [50-threshold]); suite took 19 min under load. Same tests passed alone (23 passed) → known flake, not a regression. Worth loosening budget in a future pass.
+- **D-49 decision logged (user constraint)**: Double-click on a lot must NEVER load to Analyzer. Loading is only via (1) right-click lot menu, or (2) button inside open lot view. This design rule prevents accidental loads and simplifies workflow (open lot view first, then decide to load).
+- **Next**: v3.1.1 release when user approves (bump version, tag, push → CI); user decides on .dmg asset; GPU pack rebuild + NVIDIA review; real high-DPI testing.

@@ -1,8 +1,8 @@
 # SESSION STATE - read this first when resuming
 
-**Last updated:** 2026-10-01 (v3.1.0 published; GitHub Actions build succeeded; Release has Setup.exe + untested .dmg)  
-**Branch:** `v3-dev` | **Last commit:** `48546e3` (handoff: v3.1.0 release pushed; GitHub Actions build queued) | **Phase:** v3.1.0 released to GitHub; Windows installer ready; macOS .dmg untested (decision pending)
-**Resume with:** read this file only. All code committed. Full suite 1446 passed, 1 skipped. v3.1.0 tag at e3a40fa pushed + built. Next: (1) user decides: keep untested .dmg on release or remove for Windows-only; (2) ask user before deleting ~11 GB GPU staging; (3) decide merge v3-dev→main; (4) high-DPI 150/200% real test + NVIDIA licence review.
+**Last updated:** 2026-10-02 (v3.1.0 post-release polish: double-click lot fix + add-images wizard scroll; 1452 passed, 2 timing flakes)  
+**Branch:** `v3-dev` | **Last commit:** `3a6e450` (projects: double-click on a lot opens the lot view; add-images wizard steps scroll) | **Phase:** v3.1.0 published; bugs fixed on v3-dev; ready for next maintenance release
+**Resume with:** read this file only. All code committed. Full suite 1452 passed, 1 skipped, 2 failed (timing budget flakes in test_detect_cancel.py, not regressions). New test file tests/test_ui_v311_lot_open_and_acq_form.py (8 tests). Next: (1) user decides: keep .dmg or remove; (2) rebuild GPU pack from final source + NVIDIA legal review before publication; (3) ask before deleting ~11 GB staging; (4) merge v3-dev→main decision; (5) real high-DPI 150/200% test.
 
 ## v3.1.0 Release PUBLISHED
 
@@ -36,9 +36,9 @@
 
 ## NEXT 3 ACTIONS
 
-1. **User decides on untested macOS .dmg (765 MB)**. Keep on v3.1.0 Release as untested asset, or remove so release is Windows-only (like v3.0.0). (GitHub Release already published; v3.1.0 downloadable.)
-2. **Ask user before deleting ~11 GB C:\ga_gpu_stage**: Holds only copy of trial GPU pack. Pack must be rebuilt from final source (BUILD_WINDOWS.bat gpu at e3a40fa) before on-device testing per D-47. NVIDIA licence review still pending before any GPU pack publication.
-3. **User decides whether to merge v3-dev into main** (origin main still at 13cba7e before this v3.1.0 work; v3-dev has 86 commits ahead). Recommendation: merge after GPU & high-DPI testing + docs complete.
+1. **Bug fix release (v3.1.1 when user approves)**: Bump version.py to 3.1.1, update CHANGELOG, tag locally, push tag → CI publishes. Fixes double-click lot loading and add-images wizard acquisition form squeezing (both in 3a6e450, not in v3.1.0 on GitHub).
+2. **User decides on untested macOS .dmg (765 MB)**: Keep on v3.1.0 Release or remove for Windows-only. Or flag in release notes that .dmg was built by CI but is untested.
+3. **GPU pack rebuild + NVIDIA licence review**: Rebuild from final source (BUILD_WINDOWS.bat gpu at 3a6e450), trial test on lab PC with NVIDIA driver, then legal reviews CUDA/cuDNN redistribution compliance before any public GPU pack release. Ask user before deleting ~11 GB C:\ga_gpu_stage staging folder.
 
 ## How to run
 ```powershell
