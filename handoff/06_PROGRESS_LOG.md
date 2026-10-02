@@ -369,3 +369,11 @@
 - **Full suite status**: 1452 passed, 1 skipped, 2 failed. The 2 failures are timing-budget flakes in tests/test_detect_cancel.py (test_cancel_mid_image_returns_within_budget[42-threshold] and [50-threshold]); suite took 19 min under load. Same tests passed alone (23 passed) → known flake, not a regression. Worth loosening budget in a future pass.
 - **D-49 decision logged (user constraint)**: Double-click on a lot must NEVER load to Analyzer. Loading is only via (1) right-click lot menu, or (2) button inside open lot view. This design rule prevents accidental loads and simplifies workflow (open lot view first, then decide to load).
 - **Next**: v3.1.1 release when user approves (bump version, tag, push → CI); user decides on .dmg asset; GPU pack rebuild + NVIDIA review; real high-DPI testing.
+
+## 2026-10-02 — v3.1.1 released to GitHub
+- **v3.1.1 tag created locally (ce5e47f)**: version.py 3.1.1, CHANGELOG.md entry documenting two fixes from 3a6e450 (lot double-click opens lot view, add-images wizard steps scroll). Annotated tag v3.1.1 pushed to origin.
+- **GitHub Actions "Build & Release" workflow succeeded** (verified via public API): Both jobs passed (build-windows AND build-macos). Windows build: GrainAnalyzer_Setup.exe 674 MB (CPU-only, no GPU pack per D-48). macOS build: GrainAnalyzer.dmg 764 MB (untested on Mac, consistent with v3.1.0 CI behaviour).
+- **v3.1.1 Release published** (https://github.com/JackSamaniego1/sem-grain-analyzer/releases/tag/v3.1.1): Non-draft, assets: GrainAnalyzer_Setup.exe (674 MB, Windows) + GrainAnalyzer.dmg (764 MB, untested). No GPU pack (D-48 internal-only, C:\ga_gpu_stage). Fully offline, no network egress.
+- **Installer status**: CI-built GrainAnalyzer_Setup.exe v3.1.1 NOT yet tested by user (should download from Release page and install on work PC to verify both fixes work). Local repo root .exe is still v3.1.0 build.
+- **Open**: (1) User downloads & installs v3.1.1 Setup.exe to confirm fixes; (2) User decides: keep untested .dmg on v3.1.0/v3.1.1 releases or remove?; (3) GPU pack rebuild from final source + NVIDIA legal review before publication; (4) Real high-DPI 150/200% test (offscreen-verified only so far).
+- **Next**: v3.1.1 user smoke test on work PC → (if OK) decide on .dmg → (later) GPU rebuild + legal → merge v3-dev→main decision → real hardware DPI testing.
